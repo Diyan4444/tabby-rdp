@@ -23,7 +23,7 @@ import { FileTransfer, STYLE as FILES_STYLE, uniquePath } from './fileTransfer'
 import { configText, desktopIdOf, DesktopSpec, desktopsFor, DIRECT_KEY, entryText, ExtraDesktopConfig, isDesktopEntry, keyFields, keyParts, keyUser, OWN_DESKTOP, OwnDesktopFound, sessionKey, specOf, xrdpUnasked } from './desktops'
 import { RemoteDesktopHelp } from './help'
 import { configNumber, OSD_STYLE, OsdSettings, osdSettings, renderOsd } from './osd'
-import { MICROPHONE_NOTE, parseRdpFile } from './rdpFile'
+import { MAX_RDP_FILE, MICROPHONE_NOTE, parseRdpFile } from './rdpFile'
 import { prepareRemoteDesktop, RemoteDesktopEndpoint } from './remoteSetup'
 import { normalizeFingerprint, RDCleanPathProxy, startRDCleanPathProxy, withoutToken } from './rdcleanpath'
 import {
@@ -189,6 +189,11 @@ interface CertificateProblem {
 interface RememberedCertificate {
     sha256: string
     authority?: boolean
+}
+
+/** A file's name as it is shown: it comes with the file, and what could reorder or hide part of it shows as �. */
+function showableFileName (raw: string): string {
+    return raw.replace(new RegExp(UNSHOWABLE.source, 'gu'), '�')
 }
 
 /**
@@ -1402,6 +1407,11 @@ export class RemoteDesktopService {
         }
     }
 
+    /** Says that the .rdp file named `rawFileName` is too large to be one (see MAX_RDP_FILE). */
+    private refuseLargeRdp (rawFileName: string, size: number): void {
+        this.notifications.error(`${showableFileName(rawFileName)}: at ${Math.ceil(size / 1024)} KB, far larger than an .rdp file is, so it wasn't imported`)
+    }
+
     /** "Import an .rdp file…": picks one and adds it as a remote desktop profile (see importRdp). */
     async importRdpFile (): Promise<void> {
         const file = await new Promise<File | null>(resolve => {
@@ -1415,6 +1425,11 @@ export class RemoteDesktopService {
             input.click()
         })
         if (file) {
+            // Not even read when it is far larger than an .rdp file is (see importRdp).
+            if (file.size > MAX_RDP_FILE) {
+                this.refuseLargeRdp(file.name, file.size)
+                return
+            }
             // A reading or parsing failure is shown, not dropped as an unhandled rejection: this is the user's action.
             try {
                 await this.importRdp(new Uint8Array(await file.arrayBuffer()), file.name)
@@ -1450,8 +1465,12 @@ export class RemoteDesktopService {
      * and opens it; or opens the profile that already has that address, user and domain. Returns the profile, or null.
      */
     async importRdp (data: Uint8Array, rawFileName: string): Promise<any> {
-        // The file's name comes with the file, and is shown: what could reorder or hide part of it shows as �.
-        const fileName = rawFileName.replace(new RegExp(UNSHOWABLE.source, 'gu'), '�')
+        const fileName = showableFileName(rawFileName)
+        // Far larger than an .rdp file is: not parsed, on the thread that runs Tabby's window (see MAX_RDP_FILE).
+        if (data.length > MAX_RDP_FILE) {
+            this.refuseLargeRdp(rawFileName, data.length)
+            return null
+        }
         const parsed = parseRdpFile(data)
         if (!parsed) {
             this.notifications.error(`${fileName}: no address ("full address") in it`)

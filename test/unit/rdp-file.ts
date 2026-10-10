@@ -47,3 +47,22 @@ test('the clipboard is off however the file writes zero, and when any of its red
         assert.equal(parseRdpFile(rdp('full address:s:pc', `redirectclipboard:i:${value}`)).clipboard, undefined, value)
     }
 })
+
+test('a line of spaces without a colon, however long, is parsed in a moment (security review, finding 2)', () => {
+    // The pattern before tried every way of splitting such a line: 6,000 spaces took half a minute, on the thread that
+    // runs Tabby's window. In a UTF-16 file, as mstsc writes them, U+3000 and U+00A0 count as spaces too.
+    for (const [what, space] of [['spaces', ' '], ['tabs', '\t'], ['U+3000', '\u3000'], ['U+00A0', '\u00a0']]) {
+        for (const tail of ['', ':', ' : s']) {
+            const started = performance.now()
+            const parsed = parseRdpFile(rdp('full address:s:pc.example', space.repeat(1024 * 1024) + tail, 'username:s:alice'))
+            const ms = performance.now() - started
+            assert.ok(ms < 500, `a line of 1M ${what}${tail ? ` and "${tail}"` : ''}: ${ms.toFixed(0)} ms`)
+            assert.deepEqual([parsed.host, parsed.username], ['pc.example', 'alice'], what)
+        }
+    }
+})
+
+test('a setting\'s name is taken trimmed, whatever spaces surround it; a line without one is no setting', () => {
+    const parsed = parseRdpFile(rdp('  full address  :  s  :pc.example', '\u3000username\u3000:s:alice ', ' : s:nameless', ':s:', 'domain:s:CORP'))
+    assert.deepEqual([parsed.host, parsed.username, parsed.domain], ['pc.example', 'alice', 'CORP'])
+})

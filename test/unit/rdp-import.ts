@@ -243,6 +243,13 @@ test('a file that names another domain than the profile that leads where it does
     assert.equal((await importing(file('CORP'), {}, { existing: [bare] })).made.length, 1)
 })
 
+test('an .rdp file far larger than one is refused before it is parsed (security review, finding 2)', async () => {
+    const huge = 'full address:s:pc.example\r\n' + ' '.repeat(2 * 1024 * 1024)
+    const { made, errors } = await importing(huge, {}, { fileName: 'huge.rdp' })
+    assert.equal(made.length, 0)
+    assert.deepEqual(errors, ['huge.rdp: at 2049 KB, far larger than an .rdp file is, so it wasn\'t imported'])
+})
+
 test('"Import an .rdp file…": a file that can\'t be read or imported is reported, not left to fail in silence', async () => {
     // importRdpFile is importRdp's one caller (the menus, the settings page and the command palette call it): what
     // fails in either is shown, rather than becoming an unhandled rejection.
@@ -275,6 +282,10 @@ test('"Import an .rdp file…": a file that can\'t be read or imported is report
         svc.importRdp = async () => { throw new Error('something broke') }
         await svc.importRdpFile()
         assert.deepEqual(errors.slice(1), ['failing.rdp: couldn\'t be imported (something broke)'])
+        // Far larger than an .rdp file is (security review, finding 2): not even read, and said so.
+        picked = { name: 'disk\u202eimage.rdp', size: 64 * 1024 * 1024, arrayBuffer: async () => assert.fail('read') }
+        await svc.importRdpFile()
+        assert.deepEqual(errors.slice(2), ['disk\ufffdimage.rdp: at 65536 KB, far larger than an .rdp file is, so it wasn\'t imported'])
     } finally {
         g.document = page
     }

@@ -10,6 +10,10 @@ Local release candidate; not published on npm or as a GitHub release.
 - **Instance lifecycle checks** cover independent memories, cleanup, reconnects and collection after disposal,
   with a browser smoke test and a live two-desktop isolation suite.
 
+**Security** (a review of 0.5.3-rc.1; all of these were in 0.5.2 too)
+- **A crafted .rdp file can't hang Tabby's window**: a line of whitespace took time that grew with the cube of its
+  length to parse (seconds for a few thousand spaces). Files over 1 MB are refused unread.
+
 **Fixed**
 - **Tabby's window no longer crashes when a desktop reached directly is refused after TLS** (#69): on Linux, the
   first connection to any desktop in a remote desktop tab (a profile, quick connect, an .rdp file), whose certificate
