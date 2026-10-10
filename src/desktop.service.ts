@@ -451,7 +451,9 @@ export class DesktopSession {
 
     /**
      * Lets go of every key still held on this desktop. For when their keyups won't reach it: view only coming on, or
-     * typing into all going off, by a shortcut whose modifiers are down at that moment. They would stay down there.
+     * typing into all going off, by a shortcut whose modifiers are down at that moment, or the user leaving its pane
+     * by one (see RemoteDesktopService.letGoUnlessInFront). They would stay down there. Sent through IronRDP's
+     * component, which takes a key sent this way whether or not it has the focus.
      */
     releaseKeys (): void {
         for (const [code, init] of [...this.keysDown]) {
@@ -489,8 +491,48 @@ export class DesktopSession {
     private readonly container: HTMLElement
 
     private readonly reclaimFocus = (event: FocusEvent): void => {
-        if (this.visible && !this.overlay.contains(event.target as Node)) {
+        if (!this.visible) {
+            return
+        }
+        if (!this.overlay.contains(event.target as Node)) {
             this.focusSoon()
+            return
+        }
+        // The focus came to the desktop while its pane isn't the one the user is in: IronRDP's canvas takes it as the
+        // pointer passes over it (its `mouseenter`), without a click, and with it the keys typed and this computer's
+        // clipboard (its monitor follows the focus). It goes back where it came from. A click hands it over still:
+        // Tabby makes the pane the one in front on the click, and the pane's focus gives the desktop the keyboard. (The
+        // layer's own fields and buttons, a sign-in form's, send nothing anywhere until they are used.)
+        if ((event.target as Element | null)?.tagName === 'IRON-REMOTE-DESKTOP' && !this.inFront()) {
+            this.letGo(event.relatedTarget)
+        }
+    }
+
+    /** Whether the focus is on the desktop: IronRDP's component, its sign-in form, a question's buttons. */
+    holdsFocus (): boolean {
+        return this.overlay.contains(document.activeElement)
+    }
+
+    /**
+     * Takes the focus from the desktop, if it has it, back to `to` (where it came from) when that is still there to
+     * take it, or else to nothing. On IronRDP's component it is its canvas, in the component's shadow root, that has
+     * it, and has to let go. The keys held on the remote stay held: IronRDP lets go of them as the window loses the
+     * focus or the pointer leaves the canvas, not as the canvas loses the focus. Where the focus goes back to the
+     * desktop in front (the pointer passed over this one), their keyups still come from there, copied when typing
+     * into all; where the user left the pane, they don't, and the keys are let go of (see
+     * RemoteDesktopService.letGoUnlessInFront).
+     */
+    letGo (to?: EventTarget | null): void {
+        const active = document.activeElement as HTMLElement | null
+        if (!active || !this.overlay.contains(active)) {
+            return
+        }
+        const back = to as HTMLElement | null | undefined
+        if (typeof back?.focus === 'function' && back.isConnected !== false && !this.overlay.contains(back)) {
+            back.focus({ preventScroll: true })
+        }
+        if (this.overlay.contains(document.activeElement)) {
+            ;((active.shadowRoot?.activeElement as HTMLElement | null) ?? active).blur()
         }
     }
 
@@ -1801,6 +1843,16 @@ export class RemoteDesktopService {
                 }
             })
             created.onDispose(() => focused.unsubscribe())
+            // The pane is no longer the one the user is in: another tab, another pane of the split. Tabby only moves a
+            // tab it leaves off screen, and a tab that takes no focus of its own (Settings, the welcome tab) leaves the
+            // focus where it was: on the desktop, which would go on taking the keys typed and this computer's
+            // clipboard. It lets go then, of the keys it holds on the remote too: the user left by a shortcut whose
+            // modifier is still down, and its keyup goes where they went. A moment later: Tabby says so before it says
+            // which tab is the active one.
+            const blurred = pane.blurred$.subscribe(() => {
+                setTimeout(() => this.letGoUnlessInFront(created))
+            })
+            created.onDispose(() => blurred.unsubscribe())
             this.connect(pane, target, spec, created)
         }
         if (options.background) {
@@ -1874,10 +1926,30 @@ export class RemoteDesktopService {
         return desktopPaneOf(this.app.activeTab) === pane
     }
 
-    /** Whether `session` is the desktop of the pane the user is in (see inFront). */
+    /**
+     * Whether `session` is the desktop of the pane the user is in (see inFront), and not behind a pane maximized over
+     * it (see behindMaximized).
+     */
     private showsInFront (session: DesktopSession): boolean {
         const pane = desktopPaneOf(this.app.activeTab)
-        return !!pane && this.sessions.get(pane) === session
+        return !!pane && this.sessions.get(pane) === session && !this.behindMaximized(pane)
+    }
+
+    /**
+     * A desktop whose pane stopped being the one the user is in (see showsInFront): the focus is taken from it, if it
+     * has it, and the keys it holds on the remote are let go of. Their keyups go where the user went, whether the
+     * desktop kept the focus until now (a tab that takes none) or lost it to what they went to (a terminal), and
+     * IronRDP lets go of nothing as its canvas loses the focus (see DesktopSession.letGo). With typing broadcast to
+     * every desktop of the tab, leaving the tab leaves all of its panes, so each of them is let go of here too.
+     */
+    private letGoUnlessInFront (session: DesktopSession): void {
+        if (this.showsInFront(session)) {
+            return
+        }
+        if (session.holdsFocus()) {
+            session.letGo()
+        }
+        session.releaseKeys()
     }
 
     /**

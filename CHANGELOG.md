@@ -11,10 +11,21 @@ Local release candidate; not published on npm or as a GitHub release.
   with a browser smoke test and a live two-desktop isolation suite.
 
 **Security** (a review of 0.5.3-rc.1; all of these were in 0.5.2 too)
+- **Moving the pointer over a desktop no longer gives it the keyboard and the clipboard.** IronRDP's canvas took the
+  focus without a click, so keys typed into the terminal next to it (a password at a prompt that doesn't echo
+  included) and this computer's clipboard went to that remote server; also from behind a maximized pane. A desktop
+  now takes the keyboard only in the pane in front, and gives it back to where it came from otherwise.
+- **A desktop lets go of the keyboard when its tab is left by keyboard** for one that takes no focus (Settings, the
+  welcome tab): it went on taking the keys typed and the clipboard copied, view only included. Keys that reach a
+  desktop not in front now stop at the plugin. The shortcut's modifier, still down as the tab goes, is let go of on
+  the remote too, whichever tab is left for: its keyup goes where the user went, and IronRDP lets go of nothing as its
+  canvas loses the focus, so the modifier stayed held there until it was pressed again (a held Alt has the next key
+  open a menu on Windows).
 - **A crafted .rdp file can't hang Tabby's window**: a line of whitespace took time that grew with the cube of its
   length to parse (seconds for a few thousand spaces). Files over 1 MB are refused unread.
 
 **Fixed**
+- **Removing a profile without an address no longer forgets what was saved for 127.0.0.1:3389.**
 - **Tabby's window no longer crashes when a desktop reached directly is refused after TLS** (#69): on Linux, the
   first connection to any desktop in a remote desktop tab (a profile, quick connect, an .rdp file), whose certificate
   is asked about before anything of the sign-in goes to it, closed the window and left Tabby running in the
