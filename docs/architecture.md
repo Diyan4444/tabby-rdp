@@ -680,7 +680,8 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
     time: while a pong waits to go out, a later ping replaces the next one (RFC 6455 lets a client answer only the
     latest), so a gateway that reads nothing can't have them pile up. Its administrator's message is read as far as the
     300 characters the log shows.
-  - The update check reads npm's answer for 15 s and 256 KB at most.
+  - The update check reads npm's answer for 15 s and 4 MB at most: the package's whole version catalog, which grows with
+    every release (`publishedVersions`).
 - **Server certificates:** most RDP servers make their own certificates, so upstream TLS accepts any certificate and
   the proxy decides itself: after the handshake (the legacy TLS 1.2 retry included), and before the RDCleanPath
   response that the client waits for to start CredSSP. A refused server gets nothing of the account: before the check,
