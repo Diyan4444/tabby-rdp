@@ -526,7 +526,7 @@ test('a desktop picked by id replaces the one open in the pane when it is anothe
     const own = { key: 'alice@h:22', label: 'h', exec: async () => '' }
     const there = { key: 'alice@h:22>bob@x:22', label: 'x', via: 'h', exec: async () => '' }
     const subscription = { subscribe: () => ({ unsubscribe () { } }) }
-    const pane = { profile: { type: 'ssh' }, element: { nativeElement: element() }, destroyed$: subscription, focused$: subscription }
+    const pane = { profile: { type: 'ssh' }, element: { nativeElement: element() }, destroyed$: subscription, focused$: subscription, blurred$: subscription }
     const targets = { targetOf: async () => own, nestedSSH: async () => [], cached: () => own }
     const { svc } = service({}, { targets, app: { tabs: [pane] } })
     svc.connect = async () => { }
@@ -1840,7 +1840,7 @@ test('reopening the desktop of a machine reached through a host goes there again
     const { Subject } = require('rxjs')
     const own = { key: 'alice@h:22', label: 'h', exec: async () => '' }
     const there = { key: 'alice@h:22>bob@x:22', label: 'x', via: 'h', exec: async () => '' }
-    const pane = { profile: { type: 'ssh' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject() }
+    const pane = { profile: { type: 'ssh' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() }
     const targets = { targetOf: async () => own, nestedSSH: async () => [], cached: () => own }
     const { svc } = service({}, { targets, app: { tabs: [pane], activeTab: pane } })
     // Each connection ends before a sign-in (the form cancelled, a setup that failed): "Sign in", "Try again".
