@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:56:24 -0700
+Subject: [PATCH 49/51] fix(web): bound the pictures the H.264 decoders read
+ back
+
+WebCodecsH264Decoder reads a frame's regions back from its picture as
+soon as the picture comes out of a decoder: into a buffer for their
+RGBA (up to 256 MiB a frame), allocated before the copy starts, while
+it keeps the picture until the copy is done. A frame leaves the frames
+counted against the decoders' limits when its picture comes out, and
+the stall check watches only those, so nothing bounded the readbacks in
+flight. A server whose pictures came out faster than they were read
+back (each region of a frame read on its own, say) had them pile up
+with their buffers, and each one read was then copied into the
+WebAssembly memory that all of a page's sessions share before
+ironrdp-egfx counted it.
+
+The readbacks in flight now take at most 512 MiB for the RGBA of their
+regions, counted before a readback allocates and until it hands the
+pixels back: two of the largest frames ironrdp-egfx reads back
+(256 MiB, what its compositor holds), or four whole 8K pictures
+(7680x4320, 127 MiB each). Regions read back as their bounding box take
+the box as well while it is read, at most twice what they hold. A
+picture that would go past the limit fails the decoder as a decoder
+error does: the session ends with the reason, and the application can
+reconnect without H.264.
+
+The test of a region larger than its picture now uses one the limit
+lets through (8192x8192): one of 65535x65535 is refused by the limit
+before it is checked against the picture.
+---
+ .../src/H264Decoder.test.ts                   | 63 ++++++++++++++++++-
+ .../src/H264Decoder.ts                        | 36 ++++++++++-
+ 2 files changed, 95 insertions(+), 4 deletions(-)
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index c819dcf3..86355006 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -238,8 +238,8 @@ describe('WebCodecsH264Decoder', () => {
+         const failures: string[] = [];
+         decoder.close();
+         decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
+-        // 65535x65535 RGBA would be a 17 GB buffer.
+-        decoder.decode(frame(0, true, [{ left: 0, top: 0, right: 65535, bottom: 65535 }]), done);
++        // 8192x8192 RGBA (as much as ironrdp-egfx reads back) would be a 256 MiB buffer.
++        decoder.decode(frame(0, true, [{ left: 0, top: 0, right: 8192, bottom: 8192 }]), done);
+         FakeDecoder.instances[0].emit(0);
+         await flush();
+         expect(done.mock.calls[0][1]).toBeNull();
+@@ -345,6 +345,65 @@ describe('WebCodecsH264Decoder', () => {
+         ]);
+     });
+ 
++    /** Pictures whose `copyTo` finishes only when the `copies` are called: until then, their readbacks are in flight. */
++    function slowPictures() {
++        const copies: (() => void)[] = [];
++        class SlowPicture extends FakePicture {
++            override async copyTo(): Promise<void> {
++                await new Promise<void>((resolve) => copies.push(resolve));
++            }
++        }
++        const emit = (id: number, width: number, height: number) =>
++            FakeDecoder.instances[0].init.output(new SlowPicture(id, width, height));
++        return { copies, emit };
++    }
++
++    /** A frame for a 4096x4096 picture, whole: 64 MiB of RGBA to read back. */
++    function picture4k(id: number): H264Frame {
++        const whole = { left: 0, top: 0, right: 4096, bottom: 4096 };
++        return { ...frame(id, id === 0, [whole]), destination: whole };
++    }
++
++    it('fails when the pictures being read back hold too much', async () => {
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        const { copies, emit } = slowPictures();
++        // Eight of these being read back at once (512 MiB) fit in what may be, a ninth does not.
++        for (let id = 0; id < 8; id++) {
++            decoder.decode(picture4k(id), done);
++            emit(id, 4096, 4096);
++        }
++        await flush();
++        expect(decoder.failed).toBeNull();
++        expect(copies.length).toBe(8);
++
++        decoder.decode(picture4k(8), done);
++        emit(8, 4096, 4096);
++        expect(failures).toEqual(['more than 512 MiB of pictures being read back']);
++        expect(done).toHaveBeenLastCalledWith(8, null, 'more than 512 MiB of pictures being read back');
++        expect(copies.length).toBe(8);
++    });
++
++    it('counts a picture out of those being read back once it is read', async () => {
++        const { copies, emit } = slowPictures();
++        for (let id = 0; id < 8; id++) {
++            decoder.decode(picture4k(id), done);
++            emit(id, 4096, 4096);
++        }
++        await flush();
++        copies[0]();
++        await flush();
++        expect(done).toHaveBeenCalledWith(0, expect.any(Uint8Array));
++        // Frame 0's picture is read: a ninth fits, a tenth does not.
++        decoder.decode(picture4k(8), done);
++        emit(8, 4096, 4096);
++        expect(decoder.failed).toBeNull();
++        decoder.decode(picture4k(9), done);
++        emit(9, 4096, 4096);
++        expect(decoder.failed).toBe('more than 512 MiB of pictures being read back');
++    });
++
+     it('fails when no key frame comes', () => {
+         vi.useFakeTimers();
+         decoder.close();
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index 9263ceb6..f6171f5f 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -7,8 +7,8 @@
+  * its graphics frame (which paces the server), wait for it. So a frame that never comes out of the decoder would
+  * freeze the picture: after `stallMs` without output, or on any decoder error, the decoder fails, which ends the
+  * session with an error. Reconnecting without H.264 is the way out. A server that has the decoders hold more than
+- * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all), or streams to more surfaces than a
+- * session has monitors, fails them the same way.
++ * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all), or read back more than 512 MiB of their
++ * pictures at once, or streams to more surfaces than a session has monitors, fails them the same way.
+  */
+ 
+ export interface H264Rectangle {
+@@ -153,6 +153,8 @@ export class WebCodecsH264Decoder {
+     private readonly retiring = new Set<Surface>();
+     /** The bytes of H.264 in the decoders: the access units of the pending frames. */
+     private pendingBytes = 0;
++    /** The bytes the pictures being read back are read into: the RGBA of their frames' regions. */
++    private readbackBytes = 0;
+     private readonly stallMs: number;
+     private readonly now: () => number;
+     private watchdog: ReturnType<typeof setInterval> | null = null;
+@@ -237,6 +239,7 @@ export class WebCodecsH264Decoder {
+         this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
++        this.readbackBytes = 0;
+     }
+ 
+     /**
+@@ -259,6 +262,15 @@ export class WebCodecsH264Decoder {
+      */
+     private static readonly MAX_PENDING_BYTES = 128 * 1024 * 1024;
+ 
++    /**
++     * The most bytes the pictures being read back may be read into at once: the RGBA of their frames' regions. A
++     * picture is read back as it comes out, while its decoder goes on, so readbacks overlap when pictures come out
++     * faster than they are read. This is two of the largest frames ironrdp-egfx reads back (256 MiB, what its
++     * compositor holds), or four whole 8K pictures (7680x4320, 127 MiB each). Regions read back as their bounding box
++     * take the box as well while it is read, at most twice what they hold.
++     */
++    private static readonly MAX_READBACK_BYTES = 512 * 1024 * 1024;
++
+     private open(surfaceId: number): Surface {
+         const surface: Surface = {
+             decoder: new VideoDecoder({
+@@ -325,9 +337,27 @@ export class WebCodecsH264Decoder {
+             dropped.done(earlier, null);
+         }
+         this.settle(surface, pending);
++        // What the regions are read into: counted before reading the picture allocates it, until it is handed back.
++        const bytes = pending.frame.regions.reduce((sum, r) => sum + (r.right - r.left) * (r.bottom - r.top) * 4, 0);
++        if (this.readbackBytes + bytes > WebCodecsH264Decoder.MAX_READBACK_BYTES) {
++            picture.close();
++            this.fail(
++                `more than ${WebCodecsH264Decoder.MAX_READBACK_BYTES / (1024 * 1024)} MiB of pictures being read back`,
++            );
++            pending.done(id, null, this.failed ?? undefined);
++            return;
++        }
++        this.readbackBytes += bytes;
++        const release = () => {
++            // A failure or close started the count over.
++            if (this.failed === null && !this.closed) {
++                this.readbackBytes -= bytes;
++            }
++        };
+         this.readRegions(picture, pending.frame).then(
+             (pixels) => {
+                 picture.close();
++                release();
+                 if (this.failed !== null || this.closed) {
+                     return;
+                 }
+@@ -342,6 +372,7 @@ export class WebCodecsH264Decoder {
+             },
+             (error) => {
+                 picture.close();
++                release();
+                 this.fail(`reading the picture: ${describe(error)}`);
+                 pending.done(id, null, this.failed ?? undefined);
+             },
+@@ -511,6 +542,7 @@ export class WebCodecsH264Decoder {
+         this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
++        this.readbackBytes = 0;
+         this.options.onFailure?.(reason);
+         for (const { frame, done } of pending) {
+             done(frame.id, null, reason);

@@ -51,6 +51,27 @@ for measurements, checks and remaining live tests.
 | 16 | **fix(svc): send chunked messages without CHANNEL_FLAG_SHOW_PROTOCOL** | Static-channel messages over one chunk (1600 bytes) were flagged `SHOW_PROTOCOL`, which asks the receiver to hand the channel header to the application; Windows' drive redirector doesn't expect that and dropped the channel on the first chunked read response. mstsc sets the flag only for channels opened with `CHANNEL_OPTION_SHOW_PROTOCOL`; chunks now carry only the flags the message asks for. | Not submitted yet |
 | 17 | **perf(web): read H.264 regions that are far apart one by one** | The decoder read a frame's regions back as their bounding box in one call; two small regions in opposite corners made that the whole picture (33 MB for a 4K frame, for eight bytes). When the box holds more than twice what the regions do, each is read on its own, straight into place. | Not submitted yet: builds on patches 8 and 14 |
 
+The release security follow-up also applies patches 43–51 and 53:
+
+| # | Patch | Effect |
+|---|---|---|
+| 43 | Bound H.264 regions | Limit AVC metadata and bound the regions sent to an external decoder. |
+| 44 | Budget queued EGFX work | At most 65,536 waiting commands and 512 MiB of retained commands, access units and completed pixels; constant-time completion membership checks. |
+| 45–46 | Process messages incrementally and bound frame acknowledgements | Avoid a whole-message vector of decoded commands; acknowledge at most 65,536 frames per message. |
+| 47 | Bound browser decoder input | At most 256 pending frames per decoder and 128 MiB of pending access units across decoders. |
+| 48 | Close ended streams and bound decoders | At most 32 active/retiring decoders; surface recreation, deletion and reset end streams. |
+| 49–50 | Bound picture readbacks | At most 512 MiB of requested pixels in concurrent readbacks; iterative rectangle bounds. |
+| 51 | Limit decoder creation rate | Per-surface and aggregate token buckets prevent repeated construction from monopolizing the renderer. |
+| 53 | Complete lifecycle and callback budgets | At most 64 concurrent readbacks, 64 Mi pixels per decoded picture, 128 Mi coded pixels retained across asynchronous readbacks and 256 MiB of decoded pixel events before copying to WASM; close retained pictures on failure/close and ignore late callbacks; immediately deliver stream endings without waiting for another frame; keep the fallback canvas sized to its current rectangle. |
+
+Exceeding a decoder budget ends that session with an error.
+Readback byte accounting covers requested pixel buffers independently of the full decoded pictures retained during
+asynchronous copying. The coded-picture limit is 512 MiB at four bytes per pixel; it is not a total renderer limit.
+The picture, output-buffer, Rust event and command budgets are independently additive; bounded temporary copies and
+browser decoder internals also consume memory, and limits are per session.
+The focused tests use a browser decoder stand-in to cover stalled output, independent streams, cleanup, budget
+boundaries and recovery of budget after work completes.
+
 Each patch carries its own tests where IronRDP has a place for them (`ironrdp-testsuite-core`, the patched crate, the
 web packages' vitest suites), and CI runs them: the web component's on every change (`ci.yml`), the Rust crates' and
 the RDP package's when the series changes and before a release (`ironrdp.yml`). Left out there, each by its exact name:

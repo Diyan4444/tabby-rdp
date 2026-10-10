@@ -1,0 +1,301 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 18:39:43 -0700
+Subject: [PATCH 51/51] fix(web): bound how fast the H.264 decoders open
+
+Since the decoders of surfaces that are gone are closed, a surface that
+is created again starts a new stream in a new decoder: its next frame
+opens one, and the decoder before it closes. A server could have that
+done for every frame. A message of CreateSurface and frame pairs for one
+surface had the session hand out 32,768 frames before what waits for the
+decoder reached its bound (65,536 commands), and WebCodecsH264Decoder
+opened a VideoDecoder, and closed the one before, for each of them in
+one go on the page's thread: 1.4 s in Chrome (software decoding, 44
+microseconds a decoder) for a message of 90 KB on the wire, and as long
+again for the next one. The page froze, and every session in it.
+Opening decoders only at key frames would not help: a server can make
+every frame one.
+
+How fast decoders open is now bounded, for each surface and for the
+session. A surface's decoders may open 16 times in a row, then 4 times a
+second; the session's 128 times in a row, then 32 times a second.
+Servers start a surface's stream again when they resize its monitor, a
+few times in a row at most and not several times a second for long, and
+a session has 16 monitors at most (MS-RDPBCGR 2.2.1.3.6): 128 in a row
+is each of them resized eight times in a row. A decoder opening faster
+than that fails the decoder, which ends the session as a decoder error
+does. At 44 microseconds a decoder, the limits hold the page's thread
+for under 6 ms in a row and under 1.5 ms a second after that.
+
+A surface's count is kept while it matters and let go once its
+allowance is all back, so the counts stay few however many surface ids
+a server goes through.
+---
+ .../src/H264Decoder.test.ts                   |  89 ++++++++++++++
+ .../src/H264Decoder.ts                        | 111 +++++++++++++++++-
+ 2 files changed, 199 insertions(+), 1 deletion(-)
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index aef65ebf..f974fea4 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -575,6 +575,95 @@ describe('WebCodecsH264Decoder', () => {
+         expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
+         expect(done).toHaveBeenLastCalledWith(33, null, 'H.264 for more than 32 surfaces at once');
+     });
++
++    /** A delta frame for `surfaceId` after its stream ended, as when the surface is created again before it. */
++    function afterRecreate(id: number, surfaceId = 1): H264Frame {
++        return { ...frame(id, false, []), surfaceId, endedSurfaces: [surfaceId] };
++    }
++
++    it('opens a decoder again for a surface created again, as often as monitors are resized', () => {
++        // Sixteen in a row, then four a second for a minute.
++        for (let id = 0; id < 16; id++) {
++            decoder.decode(afterRecreate(id), done);
++        }
++        for (let id = 16; id < 256; id++) {
++            clock += 250;
++            decoder.decode(afterRecreate(id), done);
++        }
++        expect(decoder.failed).toBeNull();
++        expect(FakeDecoder.instances.length).toBe(256);
++        expect(FakeDecoder.instances.filter((d) => d.state !== 'closed').length).toBe(1);
++    });
++
++    it('fails when a surface opens decoders faster than that', () => {
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        for (let id = 0; id < 16; id++) {
++            decoder.decode(afterRecreate(id), done);
++        }
++        // A second later, four more.
++        clock += 1000;
++        for (let id = 16; id < 20; id++) {
++            decoder.decode(afterRecreate(id), done);
++        }
++        expect(decoder.failed).toBeNull();
++
++        decoder.decode(afterRecreate(20), done);
++        const reason = 'H.264 decoders opened for surface 1 faster than 16 in a row and 4 a second';
++        expect(failures).toEqual([reason]);
++        expect(done).toHaveBeenLastCalledWith(20, null, reason);
++        expect(FakeDecoder.instances.length).toBe(20);
++        expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
++    });
++
++    it('stops a message that creates a surface again before each of its frames', () => {
++        // The session hands out every frame of a message in one go: 32,768 of them here, each on a new stream.
++        for (let id = 0; id < 32_768; id++) {
++            decoder.decode(afterRecreate(id), done);
++        }
++        expect(decoder.failed).toMatch(/^H\.264 decoders opened for surface 1 faster than/);
++        expect(FakeDecoder.instances.length).toBe(16);
++        expect(done).toHaveBeenCalledTimes(32_768);
++        expect(done).toHaveBeenLastCalledWith(32_767, null, decoder.failed);
++    });
++
++    it('fails when the decoders of all surfaces together open faster than monitors are resized', () => {
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        // A new surface id for each stream, as some servers give each new surface: 128 in a row, then 32 a second.
++        let id = 0;
++        for (; id < 128; id++) {
++            decoder.decode({ ...afterRecreate(id, id), endedSurfaces: id > 0 ? [id - 1] : [] }, done);
++        }
++        clock += 1000;
++        for (; id < 160; id++) {
++            decoder.decode({ ...afterRecreate(id, id), endedSurfaces: [id - 1] }, done);
++        }
++        expect(decoder.failed).toBeNull();
++
++        decoder.decode({ ...afterRecreate(160, 160), endedSurfaces: [159] }, done);
++        expect(failures).toEqual(['H.264 decoders opened faster than 128 in a row and 32 a second']);
++        expect(FakeDecoder.instances.length).toBe(160);
++    });
++
++    it('keeps the count of a surface while it matters, however many surfaces come and go', () => {
++        // Surface 1 opens all it may in a row; 64 other surfaces come and go; surface 1 still may not open another.
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        let id = 0;
++        for (; id < 16; id++) {
++            decoder.decode(afterRecreate(id), done);
++        }
++        for (let surfaceId = 2; surfaceId < 66; surfaceId++, id++) {
++            decoder.decode({ ...afterRecreate(id, surfaceId), endedSurfaces: [surfaceId - 1] }, done);
++        }
++        expect(decoder.failed).toBeNull();
++        decoder.decode(afterRecreate(id), done);
++        expect(failures).toEqual(['H.264 decoders opened for surface 1 faster than 16 in a row and 4 a second']);
++    });
+ });
+ 
+ describe('h264Supported', () => {
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index 04ff439b..2d50ed7d 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -8,7 +8,8 @@
+  * freeze the picture: after `stallMs` without output, or on any decoder error, the decoder fails, which ends the
+  * session with an error. Reconnecting without H.264 is the way out. A server that has the decoders hold more than
+  * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all), or read back more than 512 MiB of their
+- * pictures at once, or streams to more surfaces than a session has monitors, fails them the same way.
++ * pictures at once, or streams to more surfaces than a session has monitors, or starts streams faster than monitors
++ * are added and resized, fails them the same way.
+  */
+ 
+ export interface H264Rectangle {
+@@ -155,6 +156,10 @@ export class WebCodecsH264Decoder {
+     private pendingBytes = 0;
+     /** The bytes the pictures being read back are read into: the RGBA of their frames' regions. */
+     private readbackBytes = 0;
++    /** How fast decoders open, for all surfaces together (see `SESSION_OPENS`). */
++    private readonly opens: Rate;
++    /** How fast decoders open for each surface (see `SURFACE_OPENS`), kept while a surface's count matters. */
++    private readonly surfaceOpens = new Map<number, Rate>();
+     private readonly stallMs: number;
+     private readonly now: () => number;
+     private watchdog: ReturnType<typeof setInterval> | null = null;
+@@ -164,6 +169,7 @@ export class WebCodecsH264Decoder {
+     constructor(private readonly options: WebCodecsH264DecoderOptions = {}) {
+         this.stallMs = options.stallMs ?? 3000;
+         this.now = options.now ?? (() => performance.now());
++        this.opens = new Rate(WebCodecsH264Decoder.SESSION_OPENS, this.now());
+     }
+ 
+     decode(frame: H264Frame, done: H264Done): void {
+@@ -182,6 +188,12 @@ export class WebCodecsH264Decoder {
+                 done(frame.id, null, this.failed ?? undefined);
+                 return;
+             }
++            const tooFast = this.countOpen(frame.surfaceId);
++            if (tooFast !== null) {
++                this.fail(tooFast);
++                done(frame.id, null, this.failed ?? undefined);
++                return;
++            }
+             surface = this.open(frame.surfaceId);
+         }
+         if (surface.needKey && !frame.keyFrame) {
+@@ -249,6 +261,24 @@ export class WebCodecsH264Decoder {
+      */
+     private static readonly MAX_DECODERS = 32;
+ 
++    /**
++     * How fast one surface's decoders may open: 16 in a row, then 4 a second. A decoder opens for a surface's first
++     * frame, and again for its first frame after its stream ended (the surface deleted, created again or destroyed by
++     * a reset), which servers do when they resize its monitor: a few times in a row at most, and not several times a
++     * second for long. Opening a `VideoDecoder` and closing the one before takes the page's thread about 44
++     * microseconds (Chrome, software decoding), so a server that created a surface again before each of its frames
++     * had that done for every frame: 32,768 times for one message of 90 KB on the wire, which froze the page, and
++     * every session in it, for 1.4 s, message after message.
++     */
++    private static readonly SURFACE_OPENS: RateLimit = { inARow: 16, perSecond: 4 };
++
++    /**
++     * How fast decoders may open for all surfaces together: 128 in a row, then 32 a second. That is each of 16
++     * monitors (MS-RDPBCGR 2.2.1.3.6) resized eight times in a row, then twice a second, and opening that many takes
++     * the page's thread under 6 ms, then under 1.5 ms a second.
++     */
++    private static readonly SESSION_OPENS: RateLimit = { inARow: 128, perSecond: 32 };
++
+     /**
+      * The most frames one decoder may hold. A decoder keeps up with its stream, so frames wait in it about as long as
+      * one takes to decode, and the server stops at its unacknowledged frames: 256 is over two seconds of 60 Hz AVC444
+@@ -271,6 +301,37 @@ export class WebCodecsH264Decoder {
+      */
+     private static readonly MAX_READBACK_BYTES = 512 * 1024 * 1024;
+ 
++    /**
++     * Counts a decoder opening for the surface; says why it may not instead, when that is faster than `SURFACE_OPENS`
++     * or `SESSION_OPENS` allow.
++     */
++    private countOpen(surfaceId: number): string | null {
++        const now = this.now();
++        let rate = this.surfaceOpens.get(surfaceId);
++        if (rate === undefined) {
++            if (this.surfaceOpens.size >= WebCodecsH264Decoder.MAX_DECODERS) {
++                // A surface whose rate has all of its allowance back tells nothing: letting it go keeps this to the
++                // surfaces that opened decoders lately, however many ids the server goes through.
++                for (const [id, earlier] of this.surfaceOpens) {
++                    if (earlier.rested(now)) {
++                        this.surfaceOpens.delete(id);
++                    }
++                }
++            }
++            rate = new Rate(WebCodecsH264Decoder.SURFACE_OPENS, now);
++            this.surfaceOpens.set(surfaceId, rate);
++        }
++        if (!rate.take(now)) {
++            const { inARow, perSecond } = WebCodecsH264Decoder.SURFACE_OPENS;
++            return `H.264 decoders opened for surface ${surfaceId} faster than ${inARow} in a row and ${perSecond} a second`;
++        }
++        if (!this.opens.take(now)) {
++            const { inARow, perSecond } = WebCodecsH264Decoder.SESSION_OPENS;
++            return `H.264 decoders opened faster than ${inARow} in a row and ${perSecond} a second`;
++        }
++        return null;
++    }
++
+     private open(surfaceId: number): Surface {
+         const surface: Surface = {
+             decoder: new VideoDecoder({
+@@ -551,6 +612,54 @@ export class WebCodecsH264Decoder {
+     }
+ }
+ 
++/** How often something may happen: `inARow` times in a row, and `perSecond` on average after that. */
++interface RateLimit {
++    inARow: number;
++    perSecond: number;
++}
++
++/**
++ * Counts what happens against a `RateLimit`: each time takes one of an allowance of `inARow`, which comes back at
++ * `perSecond`.
++ */
++class Rate {
++    private allowance: number;
++    private at: number;
++
++    constructor(
++        private readonly limit: RateLimit,
++        now: number,
++    ) {
++        this.allowance = limit.inARow;
++        this.at = now;
++    }
++
++    /** Counts one more time, unless the limit allows none now. */
++    take(now: number): boolean {
++        this.catchUp(now);
++        if (this.allowance < 1) {
++            return false;
++        }
++        this.allowance -= 1;
++        return true;
++    }
++
++    /** Whether all of the allowance is back, as if nothing had been counted. */
++    rested(now: number): boolean {
++        this.catchUp(now);
++        return this.allowance >= this.limit.inARow;
++    }
++
++    private catchUp(now: number): void {
++        // A clock that goes back gives nothing back.
++        if (now > this.at) {
++            const back = ((now - this.at) * this.limit.perSecond) / 1000;
++            this.allowance = Math.min(this.limit.inARow, this.allowance + back);
++            this.at = now;
++        }
++    }
++}
++
+ function closeDecoder(decoder: VideoDecoder): void {
+     if (decoder.state !== 'closed') {
+         try {

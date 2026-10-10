@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 16:46:40 -0700
+Subject: [PATCH 46/51] fix(egfx): bound the frames one message carries
+
+GraphicsPipelineClient::process returns the responses to the PDUs of a
+message together, once all of them are processed, and each EndFrame has
+one: a FrameAcknowledge, which the DVC layer then encodes into a
+message of its own to send. An EndFrame takes 12 bytes, and ZGFX
+expands a few KB on the wire into a message of up to 256 MiB when its
+PDUs repeat. Processing the PDUs of a message as they are decoded keeps
+it from piling up decoded PDUs, but not acknowledgements: a message of
+EndFrame PDUs had the client build 22 million of them, in the
+WebAssembly memory that all of a page's sessions share. In a native
+test, processing it peaked at 2.3 GB over 2.4 s, and with its
+acknowledgements encoded to be sent at 4.3 GB over 4.8 s (the copies of
+the message itself take 0.8 GB).
+
+A message now ends at most 65,536 frames: the EndFrame past that is not
+processed but fails the message, which ends the session. Servers send
+a frame in a message (StartFrame, the frame's commands, EndFrame), or a
+few, and pace themselves by the acknowledgements: 65,536 is far more
+than any sends at once, and as many commands as may wait for the
+external H.264 decoder. The limit is per message; a session
+acknowledges as many frames as its server sends. In the same test, a
+message at the limit takes 13 ms and about 15 MB, its encoded
+acknowledgements included, and the message of 22 million frames now
+fails after 0.1 s, at 0.8 GB.
+---
+ crates/ironrdp-egfx/src/client.rs             | 23 +++++++++++-
+ .../tests/egfx/client.rs                      | 35 +++++++++++++++++++
+ 2 files changed, 57 insertions(+), 1 deletion(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 98ada52d..c6439cef 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -83,3 +83,12 @@
++/// The most frames one message may end.
++///
++/// Each `EndFrame` is acknowledged, and `process` returns the acknowledgements of a message together, once all of it is
++/// processed: a message holds up to 256 MiB of PDUs, and of 12-byte `EndFrame`s that is 22 million acknowledgements,
++/// gigabytes. Servers send a frame in a message, or a few, and pace themselves by the acknowledgements: 65,536 is far
++/// more than any sends at once, and as many commands as may wait for the external H.264 decoder
++/// ([`MAX_QUEUED_COMMANDS`]).
++const MAX_FRAMES_PER_MESSAGE: usize = 65_536;
++
+ // ============================================================================
+ // Surface Management
+ // ============================================================================
+@@ -469,6 +478,9 @@ enum ClientState {
+ /// This client handles capability negotiation, surface tracking,
+ /// H.264 AVC420 and RFX Progressive decode, and frame acknowledgment per [MS-RDPEGFX].
+ ///
++/// The frames a message ends are acknowledged in what `process` returns for it, and a message that ends more than
++/// 65,536 frames fails: servers send one or a few in a message.
++///
+ /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+ pub struct GraphicsPipelineClient {
+     handler: Box<dyn GraphicsPipelineHandler>,
+@@ -1621,11 +1633,20 @@ impl DvcProcessor for GraphicsPipelineClient {
+ 
+         // Process each PDU as it is decoded, not all decoded first: a payload holds up to 256 MiB of PDUs, and decoded
+         // they take several times that (the smallest PDU is 10 bytes, a decoded one 40 or more). In order behind any
+-        // H.264 frame still being decoded outside, checking what waits as it grows.
++        // H.264 frame still being decoded outside, checking what waits as it grows. The responses are returned
++        // together, so the frames whose ends are acknowledged are bounded too.
+         let mut responses = Vec::new();
++        let mut frames = 0usize;
+         let mut cursor = ReadCursor::new(decompressed.as_slice());
+         while !cursor.is_empty() {
+             let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
++            if matches!(pdu, GfxPdu::EndFrame(_)) {
++                frames = frames.saturating_add(1);
++                if MAX_FRAMES_PER_MESSAGE < frames {
++                    warn!(frames, "More frames in one message than servers send");
++                    return Err(pdu_other_err!("too many frames in one message"));
++                }
++            }
+             self.enqueue(pdu)?;
+             responses.extend(self.process_queue()?);
+             self.check_held()?;
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index ca033b42..dd310713 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -104,6 +104,16 @@ fn decode_caps_from_message(msg: &ironrdp_dvc::DvcMessage) -> CapabilitiesAdvert
+     }
+ }
+ 
++/// The frame a response acknowledges.
++fn acknowledged_frame(msg: &ironrdp_dvc::DvcMessage) -> u32 {
++    let encoded = encode_vec(msg.as_ref()).expect("encode should succeed");
++    let mut cursor = ReadCursor::new(&encoded);
++    match GfxPdu::decode(&mut cursor).expect("decode should succeed") {
++        GfxPdu::FrameAcknowledge(ack) => ack.frame_id,
++        other => panic!("expected FrameAcknowledge, got {other:?}"),
++    }
++}
++
+ /// Create a client, send CapabilitiesConfirm V8 through process(), and create a surface.
+ fn setup_active_client_with_surface(
+     decoder: Option<Box<dyn H264Decoder>>,
+@@ -711,6 +721,31 @@ fn client_tracks_frame_count_across_multiple_frames() {
+     assert_eq!(client.total_frames_decoded(), 5);
+ }
+ 
++#[test]
++fn client_acknowledges_each_frame_of_a_message() {
++    // Up to 65,536 frames a message, counted per message.
++    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
++    let frames: Vec<u8> = (0..65_536)
++        .flat_map(|frame_id| encode_pdu(&GfxPdu::EndFrame(EndFramePdu { frame_id })))
++        .collect();
++    for message in 1..=2 {
++        let responses = client.process(0, &wrap_uncompressed(&frames)).expect("frames");
++        let acknowledged: Vec<u32> = responses.iter().map(acknowledged_frame).collect();
++        assert_eq!(acknowledged, (0..65_536).collect::<Vec<u32>>());
++        assert_eq!(client.total_frames_decoded(), message * 65_536);
++    }
++}
++
++#[test]
++fn client_refuses_a_message_of_more_frames_than_servers_send() {
++    // A message's acknowledgements, one a frame, are returned together: a message of 12-byte EndFrame PDUs would
++    // take tens of millions of them (up to 256 MiB of PDUs a message). Refused at the frame past the limit.
++    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
++    let message = encode_pdu(&GfxPdu::EndFrame(EndFramePdu { frame_id: 1 })).repeat(65_537);
++    assert!(client.process(0, &wrap_uncompressed(&message)).is_err());
++    assert!(client.total_frames_decoded() <= 65_536);
++}
++
+ // ============================================================================
+ // Tests: Close
+ // ============================================================================
