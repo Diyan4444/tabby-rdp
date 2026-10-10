@@ -164,6 +164,7 @@ system keychain doesn't answer (Linux without an unlocked keyring), the keychain
 | [desk](suites/desk.ts) | Logins in the shared session, `desk`, requests without its key ignored, typing in the desktop terminal, RDP and SSH disconnects keeping the session, turning `desk` off and on. |
 | [resize](suites/resize.ts) | Resize to fit, reconnect at the new size, keep the resolution, Retina with GNOME's scale. |
 | [keyboard](suites/keyboard.ts) | Tabby shortcuts kept off the covered console, ⌘ as Ctrl, no stuck keys, the shortcuts that stay Tabby's. |
+| [focus](suites/focus.ts) | A desktop next to a terminal: the pointer over it (also in a maximized pane's margin) leaves the keyboard in the terminal, a click hands it over, leaving its tab for Settings takes it away, and leaving by the tab's shortcut leaves no modifier held on the remote (through the terminal `desk` opens). |
 | [actions](suites/actions.ts) | Send keys (also from the console), ⌃⌘ with a key as Super with it, View only (label, mouse, keys, across a reconnect), screenshots to Downloads and the clipboard, actual size with a fixed resolution. |
 | [clipboard](suites/clipboard.ts) | Text both ways, through the terminal `desk` opens. |
 | [files](suites/files.ts) | Files both ways with Files (Nautilus): copy there and save here; drop here and paste there. |

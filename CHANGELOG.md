@@ -10,7 +10,20 @@ Local release candidate; not published on npm or as a GitHub release.
 - **Instance lifecycle checks** cover independent memories, cleanup, reconnects and collection after disposal,
   with a browser smoke test and a live two-desktop isolation suite.
 
+**Security** (a review of 0.5.3-rc.1; all of these were in 0.5.2 too)
+- **Moving the pointer over a desktop no longer gives it the keyboard and the clipboard.** IronRDP's canvas took the
+  focus without a click, so keys typed into the terminal next to it (a password at a prompt that doesn't echo
+  included) and this computer's clipboard went to that remote server; also from behind a maximized pane. A desktop
+  now takes the keyboard only in the pane in front, and gives it back to where it came from otherwise.
+- **A desktop lets go of the keyboard when its tab is left by keyboard** for one that takes no focus (Settings, the
+  welcome tab): it went on taking the keys typed and the clipboard copied, view only included. Keys that reach a
+  desktop not in front now stop at the plugin. The shortcut's modifier, still down as the tab goes, is let go of on
+  the remote too, whichever tab is left for: its keyup goes where the user went, and IronRDP lets go of nothing as its
+  canvas loses the focus, so the modifier stayed held there until it was pressed again (a held Alt has the next key
+  open a menu on Windows).
+
 **Fixed**
+- **Removing a profile without an address no longer forgets what was saved for 127.0.0.1:3389.**
 - **The architecture document gives the update check's real limit** (4 MB for the version catalog, not 256 KB).
 - **Tabby's window no longer crashes when a desktop reached directly is refused after TLS** (#69): on Linux, the
   first connection to any desktop in a remote desktop tab (a profile, quick connect, an .rdp file), whose certificate
