@@ -11,6 +11,7 @@ Local release candidate; not published on npm or as a GitHub release.
   with a browser smoke test and a live two-desktop isolation suite.
 
 **Fixed**
+- **Removing a profile without an address no longer forgets what was saved for 127.0.0.1:3389.**
 - **Tabby's window no longer crashes when a desktop reached directly is refused after TLS** (#69): on Linux, the
   first connection to any desktop in a remote desktop tab (a profile, quick connect, an .rdp file), whose certificate
   is asked about before anything of the sign-in goes to it, closed the window and left Tabby running in the

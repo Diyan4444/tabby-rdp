@@ -1062,6 +1062,39 @@ test('a direct profile\'s removal, or its move behind an SSH profile, forgets it
     assert.deepEqual([...keychain.keys()].sort(), ['alice@h:22#10.0.0.5:3389', 'rdp#10.0.0.50:3389'])
 })
 
+test('a saved profile\'s address cleared forgets what was saved for its desktop; a profile without an address forgets nothing of another\'s when removed', async () => {
+    // The security review's refuted finding: no attacker gains by it, but the editor returned before forgetting when
+    // the address was cleared, and removing a profile without an address forgot 127.0.0.1:3389's.
+    keychain.clear()
+    const { RDPProfileSettingsComponent, RDPProfilesService } = require('../../dist/rdpProfile.js')
+    const { svc, store } = service({ trustedCertificates: [{ desktop: 'rdp#10.0.0.5:3389', sha256: A }, { desktop: 'rdp#127.0.0.1:3389', sha256: B }] })
+    const injector = { get: () => svc }
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setTimeout(resolve, 5)) }
+    const keys = ['rdp#10.0.0.5:3389', 'rdp#10.0.0.5:3389@gateway#gw.example:443', 'rdp#127.0.0.1:3389']
+    for (const key of keys) {
+        await signin.saveCredentials(key, { username: 'u', password: 'p' })
+    }
+    const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
+    const cleared = (more: Record<string, unknown>) => {
+        settings.profile = { name: 'Office', options: { host: '', port: 3389, username: 'u', domain: '', account: '', via: '', gateway: '' }, ...more }
+        settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', via: '', gateway: 'gw.example' }
+        settings.save()
+        return settle()
+    }
+    // The type's or a group's defaults (no id of their own): an empty address there is useful, and forgets nothing.
+    await cleared({ id: '' })
+    assert.deepEqual([...keychain.keys()].sort(), keys.slice().sort())
+    // A saved profile's: its desktop's passwords, through any gateway, and its certificate go.
+    await cleared({ id: 'rdp:custom:office' })
+    assert.deepEqual([...keychain.keys()], ['rdp#127.0.0.1:3389'])
+    assert.deepEqual(store.trustedCertificates, [{ desktop: 'rdp#127.0.0.1:3389', sha256: B }])
+    // Removed without an address: 127.0.0.1:3389's stay.
+    new RDPProfilesService(injector, { save () { } }).deleteProfile({ name: 'Blank', options: { host: '', port: 3389, via: '' } })
+    await settle()
+    assert.deepEqual([...keychain.keys()], ['rdp#127.0.0.1:3389'])
+    assert.deepEqual(store.trustedCertificates, [{ desktop: 'rdp#127.0.0.1:3389', sha256: B }])
+})
+
 test('profiles imported before imports had an account of their own ask now; profiles made otherwise keep what their group gives them', () => {
     // As 0.5.0 and 0.3.0 imported them (the desktop icon, a domain, an empty via, nothing the import didn't set).
     const imported05 = { type: 'rdp', name: 'office', icon: 'fas fa-desktop', group: 'g1', options: { host: 'pc.example', port: 3389, kind: 'windows', username: 'alice', domain: '', via: '', gateway: 'gw.example', gatewayAccount: '' } }
