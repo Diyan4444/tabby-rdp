@@ -327,7 +327,16 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             o.gateway = gatewayText
         }
         const { id, account, via, gateway } = this.before
-        if (!id || !o.host) {
+        if (!id) {
+            return
+        }
+        if (!o.host) {
+            // A saved profile's address cleared: the desktop it led to is gone from it, as when the profile is removed
+            // (see RDPProfilesService.deleteProfile). Not for the type's or a group's defaults, which have no id of
+            // their own (an empty address is useful there): profiles that name that address keep what is saved for it.
+            if (!via && this.profile.id) {
+                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`).catch(() => null)
+            }
             return
         }
         if ((o.via ?? '') !== via) {
@@ -436,8 +445,9 @@ export class RDPProfilesService extends QuickConnectProfileProvider<RDPProfile> 
 
     override deleteProfile (profile: RDPProfile): void {
         // A direct desktop's saved passwords (through any gateway: one it went through before too) and certificate are
-        // its own; one behind a host shares them with that host's desktop at the same address.
-        if (!profile.options.via) {
+        // its own; one behind a host shares them with that host's desktop at the same address. A profile without an
+        // address of its own leads to no desktop of its own: desktopIdOf would name 127.0.0.1:3389 for it.
+        if (!profile.options.via && configText(profile.options.host)) {
             this.injector.get(RemoteDesktopService).forgetDesktop(desktopIdOf(profile.options), true, `"${profile.name}"`).catch(() => null)
         }
     }
