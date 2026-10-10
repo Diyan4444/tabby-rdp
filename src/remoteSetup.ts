@@ -39,7 +39,7 @@ export interface RemoteDesktopEndpoint {
 // with RD_OK, also an RD_XRDP line when xrdp runs besides GNOME, `RD_CLIENTS N`, the clients connected already,
 // `RD_TAKEN_OVER <client> <seconds ago>` after a recent take-over, `RD_DESK <key>` with 'desk' on, and an `RD_NOTE <text>`
 // for each rc file it couldn't change.
-// The RDP password is generated once per remote user and kept in a 0600 file; grd reads credentials only
+// The RDP password is generated once per remote user and machine and kept in a 0600 file; grd reads credentials only
 // at startup, so grd is restarted only when its configuration actually changes (that drops live sessions).
 // Secrets never go on a command line, which any user there can see in the process list, except where grdctl can't
 // read the password from its input: then it is an argument once, when the credentials are set.
@@ -92,6 +92,17 @@ if [ -d "$OLD" ] && [ ! -e "$D" ]; then
     mv "$OLD" "$D" || fail "could not move $OLD to $D"
 fi
 mkdir -p "$D" && chmod 700 "$D" || fail "could not create $D"
+# A home can be mounted on several machines. Never reuse the old home-wide RDP password or TLS key.
+# Machine ids are fixed-format path components; a missing, uninitialized or malformed id is an error.
+MACHINE=$(cat /etc/machine-id 2>/dev/null)
+case $MACHINE in ''|*[!0-9a-f]*|00000000000000000000000000000000) fail "a valid /etc/machine-id is required for private RDP credentials" ;; esac
+[ ${"$"}{#MACHINE} = 32 ] || fail "a valid /etc/machine-id is required for private RDP credentials"
+SECRETS="$D/hosts/$MACHINE"
+for private_dir in "$D/hosts" "$SECRETS"; do
+    [ ! -L "$private_dir" ] || fail "credential directory must not be a symbolic link"
+    if [ ! -d "$private_dir" ]; then ( umask 077; mkdir "$private_dir" ) 2>/dev/null || [ -d "$private_dir" ] || fail "could not create credential directory"; fi
+    [ -O "$private_dir" ] && chmod 700 "$private_dir" || fail "credential directory must belong to this user"
+done
 # The login hook ('desk'): this one line in ~/.bashrc and ~/.zshrc, added and removed exactly, so that a line of the
 # user's own that only looks like it stays.
 HOOK='[ -f "$HOME/.local/share/tabby-rdp/login.sh" ] && . "$HOME/.local/share/tabby-rdp/login.sh"  # tabby-rdp'
@@ -135,14 +146,37 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 rm -f "$OLD/login.sh"
 NEW_CERT=0
-if [ ! -s "$D/tls.key" ]; then
-    openssl req -new -newkey rsa:3072 -days 3650 -nodes -x509 -subj "/CN=$(hostname)" \
-        -keyout "$D/tls.key" -out "$D/tls.crt" >/dev/null 2>&1 || fail "could not create a TLS certificate"
+# Serialize the first setup so concurrent panes see the same key pair and password.
+i=0
+until mkdir "$SECRETS/setup.lock" 2>/dev/null; do
+    i=$((i+1)); [ $i -lt 100 ] || fail "credential setup is busy; check $SECRETS/setup.lock if a previous setup was interrupted"
+    sleep 0.1
+done
+trap 'rmdir "$SECRETS/setup.lock" 2>/dev/null' 0
+trap 'exit 1' HUP INT TERM
+for secret in tls.key tls.crt rdp-password; do
+    [ ! -L "$SECRETS/$secret" ] || fail "credential file must not be a symbolic link"
+    if [ -e "$SECRETS/$secret" ]; then
+        [ -f "$SECRETS/$secret" ] && [ -O "$SECRETS/$secret" ] && chmod 600 "$SECRETS/$secret" || fail "credential file must belong to this user"
+    fi
+done
+if [ ! -s "$SECRETS/tls.key" ] || [ ! -s "$SECRETS/tls.crt" ]; then
+    ( umask 077; openssl req -new -newkey rsa:3072 -days 3650 -nodes -x509 -subj "/CN=$(hostname)" \
+        -keyout "$SECRETS/tls.key" -out "$SECRETS/tls.crt" >/dev/null 2>&1 ) || fail "could not create a TLS certificate"
     NEW_CERT=1
 fi
 # The plugin accepts only this certificate on grd's port.
-CERT=$(openssl x509 -in "$D/tls.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/^[^=]*=//')
-[ -n "$CERT" ] || fail "could not read the TLS certificate $D/tls.crt (openssl x509)"
+CERT=$(openssl x509 -in "$SECRETS/tls.crt" -noout -fingerprint -sha256 2>/dev/null | sed 's/^[^=]*=//')
+[ -n "$CERT" ] || fail "could not read the TLS certificate $SECRETS/tls.crt (openssl x509)"
+if [ ! -s "$SECRETS/rdp-password" ]; then
+    ( umask 077; od -An -N18 -tx1 /dev/urandom | tr -d ' \n' > "$SECRETS/rdp-password" ) || fail "could not create credentials"
+fi
+RD_USER=tabby
+RD_PASS=$(cat "$SECRETS/rdp-password")
+case $RD_PASS in ''|*[!0-9a-f]*) fail "invalid stored RDP password" ;; esac
+[ ${"$"}{#RD_PASS} = 36 ] || fail "invalid stored RDP password"
+rmdir "$SECRETS/setup.lock" || fail "could not release credential setup lock"
+trap - 0 HUP INT TERM
 # 'desk' support (setting, off by default): interactive SSH logins start inside a shareable session (trd-pty,
 # or tmux), so 'desk' can attach this exact console to a terminal on the desktop. Rewritten on every connect;
 # opt out per login with TABBY_NO_SESSION=1. When the setting is off, the hook and helpers are removed.
@@ -248,12 +282,6 @@ else
     # Sessions already running keep going; new logins are plain again.
     rm -f "$D/login.sh" "$D/tmux.conf" "$D/backend" "$D/bin/desk" "$D/bin/trd-pty" "$D/desk-key"
 fi
-if [ ! -s "$D/rdp-password" ]; then
-    ( umask 077; od -An -N18 -tx1 /dev/urandom | tr -d ' \n' > "$D/rdp-password" ) || fail "could not create credentials"
-fi
-RD_USER=tabby
-RD_PASS=$(cat "$D/rdp-password")
-
 STATUS=$(grdctl --headless status --show-credentials 2>/dev/null)
 TAB=$(printf '\t') NL='
 '
@@ -264,8 +292,8 @@ g () { grdctl --headless rdp "$@" >/dev/null 2>&1; }
 RESTART=0
 # grd reads the certificate at startup: a new one at the same path needs a restart too, or grd would keep serving
 # the old one, which the plugin would then refuse.
-if [ $NEW_CERT = 1 ] || ! has "TLS key: $D/tls.key" || ! has "TLS certificate: $D/tls.crt"; then
-    g set-tls-key "$D/tls.key" && g set-tls-cert "$D/tls.crt" || fail "grdctl could not set the TLS certificate"
+if [ $NEW_CERT = 1 ] || ! has "TLS key: $SECRETS/tls.key" || ! has "TLS certificate: $SECRETS/tls.crt"; then
+    g set-tls-key "$SECRETS/tls.key" && g set-tls-cert "$SECRETS/tls.crt" || fail "grdctl could not set the TLS certificate"
     RESTART=1
 fi
 if ! has "View-only: no"; then g disable-view-only || fail "grdctl could not disable view-only"; RESTART=1; fi
