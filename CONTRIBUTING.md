@@ -140,6 +140,12 @@ set to require two-factor authentication and disallow tokens.
 
 ## Actions
 
+The internal-name check receives `INTERNAL_NAMES` only on pushes to protected branches. Pull requests and
+unprotected branches skip that job. Keep the release and main branches protected; the check reports file names and
+line numbers, and removes its temporary pattern and match files when it exits. This workflow condition limits
+routine exposure, but anyone permitted to edit workflows on a branch can change it: restrict repository write
+access, and use an environment secret with protected deployment branches if writers are not all trusted.
+
 Linux jobs use `ubuntu-24.04` so changes to GitHub's `ubuntu-latest` alias do not silently move CI or publication
 to a new Ubuntu release. Upgrade the runner version deliberately and validate the workflows before merging. The
 IronRDP rebuild remains on an Apple Silicon Mac to match the committed build.

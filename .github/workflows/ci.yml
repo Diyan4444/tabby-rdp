@@ -121,19 +121,23 @@ jobs:
 
   names:
     name: No internal names
+    # Never inject private patterns into a pull request or an unprotected branch run.
+    if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_protected
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The maintainers' private host and domain names, one extended regex per line, in the repository secret
-      # INTERNAL_NAMES (not in the repository, where they would be what it keeps out). Skipped without it, as for
-      # pull requests from forks, which don't get secrets.
+      # INTERNAL_NAMES (not in the repository, where they would be what it keeps out). The job runs only after a
+      # push to a protected branch; pull requests and unprotected branch pushes never receive this secret.
       - name: Check
         env:
           INTERNAL_NAMES: ${{ secrets.INTERNAL_NAMES }}
         run: |
           if [ -z "$INTERNAL_NAMES" ]; then echo "INTERNAL_NAMES is not set: skipped"; exit 0; fi
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/names" "$RUNNER_TEMP/hits"' EXIT
           printf '%s\n' "$INTERNAL_NAMES" | sed '/^[[:space:]]*$/d' > "$RUNNER_TEMP/names"
           # vendor/ is IronRDP's build: its base64 data matches short names by chance.
           if git ls-files -z | grep -zv '^vendor/' | xargs -0 grep -n -I -i -E -f "$RUNNER_TEMP/names" > "$RUNNER_TEMP/hits"; then
