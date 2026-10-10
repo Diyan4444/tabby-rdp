@@ -305,7 +305,7 @@ test('a question that comes for a desktop in a pane that isn\'t in front leaves 
     svc.connect = async () => { }
     // The user types in a terminal in front; the desktop's pane is another tab (Tabby keeps it in the page, off
     // screen), or the other pane of a split: its layer shows over that pane all the same.
-    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject() })
+    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
     const front = pane('ssh')
     const back = pane('rdp')
     app.tabs = [front, back]
@@ -439,7 +439,7 @@ test('Tabby focusing a desktop\'s pane, and the user in another pane by the time
     const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
     const { svc, app } = harness({ key: 'alice@a:22', label: 'a', exec: async () => '' })
     svc.connect = async () => { }
-    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject() })
+    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
     const front = pane('ssh')
     const back = pane('rdp')
     app.tabs = [front, back]
@@ -480,6 +480,194 @@ test('keys from a menu: the desktop stops asking for the keyboard once the user 
     assert.equal(await svc.takeKeyboard(pane), false)
     assert.deepEqual(attempts, [1])
     assert.match(s.log.at(-1)!, /did not take the keyboard/)
+})
+
+/**
+ * IronRDP's component on a desktop's layer: its canvas in its shadow root, which takes the focus as the pointer passes
+ * over it. With the canvas focused the page says the component has the focus, as a browser does.
+ */
+function ironRemoteDesktop (session: any) {
+    const page = (globalThis as any).document
+    const host: any = new FakeElement('iron-remote-desktop')
+    const canvas: any = new FakeElement('canvas')
+    host.shadowRoot = { activeElement: null }
+    canvas.focus = () => { host.shadowRoot.activeElement = canvas; page.activeElement = host }
+    canvas.blur = () => { host.shadowRoot.activeElement = null; host.blur() }
+    session.host.appendChild(host)
+    return { host, canvas }
+}
+
+test('the pointer passing over a desktop in a pane the user isn\'t in leaves the keyboard where it was (security review, finding 7)', async t => {
+    const front = { on: false }
+    const session = layer(t, front)
+    session.visible = true
+    session.focusDesktop = () => assert.fail('the desktop took the keyboard')
+    const { host, canvas } = ironRemoteDesktop(session)
+    const page = (globalThis as any).document
+    const typing = new FakeElement('textarea')
+    // IronRDP's `mouseenter`: the canvas takes the focus, and the page says where it came from.
+    const hover = (from: unknown) => {
+        canvas.focus()
+        session.reclaimFocus({ target: host, relatedTarget: from })
+    }
+    // From the terminal the user types in: back there.
+    typing.focus()
+    hover(typing)
+    assert.equal(page.activeElement, typing)
+    assert.equal(session.holdsFocus(), false)
+    // From nowhere, or from somewhere gone meanwhile: nowhere.
+    hover(null)
+    assert.equal(page.activeElement, page.body)
+    assert.equal(host.shadowRoot.activeElement, null)
+    hover(Object.assign(new FakeElement('textarea'), { isConnected: false }))
+    assert.equal(page.activeElement, page.body)
+    // In the pane the user is in, the desktop keeps it.
+    front.on = true
+    typing.focus()
+    hover(typing)
+    assert.equal(page.activeElement, host)
+    assert.equal(session.holdsFocus(), true)
+    await new Promise(resolve => setTimeout(resolve, 5))
+})
+
+test('a desktop that has the keyboard as the user leaves its pane by keyboard lets go of it, and one behind a maximized pane takes none (security review, findings 7 and 8)', async t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const { Subject } = require('rxjs')
+    const { specOf } = require('../../dist/desktops.js')
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const { svc, app } = harness({ key: 'alice@a:22', label: 'a', exec: async () => '' })
+    svc.connect = async () => { }
+    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
+    const terminal = pane('ssh')
+    const back = pane('rdp')
+    const typing = new FakeElement('textarea')
+    terminal.element.nativeElement.appendChild(typing)
+    app.tabs = [terminal, back]
+    app.activeTab = back
+    await svc.showDesktop(back, undefined, { target: { key: 'rdp', label: '10.0.0.5:3389', direct: specOf({ host: '10.0.0.5', name: 'Office PC' }), isOpen: () => true } })
+    await wait(5)
+    const session = svc.sessions.get(back)
+    session.focusDesktop = () => { }
+    const { host, canvas } = ironRemoteDesktop(session)
+    // Ctrl+Tab to Settings, which takes no focus: Tabby says the desktop's pane is blurred before it says which tab is
+    // active. The desktop lets go a moment later.
+    canvas.focus()
+    back.blurred$.next()
+    app.activeTab = { title: 'Settings' }
+    await wait(5)
+    assert.equal(page.body, (globalThis as any).document.activeElement)
+    assert.equal(host.shadowRoot.activeElement, null)
+    // Blurred while it stays the pane the user is in (Tabby selecting the tab it is in again): it keeps the keyboard.
+    app.activeTab = back
+    canvas.focus()
+    back.blurred$.next()
+    await wait(5)
+    assert.equal((globalThis as any).document.activeElement, host)
+    // Behind a pane maximized over it, where it shows nearly transparent in the margins: a pointer passing over it
+    // there hands the keyboard back.
+    svc.splitOf = () => ({ getAllTabs: () => [terminal, back], getMaximizedTab: () => terminal })
+    typing.focus()
+    canvas.focus()
+    session.reclaimFocus({ target: host, relatedTarget: typing })
+    assert.equal((globalThis as any).document.activeElement, typing)
+    // Not maximized any more: in the pane the user is in, it keeps it.
+    svc.splitOf = () => ({ getAllTabs: () => [terminal, back], getMaximizedTab: () => null })
+    canvas.focus()
+    session.reclaimFocus({ target: host, relatedTarget: typing })
+    assert.equal((globalThis as any).document.activeElement, host)
+    svc.disconnect(back)
+})
+
+test('a modifier held on a desktop as the user leaves its pane by keyboard is let go of on the remote (security review, finding 8)', async t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const { Subject } = require('rxjs')
+    const { specOf } = require('../../dist/desktops.js')
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const { svc, app } = harness({ key: 'alice@a:22', label: 'a', exec: async () => '' })
+    svc.connect = async () => { }
+    const pane = (type: string) => ({ profile: { type }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
+    const terminal = pane('ssh')
+    const back = pane('rdp')
+    const other = pane('rdp')
+    const typing = new FakeElement('textarea')
+    terminal.element.nativeElement.appendChild(typing)
+    app.tabs = [terminal, back]
+    app.activeTab = back
+    const target = (host: string) => ({ key: 'rdp', label: `${host}:3389`, direct: specOf({ host, name: host }), isOpen: () => true })
+    await svc.showDesktop(back, undefined, { target: target('10.0.0.5') })
+    await svc.showDesktop(other, undefined, { target: target('10.0.0.6') })
+    await wait(5)
+    // What IronRDP's component is sent for each remote: it takes a key sent this way whether or not it has the focus.
+    const sent = new Map<unknown, string[]>()
+    const KeyboardEvent = (globalThis as any).KeyboardEvent
+    ;(globalThis as any).KeyboardEvent = class { constructor (readonly type: string, init: object) { Object.assign(this, init) } }
+    t.after(() => { (globalThis as any).KeyboardEvent = KeyboardEvent })
+    for (const p of [back, other]) {
+        const session = svc.sessions.get(p)
+        session.focusDesktop = () => { }
+        session.state = 'connected'
+        session.visible = true
+        sent.set(p, [])
+        session.ui = { sendKeyboardEvent: (event: { type: string, code: string }) => sent.get(p)!.push(`${event.type} ${event.code}`) }
+    }
+    const session = svc.sessions.get(back)
+    const { host, canvas } = ironRemoteDesktop(session)
+    // Ctrl+Tab to Settings: Ctrl went to the remote (IronRDP's own listener sent it; the router noted it, as it notes
+    // every key the desktop in front gets), Tab was Tabby's. Settings takes no focus, so the desktop lets go of the
+    // keyboard a moment later, and Ctrl's keyup, coming after that, goes nowhere: the desktop lets go of Ctrl itself.
+    canvas.focus()
+    svc.broadcastKey(back, 'keydown', { key: 'Control', code: 'ControlLeft', location: 1 })
+    assert.deepEqual([...session.keysDown.keys()], ['ControlLeft'])
+    back.blurred$.next()
+    app.activeTab = { title: 'Settings' }
+    await wait(5)
+    assert.equal((globalThis as any).document.activeElement, page.body)
+    assert.deepEqual(sent.get(back), ['keyup ControlLeft'])
+    assert.equal(session.keysDown.size, 0)
+    // Back on the tab, and Ctrl+Tab again to a terminal's tab, which takes the focus itself, before the desktop lets go
+    // (Tabby says the pane is blurred before it says which tab is active, and the terminal focuses on that): Ctrl's keyup
+    // goes to the terminal. The desktop lets go of Ctrl all the same.
+    sent.get(back)!.length = 0
+    app.activeTab = back
+    canvas.focus()
+    svc.broadcastKey(back, 'keydown', { key: 'Control', code: 'ControlLeft', location: 1 })
+    back.blurred$.next()
+    app.activeTab = terminal
+    typing.focus()
+    await wait(5)
+    assert.equal((globalThis as any).document.activeElement, typing)
+    assert.deepEqual(sent.get(back), ['keyup ControlLeft'])
+    assert.equal(session.keysDown.size, 0)
+    // Blurred while it stays the pane the user is in (Tabby selecting the tab it is in again): nothing is let go of.
+    app.activeTab = back
+    canvas.focus()
+    svc.broadcastKey(back, 'keydown', { key: 'Shift', code: 'ShiftLeft', location: 1 })
+    back.blurred$.next()
+    await wait(5)
+    assert.equal((globalThis as any).document.activeElement, host)
+    assert.deepEqual([...session.keysDown.keys()], ['ShiftLeft'])
+    assert.deepEqual(sent.get(back), ['keyup ControlLeft'])
+    svc.broadcastKey(back, 'keyup', { key: 'Shift', code: 'ShiftLeft', location: 1 })
+    // Typing into all the desktops of a split: the other desktop holds a copy of the modifier, and gets no copy of its
+    // keyup once the desktop in front has lost the keyboard. Every pane of the tab is left, so it lets go of its copy.
+    const split = { getAllTabs: () => [back, other], getMaximizedTab: () => null }
+    svc.splitOf = () => split
+    svc.setBroadcast(back, true)
+    sent.get(back)!.length = 0
+    svc.broadcastKey(back, 'keydown', { key: 'Alt', code: 'AltLeft', location: 1 })
+    assert.deepEqual(sent.get(other), ['keydown AltLeft'])
+    assert.deepEqual([...svc.sessions.get(other).keysDown.keys()], ['AltLeft'])
+    back.blurred$.next()
+    other.blurred$.next()
+    app.activeTab = { title: 'Settings' }
+    await wait(5)
+    assert.deepEqual(sent.get(back), ['keyup AltLeft'])
+    assert.deepEqual(sent.get(other), ['keydown AltLeft', 'keyup AltLeft'])
+    assert.equal(session.keysDown.size + svc.sessions.get(other).keysDown.size, 0)
+    svc.disconnect(back)
+    svc.disconnect(other)
 })
 
 // ---- what setups say about desk's key ---------------------------------------------------------------------------------

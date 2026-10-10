@@ -119,7 +119,18 @@ export class DesktopKeyboard {
     private route (event: KeyboardEvent): void {
         const pane = this.startedOn.has(event) ? this.startedOn.get(event) : this.coveredPane()
         const focused = document.activeElement
-        if (!pane || focused?.tagName !== 'IRON-REMOTE-DESKTOP' || !pane.element.nativeElement.contains(focused)) {
+        if (focused?.tagName !== 'IRON-REMOTE-DESKTOP') {
+            return
+        }
+        if (!pane || !pane.element.nativeElement.contains(focused)) {
+            // A desktop has the focus though its pane isn't the one the user is in (see
+            // RemoteDesktopService.letGoUnlessInFront, which takes it back a moment after the pane is left): IronRDP,
+            // whose listener comes after this one and only looks at the focus, would send it the key, view only or not.
+            // It goes nowhere instead, a keyup too: IronRDP lets go of nothing as its canvas loses the focus (only as
+            // the window does, or as the pointer leaves the canvas), so the keys the desktop still holds on the remote
+            // are let go of as the focus is taken back, this one among them.
+            event.stopImmediatePropagation()
+            event.preventDefault()
             return
         }
         this.routing = pane

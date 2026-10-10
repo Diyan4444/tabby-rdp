@@ -113,6 +113,14 @@ export class FakeElement {
         (globalThis as any).document.activeElement = this
     }
 
+    /** Lets go of the focus, if this has it: the page's body has it then, as in a browser. */
+    blur (): void {
+        const page = (globalThis as any).document
+        if (page.activeElement === this) {
+            page.activeElement = page.body
+        }
+    }
+
     click (): void {
         (this.listeners.click ?? []).forEach(listener => listener())
     }

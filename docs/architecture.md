@@ -79,7 +79,19 @@ Devolutions Gateway; here the proxy runs inside Tabby and relays to an SSH chann
 The desktop is a layer (`.trd-overlay`) over the terminal inside the pane, not a separate tab. The terminal stays
 attached underneath; while the desktop shows, its input textarea is disabled, so nothing can type into the shell by
 accident. IronRDP only takes keys while its element has focus, and Tabby focuses the terminal whenever a pane gets
-focus, so the layer takes focus back on pane focus and on click.
+focus, so the layer takes focus back on pane focus and on click. It takes none otherwise: IronRDP's canvas takes the
+focus as the pointer passes over it, and with it the keys typed and this computer's clipboard, so a desktop that gets
+the focus while its pane isn't the one in front (the focused pane of the active tab, not behind a pane maximized over
+it) gives it back to where it came from, and one whose pane stops being in front (another tab, by keyboard too, or
+another pane of the split) lets go of it, and of the keys it holds on the remote (a shortcut's modifier, whose keyup
+goes where the user went: IronRDP lets go of nothing as its canvas loses the focus, only as the window does or as the
+pointer leaves the canvas). Keys that still reach a desktop not in front stop at the router. What stays: the desktop
+whose pane is in front keeps the focus however it came to it, the pointer passing over it included, so moving the
+pointer over it while typing in one of Tabby's own fields outside any pane (a tab being renamed in its header, say)
+hands the keys and the clipboard to that desktop, as a click would. The layer can't tell a focus the pointer brought
+from one it asked for itself (a click on the desktop focuses its canvas the same way, from that same field), and
+handing such a focus back would make the click not hand over. The fields in panes (a terminal's) are the ones that
+matter, and those are covered.
 
 Messages (connecting, errors, sign-in, reconnecting) show in the layer, with buttons where there is something to do.
 A desktop keeps running while hidden, until it is disconnected or its tab closes.

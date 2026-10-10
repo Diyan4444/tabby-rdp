@@ -488,7 +488,7 @@ class LayerElement {
 
 test('Stop holds through the reconnect the plugin makes by itself when the server drops the connection', async () => {
     const config = { store: { remoteDesktop: { microphone: true, osd: {} } }, save () { }, changed$: new Subject() }
-    const pane = { name: 'alpha', element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject() }
+    const pane = { name: 'alpha', element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() }
     const app = { tabs: [pane], activeTab: pane, selectTab () { } }
     const zone = { run: (f: () => unknown) => f(), runOutsideAngular: (f: () => unknown) => f() }
     const service = new RemoteDesktopService(app, {}, { info () { }, error () { } }, config, zone)

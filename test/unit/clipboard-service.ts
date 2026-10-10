@@ -251,7 +251,7 @@ class LayerElement {
 
 test('a desktop asked for with a narrower clipboard while it is open elsewhere narrows the open one, its reconnects included', async () => {
     const { svc, config } = service({ clipboard: 'both' })
-    const pane = () => ({ element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject() })
+    const pane = () => ({ element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
     const open = pane()
     const asking = pane()
     svc.app.tabs.push(open, asking)
@@ -302,7 +302,7 @@ test('a desktop asked for with a narrower clipboard while it is open elsewhere n
 
 test('a desktop narrowed while it was open keeps to it when it is shown again after its server ended it, and view only too', async () => {
     const { svc } = service({ clipboard: 'both' })
-    const pane = () => ({ element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject() })
+    const pane = () => ({ element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
     const open = pane()
     const asking = pane()
     svc.app.tabs.push(open, asking)
@@ -360,7 +360,7 @@ test('a reconnect at a new size in a remote desktop tab connects with its profil
         Object.assign(session, { remote: target, state: 'connected', clipboard: svc.settingsFor(session).clipboard, stopSending () { } })
     }
     // The tab holds the profile as Tabby opened it.
-    const tab = { profile: { ...saved, options: { ...saved.options } }, element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject() }
+    const tab = { profile: { ...saved, options: { ...saved.options } }, element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() }
     svc.app.tabs.push(tab)
     await svc.showDesktop(tab)
     const first = connected[0].session
@@ -397,7 +397,7 @@ test('a reconnect at a new size in an SSH tab connects the same desktop, not the
     }
     const target = { key: 'alice@h:22', label: 'h', isOpen: () => true }
     svc.targets = { targetOf: async () => target, cached: () => target }
-    const pane = () => ({ profile: { type: 'ssh' }, element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject() })
+    const pane = () => ({ profile: { type: 'ssh' }, element: { nativeElement: new LayerElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() })
     // .5 in one pane of the host's tab, then .6 in another, which makes .6 the host's last used.
     const first = pane()
     const second = pane()
