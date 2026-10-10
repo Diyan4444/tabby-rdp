@@ -52,6 +52,12 @@ Electron binary that may run as Node (an app's with that fuse on, such as Visual
 or the `electron` npm package's: `node -p "require('electron')"` in a folder where it is installed); without it, they
 are skipped. CI runs them on Linux in the Electron of the Tabby release the plugin is qualified on.
 
+The compatibility job uses `scripts/electron/package.json` and its own committed lockfile. Upgrade Electron there
+with `npm install --package-lock-only --ignore-scripts --prefix scripts/electron electron@<exact-version> --save-exact`,
+review all dependency and integrity changes, and run the proxy tests with that binary. CI installs this tree using
+`npm ci --ignore-scripts`, then explicitly runs only Electron's locked binary installer, which checks the downloaded
+archive against Electron's release checksums. The project does not install Electron as a plugin dependency.
+
 For a Tabby host upgrade, run `npm run build` and then `npm run test:smoke -- --tabby <binary> --expect-xterm <major>`.
 This checks a locally packed plugin in an isolated host profile, with dummy credential storage. Add `--require-rdp`
 to require the live desktop checks. See [the host smoke instructions](test/README.md#host-upgrade-smoke-tests) for

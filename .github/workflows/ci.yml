@@ -55,10 +55,6 @@ jobs:
   electron:
     name: Unit tests in Electron
     runs-on: ubuntu-24.04
-    env:
-      # The Electron of the Tabby release the plugin is qualified on (Tabby 1.0.238 ships 43.7.0): the unit tests that
-      # need its TLS library (BoringSSL, not Node's OpenSSL) and its native sockets run in it, as Tabby's window does.
-      ELECTRON_VERSION: 43.7.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,13 +66,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Electron
-        # In a folder of its own, outside the project's dependencies and its lockfile.
+        # Tabby 1.0.238 ships Electron 43.7.0. The separate manifest and lock pin the complete download toolchain.
         run: |
           mkdir -p "$RUNNER_TEMP/electron"
+          cp scripts/electron/package.json scripts/electron/package-lock.json "$RUNNER_TEMP/electron/"
           cd "$RUNNER_TEMP/electron"
-          npm init -y > /dev/null
-          npm install --no-audit --no-fund "electron@$ELECTRON_VERSION"
-          # The package fetches its binary on first use, and says so on the output the path is read from: fetched first.
+          npm ci --ignore-scripts --no-audit --no-fund
+          # Run only the locked Electron installer explicitly; other dependencies' lifecycle scripts stay disabled.
+          # This fetches Electron's versioned binary and verifies its upstream checksum before use.
           node node_modules/electron/install.js
           electron="$(node -p "require('electron')")"
           test -x "$electron"
