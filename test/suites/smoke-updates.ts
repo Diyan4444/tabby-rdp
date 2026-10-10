@@ -32,19 +32,19 @@ await suite('smoke-updates', async t => {
     check('Updates opens in the fresh profile', !!await waitFor('return !!document.querySelector(".trd-settings [data-install]")', 5))
     check('startup persists the gateway-prompt floor even with automatic checks paused', await ev(`
         const saved = JSON.parse(localStorage.getItem('tabby-rdp.releases.v1'));
-        return saved.paused && saved.rollbackFloor === '0.5.3-rc.1';
+        return saved.paused && saved.rollbackFloor === '0.5.3';
     `))
     check('unsafe older versions and Return to stable are disabled', await ev(`
         const root = document.querySelector('.trd-settings');
         return ['0.5.1', '0.5.2'].every(version => [...root.querySelector('[data-version]').options].find(o => o.value === version)?.disabled) &&
             root.querySelector('[data-install]').disabled && root.querySelector('[data-stable]').disabled &&
-            root.querySelector('[data-version-reason]').textContent.includes('0.5.3-rc.1');
+            root.querySelector('[data-version-reason]').textContent.includes('0.5.3');
     `))
     for (const version of ['0.5.1', '0.5.2']) {
         check(`${version} is refused before confirmation or installation`, await ev(`
             await RD.updates.install(${JSON.stringify(version)}, ${version === '0.5.2'});
             const d = H.packageModal();
-            return H.installCalls === 0 && RD.updates.pending === null && RD.updates.error.includes('requires version 0.5.3-rc.1') &&
+            return H.installCalls === 0 && RD.updates.pending === null && RD.updates.error.includes('requires version 0.5.3') &&
                 d?.querySelector('[data-confirm]').hidden && d.querySelector('[data-result]').dataset.phase === 'error';
         `))
         await ev('H.packageModal().querySelector("[data-close]").click()')

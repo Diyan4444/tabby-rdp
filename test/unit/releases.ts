@@ -154,29 +154,29 @@ test('a higher migration floor survives replacement and prevents arbitrary rollb
 
 test('the shipped gateway-prompt floor persists before config edits and blocks both unsafe stable versions', async () => {
     const pkg = require('../../package.json')
-    assert.equal(pkg.tabbyRdp.rollbackFloor, '0.5.3-rc.1')
+    assert.equal(pkg.tabbyRdp.rollbackFloor, '0.5.3')
     const s = setup({ running: pkg.version, policy: pkg.tabbyRdp,
         fetchCatalog: async () => catalog(['0.5.1', '0.5.2', pkg.version], { latest: '0.5.2', beta: pkg.version }) },
     { paused: true, previous: '0.5.1', rollbackFloor: '0.5.1' })
     await s.manager.ready
-    assert.equal(s.saved().rollbackFloor, '0.5.3-rc.1')
+    assert.equal(s.saved().rollbackFloor, '0.5.3')
     await s.manager.refreshCatalog()
     assert.equal(s.manager.reason(pkg.version), null)
     for (const version of ['0.5.1', '0.5.2']) {
-        assert.match(s.manager.reason(version)!, /requires version 0\.5\.3-rc\.1/)
+        assert.match(s.manager.reason(version)!, /requires version 0\.5\.3/)
         await s.manager.install(version, version === '0.5.2')
-        assert.match(s.manager.error, /requires version 0\.5\.3-rc\.1/)
+        assert.match(s.manager.error, /requires version 0\.5\.3/)
     }
     assert.deepEqual(s.calls, [])
     // An older policy cannot lower the saved boundary after replacement or in an already-open window.
     const older = new ReleaseManager({ ...s.env, running: '0.5.2', policy })
     await older.ready
     await older.install('0.5.1')
-    assert.match(older.error, /requires version 0\.5\.3-rc\.1/)
-    assert.equal(s.saved().rollbackFloor, '0.5.3-rc.1')
+    assert.match(older.error, /requires version 0\.5\.3/)
+    assert.equal(s.saved().rollbackFloor, '0.5.3')
     assert.deepEqual(s.calls, [])
     await s.manager.uninstall()
-    assert.equal(s.saved().rollbackFloor, '0.5.3-rc.1')
+    assert.equal(s.saved().rollbackFloor, '0.5.3')
 })
 
 test('successful installation persists the target floor before it runs; failure and cancellation do not', async () => {
@@ -195,7 +195,7 @@ test('successful installation persists the target floor before it runs; failure 
         assert.equal(s.saved().rollbackFloor, outcome === 'success' ? pkg.tabbyRdp.rollbackFloor : policy.rollbackFloor)
         if (outcome === 'success') {
             assert.equal(s.manager.running, '0.5.2')
-            assert.match(s.manager.reason('0.5.2')!, /requires version 0\.5\.3-rc\.1/)
+            assert.match(s.manager.reason('0.5.2')!, /requires version 0\.5\.3/)
             const older = new ReleaseManager(s.env)
             await older.ready
             assert.equal(older.state.rollbackFloor, pkg.tabbyRdp.rollbackFloor)
