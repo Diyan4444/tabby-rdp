@@ -43,6 +43,19 @@ export interface XrdpEnv {
     port: number
 }
 
+/**
+ * A desktop reached directly, not through SSH (`TRD_TEST_DIRECT_*`): any RDP server this machine can reach. Without
+ * an address, the direct suite uses the test host's GNOME Remote Desktop.
+ */
+export interface DirectEnv {
+    /** host[:port] (default port 3389); empty: the test host's GNOME desktop. */
+    address: string
+    user: string
+    password: string
+    /** What the server is (the plugin's desktop kind): gnome, xrdp or windows. */
+    kind: string
+}
+
 /** Test hosts and accounts, from the environment (see test/README.md). */
 export interface TestEnv {
     /** The Linux test host; empty skips the suites that need one. */
@@ -55,6 +68,7 @@ export interface TestEnv {
     sshDestination: string
     windows: WindowsEnv
     xrdp: XrdpEnv
+    direct: DirectEnv
 }
 
 /** Test hosts and accounts, from the environment (see test/README.md). */
@@ -82,6 +96,12 @@ export function env (): TestEnv {
             user: e.TRD_TEST_XRDP_USER || 'tabbyxrdp',
             password: e.TRD_TEST_XRDP_PASSWORD || '',
             port: Number(e.TRD_TEST_XRDP_PORT || 3390),
+        },
+        direct: {
+            address: e.TRD_TEST_DIRECT || '',
+            user: e.TRD_TEST_DIRECT_USER || '',
+            password: e.TRD_TEST_DIRECT_PASSWORD || '',
+            kind: e.TRD_TEST_DIRECT_KIND || 'gnome',
         },
     }
 }
@@ -232,7 +252,7 @@ const PAGE_HELPERS = (config: TestEnv): string => `(() => {
             return lines.join('\\n')
         },
         overlay (p) { return p.element.nativeElement.querySelector('.trd-overlay:not(.trd-form-overlay)') },
-        canvasElement (p) { return this.overlay(p)?.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('canvas') ?? null },
+        canvasElement (p) { return this.overlay(p)?.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('canvas') ?? this.overlay(p)?.querySelector('.trd-last-frame') ?? null },
         /** The remote display: size, size of the pane, and how many colors a sample of it has (0: nothing drawn). */
         canvas (p) {
             const cv = this.canvasElement(p)
@@ -324,10 +344,10 @@ export interface TestContext {
     mouse: (x: number, y: number, clicks?: number) => Promise<void>
     /** Clicks the remote display at (dx, dy) from its top-left corner (default: its center). */
     clickDesktop: (pane: string, dx?: number, dy?: number, clicks?: number) => Promise<void>
-    /** Presses a key with modifiers held. */
-    key: (key: string, code: string, vk: number, mods?: Modifier[], text?: string) => Promise<void>
-    /** A letter or digit key, with modifiers. */
-    press: (ch: string, mods?: Modifier[]) => Promise<void>
+    /** Presses a key with modifiers held; `holding` is awaited before the modifiers are let go of. */
+    key: (key: string, code: string, vk: number, mods?: Modifier[], text?: string, holding?: () => Promise<unknown>) => Promise<void>
+    /** A letter or digit key, with modifiers (and `holding`, as for key). */
+    press: (ch: string, mods?: Modifier[], holding?: () => Promise<unknown>) => Promise<void>
     /** A modifier tapped on its own. */
     tap: (modifier: Modifier) => Promise<void>
     enter: () => Promise<void>
@@ -444,8 +464,12 @@ export async function suite (name: string, body: (t: TestContext) => Promise<voi
             await t.mouse(r.x + (dx ?? r.w / 2), r.y + (dy ?? r.h / 2), clicks)
             await sleep(300)
         },
-        /** Presses a key with modifiers held ('Control', 'Shift', 'Alt', 'Meta'). */
-        async key (key: string, code: string, vk: number, mods: Modifier[] = [], text?: string) {
+        /**
+         * Presses a key with modifiers held ('Control', 'Shift', 'Alt', 'Meta'). `holding`, if given, is awaited after
+         * the key's keyup and before the modifiers' keyups: a person lets go of a shortcut's modifier after what the
+         * shortcut does has happened, where back-to-back events would let go of it before.
+         */
+        async key (key: string, code: string, vk: number, mods: Modifier[] = [], text?: string, holding?: () => Promise<unknown>) {
             const bits: Record<Modifier, number> = { Alt: 1, Control: 2, Meta: 4, Shift: 8 }
             const codes: Record<Modifier, [string, number]> = { Alt: ['AltLeft', 18], Control: ['ControlLeft', 17], Meta: ['MetaLeft', 91], Shift: ['ShiftLeft', 16] }
             let held = 0
@@ -455,16 +479,17 @@ export async function suite (name: string, body: (t: TestContext) => Promise<voi
             }
             await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: vk, modifiers: held, ...(text && !(held & 7) ? { text } : {}) })
             await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, modifiers: held })
+            await holding?.()
             for (const m of [...mods].reverse()) {
                 held &= ~bits[m]
                 await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: m, code: codes[m][0], windowsVirtualKeyCode: codes[m][1], modifiers: held })
             }
             await sleep(40)
         },
-        /** A letter or digit key, with modifiers. */
-        async press (ch: string, mods: Modifier[] = []) {
+        /** A letter or digit key, with modifiers (and `holding`: see key). */
+        async press (ch: string, mods: Modifier[] = [], holding?: () => Promise<unknown>) {
             const upper = ch.toUpperCase()
-            await t.key(mods.includes('Shift') ? upper : ch, /\d/.test(ch) ? `Digit${ch}` : `Key${upper}`, upper.charCodeAt(0), mods, ch)
+            await t.key(mods.includes('Shift') ? upper : ch, /\d/.test(ch) ? `Digit${ch}` : `Key${upper}`, upper.charCodeAt(0), mods, ch, holding)
         },
         /** A modifier tapped on its own. */
         async tap (modifier: Modifier) {

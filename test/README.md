@@ -14,6 +14,7 @@ npm test -- winhost               # SSH to Windows itself (TRD_TEST_WIN_OPENSSH)
 npm test -- hyperv                # Hyper-V VMs on a Windows host (TRD_TEST_HYPERV)
 npm test -- gateway               # desktops behind an RD Gateway (TRD_TEST_GATEWAY)
 npm test -- xrdp                  # the xrdp suite (TRD_TEST_XRDP_*)
+npm test -- direct                # a desktop reached directly, not through SSH (TRD_TEST_DIRECT_*, else the test host)
 npm test -- --packed e2e          # with the plugin installed as npm would install it (npm pack)
 npm test -- --keep e2e            # leave the test Tabby open afterwards
 npm test -- --port 9334 e2e       # use a Tabby already running with --remote-debugging-port=9334
@@ -62,11 +63,22 @@ upgrade. The suites accept host-provided modal drag regions and the plugin's fal
 `smoke-host` exercises both terminal frontend choices (`xterm` and `xterm-webgl`), actual local PTY input,
 Alt+arrow word-jump sequences, output through session middleware, resize, font changes, scroll position, background
 output, tab closing, plugin settings, dummy-account revision saves, RDP profile editing, and modal/plugin drag bars.
+Profile validation checks call the real host Save method with invalid address and gateway drafts, verify that the
+modal stays open and the stored profile stays unchanged, then correct the fields and save through the host button.
+Blank type/group defaults are also checked through the host's real ConfigProxy cleanup, including explicit port 3390
+and group defaults inheriting port 3390. An unrelated gateway edit preserves both the effective port and whether it
+follows later global-default changes. These checks need no remote connection.
 It also checks the compatibility snapshot against the real terminal inputs and modal behavior.
+Gateway-account checks use dummy credentials without a remote connection: real group-default resolution in the
+inventory and removal confirmation, then separate gateway prompts after removal, including cancellation.
 `smoke-rdp` covers a real decoded RDP frame, repeated console/RDP switching, keyboard focus and covered-console
 input isolation, live display resize, host-tab switching, and disconnect cleanup. Renderer exceptions, console
 errors, and caught xterm resize failures fail either suite. Neither suite recreates a complete terminal-renderer
 or protocol conformance test.
+
+`npm run test:smoke` also runs `direct`: the smoke suites reach the desktop through SSH, where TLS runs over the SSH
+channel, and a desktop reached directly takes another path in Tabby's window (a native socket under TLS). A crash on
+that path alone, in Tabby on Linux, once shipped with every smoke check passing.
 
 Without `TRD_TEST_HOST`, `smoke-rdp` explicitly reports `SKIP`; `--require-rdp` makes missing configuration a failure
 before launching Tabby. The host suite still runs without a remote. Smoke tests require the runner's credential
@@ -90,8 +102,11 @@ qualifying every later host release. Rerun the relevant suites when the plugin o
 ## Package-change smoke tests
 
 Test the package-change dialog with `npm test -- --packed --hidden --tabby /path/to/Tabby smoke-updates`.
-This suite checks confirmation, cancellation, progress, elapsed time, errors, and a real install of 0.5.1 from npm.
-Installation occurs only in the runner's disposable profile; its credential guard remains installed through the downgrade.
+This suite checks the persisted gateway-prompt minimum and refusal of 0.5.1/0.5.2 before installation, then checks
+confirmation, cancellation, progress, elapsed time, errors and success using a simulated compatible release and disk
+result. It also checks persistence of the target release's minimum before restart. It does not install from npm;
+the current RC cannot safely use the former real downgrade to 0.5.1 as an installer test.
+The runner uses a disposable profile and keeps the actual packed plugin and credential guard installed throughout.
 No remote desktop is required. The confirmation, progress and verified result must remain in the same modal, including
 when Settings closes. Set `TRD_TEST_DUMP` to retain screenshots of progress, failure and success.
 
@@ -115,6 +130,7 @@ when Settings closes. Set `TRD_TEST_DUMP` to retain screenshots of progress, fai
 | `TRD_TEST_WIN_OPENSSH` | winhost | `user@host[:port]` of a Windows machine running OpenSSH Server, accepting the test key (`TRD_TEST_SSH_KEY` or the agent). Signs in with `TRD_TEST_WIN_USER` / `TRD_TEST_WIN_PASSWORD`. |
 | `TRD_TEST_XRDP_USER`, `TRD_TEST_XRDP_PASSWORD` | xrdp | The account on the test host that signs in to xrdp (default user `tabbyxrdp`; see `testbed/linux/xrdp.sh`). The suite is skipped without the password. |
 | `TRD_TEST_XRDP_PORT` | xrdp | xrdp's port on the test host (default 3390). |
+| `TRD_TEST_DIRECT` | direct | A desktop this machine reaches directly, as `host[:port]` (default port 3389): any RDP server. `TRD_TEST_DIRECT_USER` and `TRD_TEST_DIRECT_PASSWORD`: an account it signs in. `TRD_TEST_DIRECT_KIND`: `gnome` (default), `xrdp` or `windows`. Without it, the test host's GNOME Remote Desktop on 3389 with the plugin's account; skipped when that can't be reached from here. |
 | `TRD_TEST_NESTED` | nested | An ssh destination the test host logs in to without a password, with a GNOME desktop of its own (see `testbed/linux/nested.sh`). The suite is skipped without it. |
 | `TRD_TEST_VM_HOST`, `TRD_TEST_VM_NAME` | vms | A libvirt host (`user@host`, as this computer sees it) and a VM on it with a desktop (RDP on, or Windows). The suite is skipped without them. |
 | `TRD_TEST_VM_GNOME` | vms | Optionally, a running VM on that host with GNOME Remote Desktop, which must not be offered (the test Linux VM is one). |
@@ -143,11 +159,12 @@ system keychain doesn't answer (Linux without an unlocked keyring), the keychain
 |---|---|
 | [smoke-host](suites/smoke-host.ts) | Host upgrades without a remote: both terminal frontends, keyboard, resize/font/scroll, tab lifecycle, settings, account revision saves, profile editor, modal dragging. |
 | [smoke-rdp](suites/smoke-rdp.ts) | Host upgrades with real RDP: connection/frame, console switching and input isolation, display resize, tab focus, disconnect. |
-| [smoke-updates](suites/smoke-updates.ts) | Persistent package-change dialog, cancellation, progress, errors and a verified real 0.5.1 install in a disposable profile. |
+| [smoke-updates](suites/smoke-updates.ts) | Persistent rollback floor, refused unsafe downgrades, and package-change dialog cancellation/progress/errors/simulated success. |
 | [e2e](suites/e2e.ts) | Every entry point (toolbar button, hotkey, menus, header), focus and typing, one desktop per account across tabs, a local terminal running `ssh`, Disconnect. |
 | [desk](suites/desk.ts) | Logins in the shared session, `desk`, requests without its key ignored, typing in the desktop terminal, RDP and SSH disconnects keeping the session, turning `desk` off and on. |
 | [resize](suites/resize.ts) | Resize to fit, reconnect at the new size, keep the resolution, Retina with GNOME's scale. |
 | [keyboard](suites/keyboard.ts) | Tabby shortcuts kept off the covered console, ⌘ as Ctrl, no stuck keys, the shortcuts that stay Tabby's. |
+| [focus](suites/focus.ts) | A desktop next to a terminal: the pointer over it (also in a maximized pane's margin) leaves the keyboard in the terminal, a click hands it over, leaving its tab for Settings takes it away, and leaving by the tab's shortcut leaves no modifier held on the remote (through the terminal `desk` opens). |
 | [actions](suites/actions.ts) | Send keys (also from the console), ⌃⌘ with a key as Super with it, View only (label, mouse, keys, across a reconnect), screenshots to Downloads and the clipboard, actual size with a fixed resolution. |
 | [clipboard](suites/clipboard.ts) | Text both ways, through the terminal `desk` opens. |
 | [files](suites/files.ts) | Files both ways with Files (Nautilus): copy there and save here; drop here and paste there. |
@@ -157,6 +174,7 @@ system keychain doesn't answer (Linux without an unlocked keyring), the keychain
 | [reconnect](suites/reconnect.ts) | A dropped SSH connection: "Reconnect SSH", automatic reconnect (also while hidden), Stop, Try again. |
 | [desktops](suites/desktops.ts) | "Add a desktop behind…", its sign-in and keychain entry, "Edit a desktop" (keychain entry, sharpness and remembered certificate following a new address), "Remove a desktop" (using the host's own GNOME desktop as the extra one). |
 | [profiles](suites/profiles.ts) | "Remote desktop (RDP)" profiles: quick connect; a direct one in its own tab (sign-in, its self-signed certificate asked about first and then remembered, picture, no console, desktop actions, one tab per server, Disconnect and Connect, recovery); one through a saved SSH profile, opening its SSH tab with the desktop over it; .rdp files: the parser, "Import an .rdp file…" (the test host's GNOME as the RDP server). |
+| [direct](suites/direct.ts) | A desktop reached directly (a remote desktop tab), through every way its connection ends once TLS is up, Tabby's window coming through each: the first connection's certificate question, Cancel, Trust, reconnecting as remembered, a changed certificate (Cancel, then trusted), the tab closed at the question and while connecting; then it connects and draws. Any RDP server (`TRD_TEST_DIRECT`), or the test host's GNOME. |
 | [certificates](suites/certificates.ts) | The own desktop's certificate checked against the setup's; a desktop behind the host remembered on first use, a changed certificate stopped before sign-in (Cancel, "Trust the new certificate", also on an automatic reconnect), forgotten on removal. |
 | [windows](suites/windows.ts) | A Windows desktop behind an SSH host: sign-in, keychain, picture, resize, reconnect, its certificate remembered and a changed one stopped; with WinRM, typing, clipboard, sound, files, and shared folders as drives (read, written, listed, a 3 MB file hashed and copied, a read-only one refusing a write), each checked inside Windows, and H.264 with a window flipping between two colors. |
 | [winhost](suites/winhost.ts) | An SSH host that is itself Windows: detected on the first open, its own desktop signed in to with the Windows account, its certificate remembered, no setup the second time. |
@@ -168,6 +186,7 @@ system keychain doesn't answer (Linux without an unlocked keyring), the keychain
 | [hyperv](suites/hyperv.ts) | Hyper-V VMs on a Windows SSH host: found with PowerShell and offered among the host's desktops; opening one asks for the host's account; an account that may not open the console is refused the way Hyper-V does it, and the form says so; the console connects through the host's port 2179 and its picture arrives. Needs the [Windows Server test machine](../testbed/README.md). |
 | [gateway](suites/gateway.ts) | Desktops behind an RD Gateway: a profile with a gateway connects through it; a password the gateway refuses brings the form back saying so, with nothing sent to the desktop; the gateway's certificate, and the desktop's behind it, asked about the first time (the testbed's are self-signed) before anything goes to either, then remembered (the gateway's by its address), and a changed one stops before the sign-in; a gateway with a saved account of its own is asked for separately, and again when refused; a desktop behind an SSH host goes through the gateway as that host sees it. Needs the [Windows Server test machine](../testbed/README.md). |
 | [vms](suites/vms.ts) | VMs found on an SSH host (libvirt): the one with a desktop offered in the host's menu with its address, kind and start-by-name, none without a desktop, none with the setting off. |
+| [wasm-isolation](suites/wasm-isolation.ts) | Two connected GNOME desktops with different WASM memories and classes; close/reopen one, then inject three synthetic WASM faults and recover it while the other keeps its connection and accepts keyboard input; collect ended memories after GC. Run explicitly with `TRD_TEST_ISOLATION_USER` naming a second GNOME account on the test host, authorized for the test SSH key, with a separate GNOME Remote Desktop listening port (for example, `grdctl --headless rdp set-port 3392` as that account if the port is free). No malformed server input is used. |
 | [demo](suites/demo.ts) | Not a test: makes the demo video (`docs/demo/`, attached to the GitHub release rather than committed) and the README's GIF of it (`docs/images/demo.gif`) from the test machines: four desktops in one tab, a file pasted to all of them, the console switch and `desk`. Needs the Windows machine (WinRM included), an xrdp account (`TRD_TEST_DEMO_XRDP_USER`, `_PASSWORD`) and a second GNOME account (`TRD_TEST_DEMO_GNOME_USER`, default `tabbyxrdp`) on the test host, and ffmpeg; `TRD_TEST_DEMO_LOOK` points at a Tabby config.yaml whose look (color scheme, font) it takes on. |
 | [trd-pty](unit/trd-pty.py) | The shared-session helper on its own, on the test host. |
 

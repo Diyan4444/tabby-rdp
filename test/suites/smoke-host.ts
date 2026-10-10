@@ -1,6 +1,8 @@
 // Host upgrade checks with real Tabby, xterm, local PTYs and plugin settings. No remote desktop is required.
+import { profileValidationSmoke } from '../lib/profile-validation-smoke.js'
 import { suite } from '../lib/harness.js'
 import { rendererErrors, smokeHost } from '../lib/smoke.js'
+import { gatewayAccountSmoke } from '../lib/gateway-account-smoke.js'
 
 interface ModalDrag { bars: number, native: boolean, hit: boolean, controls: boolean }
 
@@ -124,7 +126,9 @@ await suite('smoke-host', async t => {
         check('profile editor offers the saved account', await ev(`return [...document.querySelectorAll('.modal rdp-profile-settings [name=account] option')].some(o => /Smoke dummy/.test(o.textContent))`))
         await ev(`H.inZone(() => RD.injector.get(require('@ng-bootstrap/ng-bootstrap').NgbModal).dismissAll())`)
         await waitFor('return !document.querySelector(".modal")', 5)
+        if (value === '0.75') { await profileValidationSmoke(t) }
     }
+    await gatewayAccountSmoke(t)
     await ev(`RD.help.open('keyboard')`)
     await waitFor('return !!document.querySelector(".trd-settings [data-list=hotkeys] .add")', 5)
     await ev(`document.querySelector('.trd-settings [data-list=hotkeys] .add').click()`)

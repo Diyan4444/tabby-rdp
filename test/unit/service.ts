@@ -66,7 +66,21 @@ function service (remoteDesktop: Record<string, unknown> = {}, deps: { targets?:
     }
     const notifications = { notice () { }, info () { }, error () { } }
     const zone = { run: (f: () => unknown) => f(), runOutsideAngular: (f: () => unknown) => f() }
-    const svc = new RemoteDesktopService(deps.app ?? {}, deps.targets ?? {}, notifications, config, zone, {}, {}, deps.selector ?? {}, {})
+    const profilesService = {
+        getConfigProxyForProfile (profile: any) {
+            const groups = (config.store as any).groups ?? []
+            const defaults: any[] = [(config.store as any).profileDefaults?.rdp?.options ?? {}]
+            const visited = new Set<string>()
+            let group = groups.find((g: any) => g.id === profile.group)
+            while (group && !visited.has(group.id)) {
+                visited.add(group.id)
+                defaults.splice(1, 0, group.defaults?.rdp?.options ?? {})
+                group = groups.find((g: any) => g.id === group.parentGroupId)
+            }
+            return { ...profile, options: Object.assign({}, ...defaults, profile.options) }
+        },
+    }
+    const svc = new RemoteDesktopService(deps.app ?? {}, deps.targets ?? {}, notifications, config, zone, profilesService, {}, deps.selector ?? {}, {})
     const revisions = new Map<string, string>()
     svc.accountRevisions = new (require('../../dist/accountRevisions.js').AccountRevisions)(() => ({
         getItem: (key: string) => revisions.get(key) ?? null, setItem: (key: string, value: string) => revisions.set(key, value),
@@ -512,7 +526,7 @@ test('a desktop picked by id replaces the one open in the pane when it is anothe
     const own = { key: 'alice@h:22', label: 'h', exec: async () => '' }
     const there = { key: 'alice@h:22>bob@x:22', label: 'x', via: 'h', exec: async () => '' }
     const subscription = { subscribe: () => ({ unsubscribe () { } }) }
-    const pane = { profile: { type: 'ssh' }, element: { nativeElement: element() }, destroyed$: subscription, focused$: subscription }
+    const pane = { profile: { type: 'ssh' }, element: { nativeElement: element() }, destroyed$: subscription, focused$: subscription, blurred$: subscription }
     const targets = { targetOf: async () => own, nestedSSH: async () => [], cached: () => own }
     const { svc } = service({}, { targets, app: { tabs: [pane] } })
     svc.connect = async () => { }
@@ -1046,6 +1060,39 @@ test('a direct profile\'s removal, or its move behind an SSH profile, forgets it
     settings.save()
     await settle()
     assert.deepEqual([...keychain.keys()].sort(), ['alice@h:22#10.0.0.5:3389', 'rdp#10.0.0.50:3389'])
+})
+
+test('a saved profile\'s address cleared forgets what was saved for its desktop; a profile without an address forgets nothing of another\'s when removed', async () => {
+    // The security review's refuted finding: no attacker gains by it, but the editor returned before forgetting when
+    // the address was cleared, and removing a profile without an address forgot 127.0.0.1:3389's.
+    keychain.clear()
+    const { RDPProfileSettingsComponent, RDPProfilesService } = require('../../dist/rdpProfile.js')
+    const { svc, store } = service({ trustedCertificates: [{ desktop: 'rdp#10.0.0.5:3389', sha256: A }, { desktop: 'rdp#127.0.0.1:3389', sha256: B }] })
+    const injector = { get: () => svc }
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setTimeout(resolve, 5)) }
+    const keys = ['rdp#10.0.0.5:3389', 'rdp#10.0.0.5:3389@gateway#gw.example:443', 'rdp#127.0.0.1:3389']
+    for (const key of keys) {
+        await signin.saveCredentials(key, { username: 'u', password: 'p' })
+    }
+    const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
+    const cleared = (more: Record<string, unknown>) => {
+        settings.profile = { name: 'Office', options: { host: '', port: 3389, username: 'u', domain: '', account: '', via: '', gateway: '' }, ...more }
+        settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', via: '', gateway: 'gw.example' }
+        settings.save()
+        return settle()
+    }
+    // The type's or a group's defaults (no id of their own): an empty address there is useful, and forgets nothing.
+    await cleared({ id: '' })
+    assert.deepEqual([...keychain.keys()].sort(), keys.slice().sort())
+    // A saved profile's: its desktop's passwords, through any gateway, and its certificate go.
+    await cleared({ id: 'rdp:custom:office' })
+    assert.deepEqual([...keychain.keys()], ['rdp#127.0.0.1:3389'])
+    assert.deepEqual(store.trustedCertificates, [{ desktop: 'rdp#127.0.0.1:3389', sha256: B }])
+    // Removed without an address: 127.0.0.1:3389's stay.
+    new RDPProfilesService(injector, { save () { } }).deleteProfile({ name: 'Blank', options: { host: '', port: 3389, via: '' } })
+    await settle()
+    assert.deepEqual([...keychain.keys()], ['rdp#127.0.0.1:3389'])
+    assert.deepEqual(store.trustedCertificates, [{ desktop: 'rdp#127.0.0.1:3389', sha256: B }])
 })
 
 test('profiles imported before imports had an account of their own ask now; profiles made otherwise keep what their group gives them', () => {
@@ -1694,7 +1741,7 @@ test('a direct profile deleted, or moved behind an SSH profile, while a store of
     assert.match(notes[1], /^If a password was saved for "Lab", it couldn't be removed/)
 })
 
-test('removing a saved account: the profiles that used it ask, a group\'s default is none, desktops lose it, and its password goes', async () => {
+test('removing a saved account: desktops ask, gateways keep a separate sign-in, and its password goes', async () => {
     await signin.loadCredentials('nothing')
     keychain.clear()
     const profiles = [
@@ -1714,13 +1761,110 @@ test('removing a saved account: the profiles that used it ask, a group\'s defaul
     assert.deepEqual(store.accounts.map((a: any) => a.id), ['k2'])
     // Null, which Tabby's profile editor keeps and its config proxy takes as the profile's own: no account, so it asks,
     // rather than take the group's default ('' would).
-    assert.deepEqual(profiles.map(p => [p.options.account, p.options.gatewayAccount]), [[null, null], ['k2', ''], ['k1', undefined]])
+    assert.deepEqual(profiles.map(p => [p.options.account, p.options.gatewayAccount]), [[null, '@ask'], ['k2', ''], ['k1', undefined]])
     // A group's default: none.
     assert.deepEqual((config.store as any).groups.map((g: any) => g.defaults.rdp.options.account), ['', 'k2'])
-    // A desktop behind a host: neither key, so its own sign-in, for the gateway too.
-    assert.deepEqual(store.desktops, [{ via: 'h', host: '10.0.0.5', gateway: 'gw.example' }, { via: 'h', host: '10.0.0.6', account: 'k2' }])
+    // A desktop behind a host keeps a separate gateway prompt.
+    assert.deepEqual(store.desktops, [{ via: 'h', host: '10.0.0.5', gateway: 'gw.example', gatewayAccount: '@ask' }, { via: 'h', host: '10.0.0.6', account: 'k2' }])
     assert.deepEqual([keychain.has('account#k1'), keychain.has('account#k2')], [false, true])
     assert.ok(config.saves >= 1)
+})
+
+test('removing an inherited gateway account names every affected profile and preserves separate authentication on connection', async t => {
+    const profiles = [
+        { id: 'inherited', type: 'rdp', name: 'Inherited gateway', group: 'child', options: { host: 'pc.corp', account: 'desktop' } },
+        { id: 'global', type: 'rdp', name: 'Global gateway', options: { host: 'other.corp' } },
+        { id: 'override', type: 'rdp', name: 'Own gateway account', group: 'child', options: { host: 'own.corp', gatewayAccount: 'other' } },
+        { id: 'same', type: 'rdp', name: 'Explicit desktop sign-in', group: 'child', options: { host: 'same.corp', gatewayAccount: null } },
+    ]
+    const { svc, config, store } = service({ accounts: [{ id: 'gateway', name: 'Gateway only', username: 'gw-user' }] }, { profiles })
+    ;(config.store as any).groups = [
+        { id: 'parent', defaults: { rdp: { options: { gateway: 'gw.example', gatewayAccount: 'gateway' } } } },
+        { id: 'child', parentGroupId: 'parent', defaults: { rdp: { options: {} } } },
+    ]
+    ;(config.store as any).profileDefaults = { rdp: { options: { gateway: 'global.example', gatewayAccount: 'gateway' } } }
+    assert.deepEqual(svc.accountUses('gateway'), [
+        { name: 'Inherited gateway', profileId: 'inherited' }, { name: 'Global gateway', profileId: 'global' },
+    ])
+    let confirmation: any
+    svc.platform.showMessageBox = async (options: any) => { confirmation = options; return { response: 0 } }
+    assert.equal(await svc.confirmRemoveAccount('gateway'), true)
+    assert.match(confirmation.detail, /2 desktops use it.*Inherited gateway, Global gateway/)
+    assert.deepEqual(store.accounts, [])
+    assert.equal((config.store as any).groups[0].defaults.rdp.options.gatewayAccount, '@ask')
+    assert.equal((config.store as any).profileDefaults.rdp.options.gatewayAccount, '@ask')
+    assert.equal(profiles[2].options.gatewayAccount, 'other')
+    assert.equal(profiles[3].options.gatewayAccount, null)
+
+    const spec = specOf({ ...svc.profiles.getConfigProxyForProfile(profiles[0]).options, name: profiles[0].name })
+    assert.equal(spec.gatewayAccount, '@ask')
+    const pane = {}
+    const s = session(spec, 'rdp#pc.corp:3389')
+    svc.sessions.set(pane, s)
+    const desktopCredentials = { username: 'desktop-user', password: 'desktop-secret' }
+    const gatewayCredentials = { username: 'new-gateway-user', password: 'gateway-secret', remember: true }
+    const prompts: any[] = []
+    const previousAsk = signin.askCredentials
+    t.after(() => { signin.askCredentials = previousAsk; startProxy = null })
+    signin.askCredentials = async (_overlay: unknown, options: any) => { prompts.push(options); return gatewayCredentials }
+    svc.endpointFor = async () => ({ host: spec.host, port: spec.port, credentials: desktopCredentials, domain: 'DESKTOP' })
+    svc.loadIronRDP = async () => ({})
+    startProxy = async () => ({ close () { } })
+    let attempts = 0
+    svc.run = async (_pane: unknown, _target: unknown, _spec: unknown, _session: unknown, _rdp: unknown, endpoint: any) => {
+        attempts++
+        assert.deepEqual(endpoint.credentials, desktopCredentials)
+        assert.deepEqual(endpoint.gatewayAccount.credentials, gatewayCredentials)
+        assert.equal(endpoint.gatewayAccount.domain, undefined)
+        assert.equal(endpoint.gatewayAccount.remember, false)
+        assert.equal(endpoint.gatewayAccount.saveKey, undefined)
+        return {}
+    }
+    svc.afterEnd = () => { }
+    await svc.connect(pane, { key: 'rdp', label: 'PC' }, spec, s)
+    assert.equal(attempts, 1)
+    assert.match(prompts[0].title, /Sign in to the gateway gw.example/)
+    assert.equal(prompts[0].username, '')
+    assert.equal(prompts[0].canRemember, false)
+    // Cancelling the gateway's prompt stops before a connection attempt with any credentials.
+    signin.askCredentials = async () => null
+    await svc.connect(pane, { key: 'rdp', label: 'PC' }, spec, s)
+    assert.equal(attempts, 1)
+    assert.equal((s as any).state, 'ended')
+    assert.equal(s.shown.at(-1), 'Sign-in cancelled.')
+})
+
+test('a missing named gateway account asks separately; existing gateway accounts still load and retry their own credentials', async t => {
+    keychain.clear()
+    const { svc } = service({ accounts: [{ id: 'exists', name: 'Gateway', username: 'gw-user', domain: 'GATEWAY' }] })
+    await signin.saveCredentials('account#exists', { username: 'GATEWAY\\gw-user', password: 'gw-secret' })
+    const prompts: any[] = []
+    const previousAsk = signin.askCredentials
+    t.after(() => { signin.askCredentials = previousAsk })
+    signin.askCredentials = async (_overlay: unknown, options: any) => { prompts.push(options); return null }
+    const gateway = { host: 'gw.example', port: 443 }
+    const missing = specOf({ host: 'pc.corp', gateway: 'gw.example', gatewayAccount: 'missing' })
+    assert.equal(await svc.gatewayAccountFor(missing, session(missing, 'test'), gateway), null)
+    assert.match(prompts[0].error, /saved gateway account no longer exists/)
+    assert.equal(prompts[0].username, '')
+    assert.equal(prompts[0].canRemember, false)
+    const existing = { ...missing, gatewayAccount: 'exists' }
+    const loaded = await svc.gatewayAccountFor(existing, session(existing, 'test'), gateway)
+    assert.deepEqual(loaded.credentials, { username: 'GATEWAY\\gw-user', password: 'gw-secret' })
+    assert.equal(loaded.domain, 'GATEWAY')
+    assert.equal(prompts.length, 1)
+    assert.equal(await svc.gatewayAccountFor(existing, session(existing, 'test'), gateway, 'Gateway refused it'), null)
+    assert.equal(prompts[1].username, 'GATEWAY\\gw-user')
+    assert.match(prompts[1].error, /Gateway refused it/)
+})
+
+test('a gateway requiring its own account cannot receive desktop credentials when its separate sign-in is absent', async () => {
+    const { svc } = service()
+    const spec = specOf({ host: 'pc.corp', gateway: 'gw.example', gatewayAccount: '@ask' })
+    let opened = false
+    await assert.rejects(svc.throughGateway({ openTcp: () => { opened = true } }, spec, session(spec, 'test'),
+        { host: 'gw.example', port: 443 }, { credentials: { username: 'desktop-only', password: 'desktop-secret' } }), /separate gateway sign-in is required/)
+    assert.equal(opened, false)
 })
 
 test('reopening the desktop of a machine reached through a host goes there again, also when it ended before signing in', async t => {
@@ -1729,7 +1873,7 @@ test('reopening the desktop of a machine reached through a host goes there again
     const { Subject } = require('rxjs')
     const own = { key: 'alice@h:22', label: 'h', exec: async () => '' }
     const there = { key: 'alice@h:22>bob@x:22', label: 'x', via: 'h', exec: async () => '' }
-    const pane = { profile: { type: 'ssh' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject() }
+    const pane = { profile: { type: 'ssh' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() }
     const targets = { targetOf: async () => own, nestedSSH: async () => [], cached: () => own }
     const { svc } = service({}, { targets, app: { tabs: [pane], activeTab: pane } })
     // Each connection ends before a sign-in (the form cancelled, a setup that failed): "Sign in", "Try again".
@@ -1739,4 +1883,92 @@ test('reopening the desktop of a machine reached through a host goes there again
     await svc.reopen(pane, svc.sessions.get(pane).spec)
     assert.deepEqual(opened, [there.key, there.key])
     svc.disconnect(pane)
+})
+
+test('ending a backend releases its browser resources and references, even when WASM shutdown throws', t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const desktop = new DesktopSession(new FakeElement(), 'test', specOf({ host: 'host' }))
+    const closed: string[] = []
+    desktop.host.appendChild(new FakeElement('iron-remote-desktop'))
+    desktop.ui = { shutdown () { closed.push('ui'); throw new WebAssembly.RuntimeError('synthetic trap') } }
+    desktop.stopSending = () => { }
+    desktop.indicator = { setActive (active: boolean) { assert.equal(active, false); closed.push('stats') } }
+    for (const name of ['audio', 'h264', 'mic', 'files', 'drives']) {
+        desktop[name] = { close: () => closed.push(name), dispose: () => closed.push(name) }
+    }
+    desktop.onConnectionEnd(() => closed.push('observer'))
+    desktop.endConnection()
+    assert.deepEqual(closed, ['observer', 'stats', 'ui', 'audio', 'h264', 'mic', 'files', 'drives'])
+    assert.equal(desktop.host.children.length, 0)
+    for (const name of ['ui', 'stopSending', 'audio', 'h264', 'mic', 'files', 'drives']) assert.equal(desktop[name], null)
+    desktop.endConnection()
+    assert.deepEqual(closed.slice(8), ['stats'])
+    desktop.dispose()
+})
+
+test('an asynchronous trap ends only its desktop even when Rust run never settles', async t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const { svc } = service()
+    const spec = specOf({ host: 'host' })
+    const pane = {}
+    const otherPane = {}
+    const desktop = new DesktopSession(new FakeElement(), 'first', spec)
+    const other = new DesktopSession(new FakeElement(), 'second', spec)
+    t.after(() => { desktop.dispose(); other.dispose() })
+    desktop.state = other.state = 'connected'
+    let closed = 0
+    let otherClosed = 0
+    desktop.proxy = { close: () => closed++ }
+    other.proxy = { close: () => otherClosed++ }
+    svc.sessions.set(pane, desktop)
+    svc.sessions.set(otherPane, other)
+    // Stand in for a Rust session whose async run hangs after an event callback traps.
+    svc.runConnection = async () => new Promise(() => { })
+    let fault: (error: Error) => void = () => { }
+    let unwatched = false
+    const backend = { runtime: { onTrap: (callback: (error: Error) => void) => { fault = callback; return () => { unwatched = true } } } }
+    const running = svc.run(pane, {}, spec, desktop, backend, {})
+    fault(new WebAssembly.RuntimeError('synthetic trap'))
+    assert.deepEqual(await running, { connected: true, error: 'WebAssembly instance failed: synthetic trap' })
+    assert.equal(unwatched, true)
+    assert.equal(desktop.proxy, null)
+    assert.equal(closed, 1)
+    assert.equal(otherClosed, 0)
+    assert.equal(svc.sessions.get(otherPane), other)
+    // Existing reconnect policy is bounded and scoped to the failed pane.
+    svc.scheduleReconnect(pane, { isOpen: () => true }, spec, desktop, 'failed')
+    assert.equal(svc.reconnects.has(pane), true)
+    assert.equal(svc.reconnects.has(otherPane), false)
+    svc.cancelReconnect(pane)
+})
+
+test('ending a connection keeps only a pixel copy of its picture, and disposal removes that too', t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const desktop = new DesktopSession(new FakeElement(), 'picture', specOf({ host: 'host' }))
+    const source = { width: 1280, height: 720, getBoundingClientRect: () => ({ width: 640, height: 360 }) }
+    const copied: unknown[] = []
+    const create = document.createElement.bind(document)
+    document.createElement = ((tag: string) => {
+        if (tag !== 'canvas') return create(tag)
+        return Object.assign(new FakeElement('canvas'), { getContext: () => ({ drawImage: (...args: unknown[]) => copied.push(args) }) })
+    }) as typeof document.createElement
+    desktop.canvas = () => source as HTMLCanvasElement
+    desktop.host.appendChild(new FakeElement('iron-remote-desktop'))
+    desktop.ui = { shutdown () { } }
+    desktop.endConnection()
+    const picture = desktop.host.querySelector('.trd-last-frame') as any
+    assert.deepEqual(copied, [[source, 0, 0]])
+    assert.deepEqual([picture.width, picture.height, picture.style.width, picture.style.height], [1280, 720, '640px', '360px'])
+    assert.equal(desktop.host.querySelector('iron-remote-desktop'), null)
+    assert.equal(desktop.ui, null)
+    // A hidden pane has no CSS rectangle; its saved picture must still be visible when brought forward.
+    source.getBoundingClientRect = () => ({ width: 0, height: 0 })
+    desktop.endConnection()
+    const hidden = desktop.host.querySelector('.trd-last-frame') as any
+    assert.deepEqual([hidden.style.width, hidden.style.height], ['1280px', '720px'])
+    desktop.dispose()
+    assert.equal(desktop.host.children.length, 0)
 })

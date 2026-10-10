@@ -10,19 +10,20 @@ import { domainToASCII, pathToFileURL } from 'url'
 import { DesktopPane, desktopPaneOf, isRDPTab, NestedSSH, RDP_PROFILE_TYPE, RemoteTarget, RemoteTargets } from './targets'
 import { consoleScript, DeskGate, deskKeyDigest, DeskRequest, MACHINE_ID_COMMAND } from './deskScript'
 import { AudioPlayer } from './audio'
+import { IronRDPLoader } from './ironrdp'
 import { CLIPBOARD_LABELS, ClipboardMode, clipboardSetting, ClipboardWays, clipboardWays, narrowest, ownClipboard, setUpClipboard, splitPaste } from './clipboard'
 import { ConnectionStatus, STYLE as STATS_STYLE } from './connectionStatus'
 import { Microphone } from './microphone'
 import { SharedDrives, SharedFolder, sharedFolders } from './drives'
 import { askDesktop, formatAddress } from './desktopForm'
-import { accountKey, accountsOf, newAccountId, SavedAccount, signInName } from './accounts'
+import { accountKey, accountsOf, ASK_GATEWAY_ACCOUNT, newAccountId, SavedAccount, signInName } from './accounts'
 import { ACCOUNT_REMEMBER_UNAVAILABLE, AccountRevisions } from './accountRevisions'
 import { NewAccountInput, STYLE as ACCOUNT_FORM_STYLE } from './accountForm'
 import { FileTransfer, STYLE as FILES_STYLE, uniquePath } from './fileTransfer'
 import { configText, desktopIdOf, DesktopSpec, desktopsFor, DIRECT_KEY, entryText, ExtraDesktopConfig, isDesktopEntry, keyFields, keyParts, keyUser, OWN_DESKTOP, OwnDesktopFound, sessionKey, specOf, xrdpUnasked } from './desktops'
 import { RemoteDesktopHelp } from './help'
 import { configNumber, OSD_STYLE, OsdSettings, osdSettings, renderOsd } from './osd'
-import { MICROPHONE_NOTE, parseRdpFile } from './rdpFile'
+import { MAX_RDP_FILE, MICROPHONE_NOTE, parseRdpFile } from './rdpFile'
 import { prepareRemoteDesktop, RemoteDesktopEndpoint } from './remoteSetup'
 import { normalizeFingerprint, RDCleanPathProxy, startRDCleanPathProxy, withoutToken } from './rdcleanpath'
 import {
@@ -78,6 +79,7 @@ const STYLE = `
 .trd-overlay { position: absolute; inset: 0; z-index: 30; display: flex; background: #111; }
 .trd-host { flex: auto; min-width: 0; min-height: 0; display: flex; }
 .trd-host iron-remote-desktop { flex: auto; }
+.trd-last-frame { max-width: 100%; max-height: 100%; object-fit: contain; align-self: center; margin: auto; }
 .trd-status { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px; align-items: center;
     justify-content: center; padding: 2em; text-align: center; color: #bbb; font-size: 13px; white-space: pre-line;
     pointer-events: none; }
@@ -140,15 +142,15 @@ interface Endpoint {
     gatewayAccount?: GatewaySignIn
 }
 
-/** A saved account's sign-in to an RD Gateway, where that isn't the desktop's own. */
+/** A separate sign-in to an RD Gateway, optionally backed by a saved account. */
 interface GatewaySignIn {
     credentials: Credentials
     domain?: string
     /** Entered just now, to be kept as the account's password once the gateway takes it. */
     remember: boolean
-    saveKey: string
-    saveLabel: string
-    saveFor: string
+    saveKey?: string
+    saveLabel?: string
+    saveFor?: string
     accountRevision?: string
 }
 
@@ -187,6 +189,11 @@ interface CertificateProblem {
 interface RememberedCertificate {
     sha256: string
     authority?: boolean
+}
+
+/** A file's name as it is shown: it comes with the file, and what could reorder or hide part of it shows as �. */
+function showableFileName (raw: string): string {
+    return raw.replace(new RegExp(UNSHOWABLE.source, 'gu'), '�')
 }
 
 /**
@@ -444,7 +451,9 @@ export class DesktopSession {
 
     /**
      * Lets go of every key still held on this desktop. For when their keyups won't reach it: view only coming on, or
-     * typing into all going off, by a shortcut whose modifiers are down at that moment. They would stay down there.
+     * typing into all going off, by a shortcut whose modifiers are down at that moment, or the user leaving its pane
+     * by one (see RemoteDesktopService.letGoUnlessInFront). They would stay down there. Sent through IronRDP's
+     * component, which takes a key sent this way whether or not it has the focus.
      */
     releaseKeys (): void {
         for (const [code, init] of [...this.keysDown]) {
@@ -482,8 +491,48 @@ export class DesktopSession {
     private readonly container: HTMLElement
 
     private readonly reclaimFocus = (event: FocusEvent): void => {
-        if (this.visible && !this.overlay.contains(event.target as Node)) {
+        if (!this.visible) {
+            return
+        }
+        if (!this.overlay.contains(event.target as Node)) {
             this.focusSoon()
+            return
+        }
+        // The focus came to the desktop while its pane isn't the one the user is in: IronRDP's canvas takes it as the
+        // pointer passes over it (its `mouseenter`), without a click, and with it the keys typed and this computer's
+        // clipboard (its monitor follows the focus). It goes back where it came from. A click hands it over still:
+        // Tabby makes the pane the one in front on the click, and the pane's focus gives the desktop the keyboard. (The
+        // layer's own fields and buttons, a sign-in form's, send nothing anywhere until they are used.)
+        if ((event.target as Element | null)?.tagName === 'IRON-REMOTE-DESKTOP' && !this.inFront()) {
+            this.letGo(event.relatedTarget)
+        }
+    }
+
+    /** Whether the focus is on the desktop: IronRDP's component, its sign-in form, a question's buttons. */
+    holdsFocus (): boolean {
+        return this.overlay.contains(document.activeElement)
+    }
+
+    /**
+     * Takes the focus from the desktop, if it has it, back to `to` (where it came from) when that is still there to
+     * take it, or else to nothing. On IronRDP's component it is its canvas, in the component's shadow root, that has
+     * it, and has to let go. The keys held on the remote stay held: IronRDP lets go of them as the window loses the
+     * focus or the pointer leaves the canvas, not as the canvas loses the focus. Where the focus goes back to the
+     * desktop in front (the pointer passed over this one), their keyups still come from there, copied when typing
+     * into all; where the user left the pane, they don't, and the keys are let go of (see
+     * RemoteDesktopService.letGoUnlessInFront).
+     */
+    letGo (to?: EventTarget | null): void {
+        const active = document.activeElement as HTMLElement | null
+        if (!active || !this.overlay.contains(active)) {
+            return
+        }
+        const back = to as HTMLElement | null | undefined
+        if (typeof back?.focus === 'function' && back.isConnected !== false && !this.overlay.contains(back)) {
+            back.focus({ preventScroll: true })
+        }
+        if (this.overlay.contains(document.activeElement)) {
+            ;((active.shadowRoot?.activeElement as HTMLElement | null) ?? active).blur()
         }
     }
 
@@ -540,9 +589,59 @@ export class DesktopSession {
     }
 
     private disposers: (() => void)[] = []
+    private connectionDisposers: (() => void)[] = []
 
     onDispose (f: () => void): void {
         this.disposers.push(f)
+    }
+
+    onConnectionEnd (f: () => void): void {
+        this.connectionDisposers.push(f)
+    }
+
+    /** Release browser resources and references to one backend, including when its WASM has trapped. */
+    endConnection (keepPicture = true): void {
+        const clean = (f: () => void) => {
+            try { f() } catch (error: any) { this.log.push(`cleanup: ${error?.message ?? error}`) }
+        }
+        let picture = keepPicture ? this.host.querySelector<HTMLCanvasElement>('.trd-last-frame') : null
+        // Preserve the dimmed disconnect picture as plain pixels, without the component's backend or listeners.
+        clean(() => {
+            const frame = keepPicture ? this.canvas() : null
+            if (!frame?.width || !frame.height) {
+                return
+            }
+            const copy = document.createElement('canvas')
+            copy.width = frame.width
+            copy.height = frame.height
+            copy.className = 'trd-last-frame'
+            const rect = frame.getBoundingClientRect()
+            copy.style.width = `${rect.width || frame.width}px`
+            copy.style.height = `${rect.height || frame.height}px`
+            const ctx = copy.getContext('2d')
+            if (ctx) {
+                ctx.drawImage(frame, 0, 0)
+                picture = copy
+            }
+        })
+        this.connectionDisposers.splice(0).forEach(clean)
+        clean(() => this.indicator?.setActive(false))
+        clean(() => this.ui?.shutdown())
+        // Removing the component stops its clipboard loop and removes its global listeners.
+        clean(() => this.host.replaceChildren(...picture ? [picture] : []))
+        this.ui = null
+        this.stopSending = null
+        clean(() => this.audio?.close())
+        this.audio = null
+        clean(() => this.h264?.close())
+        this.h264 = null
+        clean(() => this.mic?.close())
+        this.mic = null
+        clean(() => this.files?.dispose())
+        this.files = null
+        clean(() => this.drives?.dispose())
+        this.drives = null
+        this.remoteSize = null
     }
 
     /** Focuses the remote desktop. IronRDP reveals its canvas asynchronously, so retry for about half a second. */
@@ -577,13 +676,7 @@ export class DesktopSession {
         clearTimeout(this.labelTimer)
         this.container.removeEventListener('focusin', this.reclaimFocus, true)
         this.disposers.forEach(f => f())
-        this.indicator?.dispose()
-        try { this.ui?.shutdown() } catch { }
-        this.audio?.close()
-        this.h264?.close()
-        this.mic?.close()
-        this.files?.dispose()
-        this.drives?.dispose()
+        this.endConnection(false)
         this.proxy?.close()
         this.overlay.remove()
     }
@@ -599,7 +692,13 @@ export class RemoteDesktopService {
     /** Emits whenever a pane's desktop is opened, shown, hidden, connected, ended or disconnected. */
     readonly changed$ = new Subject<void>()
     private sessions = new Map<DesktopPane, DesktopSession>()
-    private ironrdp: Promise<any> | null = null
+    private ironrdp = new IronRDPLoader(async () => {
+        const [factory, bytes] = await Promise.all([
+            importESM(vendor('iron-remote-desktop.js')).then(() => importESM(vendor('ironrdp-factory.js'))),
+            fs.promises.readFile(vendorFile('ironrdp_web_bg.wasm')),
+        ])
+        return { module: await WebAssembly.compile(bytes), createBackend: factory.createBackend }
+    })
     /** Whether the browser decodes H.264 (asked once). */
     private h264Support: Promise<boolean> | null = null
     /** Desktops (session keys) where H.264 decoding failed: they connect without it until Tabby restarts. */
@@ -1019,10 +1118,12 @@ export class RemoteDesktopService {
         // Names as text whatever the config holds (see entryText): the accounts list and the question before removing
         // one show them all.
         const desktops = this.configuredDesktops().flatMap((d, i) => isDesktopEntry(d) && (d.account === id || d.gatewayAccount === id) ? [{ name: entryText(d).name, desktopIndex: i }] : [])
-        const groups: any[] = this.config.store.groups ?? []
-        const inherited = (p: any) => p.options?.account === undefined && groups.find(g => g.id === p.group)?.defaults?.[RDP_PROFILE_TYPE]?.options?.account === id
         const profiles = (this.config.store.profiles ?? [])
-            .filter((p: any) => p?.type === RDP_PROFILE_TYPE && (p.options?.account === id || p.options?.gatewayAccount === id || inherited(p)))
+            .filter((p: any) => {
+                if (p?.type !== RDP_PROFILE_TYPE) { return false }
+                const options = this.profiles.getConfigProxyForProfile(p).options
+                return options?.account === id || options?.gatewayAccount === id
+            })
             .map((p: any) => ({ name: configText(p.name) || configText(p.options?.host), profileId: configText(p.id) || undefined }))
         return [...desktops, ...profiles]
     }
@@ -1138,9 +1239,9 @@ export class RemoteDesktopService {
                 if (rest.account === id) {
                     delete rest.account
                 }
-                // A gateway that signed in with it takes the desktop's sign-in from now on.
+                // Keep the gateway's credentials separate after its saved account is removed.
                 if (rest.gatewayAccount === id) {
-                    delete rest.gatewayAccount
+                    rest.gatewayAccount = ASK_GATEWAY_ACCOUNT
                 }
                 return rest
             })
@@ -1151,14 +1252,18 @@ export class RemoteDesktopService {
                 profile.options.account = null
             }
             if (profile?.type === RDP_PROFILE_TYPE && profile.options?.gatewayAccount === id) {
-                profile.options.gatewayAccount = null
+                profile.options.gatewayAccount = ASK_GATEWAY_ACCOUNT
             }
         }
-        // A profile group's default for remote desktop profiles, too.
-        for (const group of this.config.store.groups ?? []) {
-            const options = group?.defaults?.[RDP_PROFILE_TYPE]?.options
+        // Group and global defaults keep separate gateway authentication for their inheriting profiles, too.
+        const defaults = [this.config.store.profileDefaults, ...(this.config.store.groups ?? []).map((group: any) => group?.defaults)]
+        for (const entry of defaults) {
+            const options = entry?.[RDP_PROFILE_TYPE]?.options
             if (options?.account === id) {
                 options.account = ''
+            }
+            if (options?.gatewayAccount === id) {
+                options.gatewayAccount = ASK_GATEWAY_ACCOUNT
             }
         }
         await this.config.save()
@@ -1344,6 +1449,11 @@ export class RemoteDesktopService {
         }
     }
 
+    /** Says that the .rdp file named `rawFileName` is too large to be one (see MAX_RDP_FILE). */
+    private refuseLargeRdp (rawFileName: string, size: number): void {
+        this.notifications.error(`${showableFileName(rawFileName)}: at ${Math.ceil(size / 1024)} KB, far larger than an .rdp file is, so it wasn't imported`)
+    }
+
     /** "Import an .rdp file…": picks one and adds it as a remote desktop profile (see importRdp). */
     async importRdpFile (): Promise<void> {
         const file = await new Promise<File | null>(resolve => {
@@ -1357,6 +1467,11 @@ export class RemoteDesktopService {
             input.click()
         })
         if (file) {
+            // Not even read when it is far larger than an .rdp file is (see importRdp).
+            if (file.size > MAX_RDP_FILE) {
+                this.refuseLargeRdp(file.name, file.size)
+                return
+            }
             // A reading or parsing failure is shown, not dropped as an unhandled rejection: this is the user's action.
             try {
                 await this.importRdp(new Uint8Array(await file.arrayBuffer()), file.name)
@@ -1392,8 +1507,12 @@ export class RemoteDesktopService {
      * and opens it; or opens the profile that already has that address, user and domain. Returns the profile, or null.
      */
     async importRdp (data: Uint8Array, rawFileName: string): Promise<any> {
-        // The file's name comes with the file, and is shown: what could reorder or hide part of it shows as �.
-        const fileName = rawFileName.replace(new RegExp(UNSHOWABLE.source, 'gu'), '�')
+        const fileName = showableFileName(rawFileName)
+        // Far larger than an .rdp file is: not parsed, on the thread that runs Tabby's window (see MAX_RDP_FILE).
+        if (data.length > MAX_RDP_FILE) {
+            this.refuseLargeRdp(rawFileName, data.length)
+            return null
+        }
         const parsed = parseRdpFile(data)
         if (!parsed) {
             this.notifications.error(`${fileName}: no address ("full address") in it`)
@@ -1724,6 +1843,16 @@ export class RemoteDesktopService {
                 }
             })
             created.onDispose(() => focused.unsubscribe())
+            // The pane is no longer the one the user is in: another tab, another pane of the split. Tabby only moves a
+            // tab it leaves off screen, and a tab that takes no focus of its own (Settings, the welcome tab) leaves the
+            // focus where it was: on the desktop, which would go on taking the keys typed and this computer's
+            // clipboard. It lets go then, of the keys it holds on the remote too: the user left by a shortcut whose
+            // modifier is still down, and its keyup goes where they went. A moment later: Tabby says so before it says
+            // which tab is the active one.
+            const blurred = pane.blurred$.subscribe(() => {
+                setTimeout(() => this.letGoUnlessInFront(created))
+            })
+            created.onDispose(() => blurred.unsubscribe())
             this.connect(pane, target, spec, created)
         }
         if (options.background) {
@@ -1797,10 +1926,30 @@ export class RemoteDesktopService {
         return desktopPaneOf(this.app.activeTab) === pane
     }
 
-    /** Whether `session` is the desktop of the pane the user is in (see inFront). */
+    /**
+     * Whether `session` is the desktop of the pane the user is in (see inFront), and not behind a pane maximized over
+     * it (see behindMaximized).
+     */
     private showsInFront (session: DesktopSession): boolean {
         const pane = desktopPaneOf(this.app.activeTab)
-        return !!pane && this.sessions.get(pane) === session
+        return !!pane && this.sessions.get(pane) === session && !this.behindMaximized(pane)
+    }
+
+    /**
+     * A desktop whose pane stopped being the one the user is in (see showsInFront): the focus is taken from it, if it
+     * has it, and the keys it holds on the remote are let go of. Their keyups go where the user went, whether the
+     * desktop kept the focus until now (a tab that takes none) or lost it to what they went to (a terminal), and
+     * IronRDP lets go of nothing as its canvas loses the focus (see DesktopSession.letGo). With typing broadcast to
+     * every desktop of the tab, leaving the tab leaves all of its panes, so each of them is let go of here too.
+     */
+    private letGoUnlessInFront (session: DesktopSession): void {
+        if (this.showsInFront(session)) {
+            return
+        }
+        if (session.holdsFocus()) {
+            session.letGo()
+        }
+        session.releaseKeys()
     }
 
     /**
@@ -2405,7 +2554,7 @@ export class RemoteDesktopService {
             timer = setTimeout(() => this.followPane(pane, session), 300)
         })
         observer.observe(session.overlay)
-        session.onDispose(() => {
+        session.onConnectionEnd(() => {
             clearTimeout(timer)
             observer.disconnect()
         })
@@ -2920,22 +3069,9 @@ export class RemoteDesktopService {
     }
 
     private loadIronRDP (): Promise<any> {
-        this.ironrdp ??= (async () => {
-            // The WebAssembly ships as its own file (not inlined in the bundle). It is read here and handed to init,
-            // rather than fetched by the bundle from next to itself: fetch() of file:// URLs is up to the Electron
-            // build (a fuse turns it off), and a plain file path needs no URL escaping for spaces or drive letters.
-            const [rdp, wasm] = await Promise.all([
-                importESM(vendor('iron-remote-desktop.js')).then(() => importESM(vendor('iron-remote-desktop-rdp.js'))),
-                fs.promises.readFile(vendorFile('ironrdp_web_bg.wasm')),
-            ])
-            // Troubleshooting: localStorage.trdLogLevel = 'DEBUG' (or TRACE), then restart Tabby.
-            let level = 'INFO'
-            try { level = localStorage.getItem('trdLogLevel') || level } catch { }
-            await rdp.init(level, wasm)
-            return rdp
-        })()
-        this.ironrdp.catch(() => { this.ironrdp = null })
-        return this.ironrdp
+        let level = 'INFO'
+        try { level = localStorage.getItem('trdLogLevel') || level } catch { }
+        return this.ironrdp.create(level)
     }
 
     /**
@@ -3191,35 +3327,35 @@ export class RemoteDesktopService {
 
     /**
      * The sign-in to a desktop's RD Gateway with the saved account it names: the account's password from the keychain,
-     * or asked for (when none is saved, or `retryError`: the gateway just refused it). Undefined when that account no
-     * longer exists (the desktop's own sign-in is then tried); null when the form was cancelled.
+     * or asked for (when none is saved, or `retryError`: the gateway just refused it). A removed or missing account
+     * always asks for separate credentials; null when the form was cancelled.
      */
-    private async gatewayAccountFor (spec: DesktopSpec, session: DesktopSession, gateway: Gateway, retryError?: string): Promise<GatewaySignIn | undefined | null> {
+    private async gatewayAccountFor (spec: DesktopSpec, session: DesktopSession, gateway: Gateway, retryError?: string): Promise<GatewaySignIn | null> {
         const account = this.accounts().find(a => a.id === spec.gatewayAccount)
         if (!account) {
-            session.log.push('gateway: its saved account no longer exists; signing in with the desktop\'s')
-            return undefined
+            session.log.push('gateway: asking for a separate account')
         }
-        const signIn = { domain: account.domain, saveKey: accountKey(account.id), saveLabel: `saved account ${account.name}`, saveFor: signInName(account), accountRevision: this.accountRevisions.capture(account) }
-        const saved = retryError ? null : await loadCredentials(signIn.saveKey)
-        if (saved && saved.username === signInName(account)) {
+        const signIn = account ? { domain: account.domain, saveKey: accountKey(account.id), saveLabel: `saved account ${account.name}`, saveFor: signInName(account), accountRevision: this.accountRevisions.capture(account) } : undefined
+        const saved = !retryError && signIn ? await loadCredentials(signIn.saveKey) : null
+        if (saved && account && saved.username === signInName(account)) {
             session.log.push(`gateway: the saved account "${account.name}"`)
             return { ...signIn, credentials: { username: signInName(account), password: saved.password }, remember: false }
         }
         session.status('')
         const asked = askCredentials(session.overlay, {
             title: `Sign in to the gateway ${gateway.host}, to reach ${spec.name}`,
-            username: signInName(account),
-            error: [retryError, signIn.accountRevision === undefined ? ACCOUNT_REMEMBER_UNAVAILABLE : ''].filter(Boolean).join(' '),
-            canRemember: signIn.accountRevision !== undefined,
-            account: account.name,
+            username: account ? signInName(account) : '',
+            error: [retryError, !account && spec.gatewayAccount !== ASK_GATEWAY_ACCOUNT ? 'The saved gateway account no longer exists. Enter a separate account for the gateway.' : '',
+                account && signIn?.accountRevision === undefined ? ACCOUNT_REMEMBER_UNAVAILABLE : ''].filter(Boolean).join(' '),
+            canRemember: !!signIn && signIn.accountRevision !== undefined,
+            account: account?.name,
         }, session.disposed)
         // Only in the pane in front (see endpointFor).
         if (session.visible && this.showsInFront(session)) {
             setTimeout(() => session.visible && this.showsInFront(session) && session.focusDesktop())
         }
         const entered = await asked
-        return entered && { ...signIn, credentials: entered, remember: entered.remember }
+        return entered && { ...signIn, credentials: entered, remember: !!signIn && entered.remember }
     }
 
     /**
@@ -3229,8 +3365,11 @@ export class RemoteDesktopService {
     private async throughGateway (target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, gateway: Gateway, endpoint: Endpoint, signal?: AbortSignal): Promise<Duplex> {
         session.gatewayRefused = null
         const own = endpoint.gatewayAccount
+        if (spec.gatewayAccount && !own) {
+            throw new Error('A separate gateway sign-in is required before connecting.')
+        }
         const credentials = own?.credentials ?? endpoint.credentials
-        session.log.push(`gateway: ${gateway.host}:${gateway.port}, signing in with ${own ? 'its saved account' : 'the desktop\'s sign-in'}`)
+        session.log.push(`gateway: ${gateway.host}:${gateway.port}, signing in with ${own ? 'its separate account' : 'the desktop\'s sign-in'}`)
         try {
             const stream = await openThroughGateway(
                 () => target.openTcp(gateway.host, gateway.port), gateway,
@@ -3239,10 +3378,11 @@ export class RemoteDesktopService {
                 (fingerprint, valid, reason, details) => this.checkGatewayCertificate(session, gateway, fingerprint, valid, reason, details),
                 { log: m => session.log.push(m), clientName: os.hostname(), signal })
             // Entered a moment ago and taken by the gateway: kept, while the account is still what it was signed in as.
-            if (own?.remember) {
+            if (own?.remember && own.saveKey) {
                 own.remember = false
-                saveCredentialsIf(own.saveKey, own.credentials,
-                    () => this.accountCurrent(own.saveKey, own.saveFor, own.accountRevision), own.saveLabel).then(
+                const saveKey = own.saveKey
+                saveCredentialsIf(saveKey, own.credentials,
+                    () => this.accountCurrent(saveKey, own.saveFor, own.accountRevision), own.saveLabel).then(
                     saved => session.log.push(saved ? `gateway: saved as the account's password in ${storeName()}` : 'gateway: not saved: the account changed meanwhile'),
                     e => session.log.push(`gateway: ${storeName()}: ${e?.message ?? e}`))
             }
@@ -3727,8 +3867,43 @@ export class RemoteDesktopService {
     private async run (
         pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, rdp: any, endpoint: Endpoint,
     ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+        const attempt = new AbortController()
+        let connectedAt: number | undefined
+        let unwatch: (() => void) | undefined
+        const trapped = new Promise<{ connected: boolean, error: string }>(resolve => {
+            unwatch = rdp.runtime?.onTrap((error: Error) => {
+                session.log.push(`wasm: this desktop's instance trapped: ${error.message}`)
+                // Drop the socket even if Rust's run() promise can no longer settle after a trap.
+                session.proxy?.close()
+                session.proxy = null
+                resolve({ connected: session.state === 'connected', error: `WebAssembly instance failed: ${error.message}` })
+            })
+        })
+        try {
+            return await Promise.race([
+                this.runConnection(pane, target, spec, session, rdp, endpoint, attempt.signal, at => { connectedAt = at }),
+                trapped,
+                session.disposed.then(() => ({ connected: false })),
+            ])
+        } finally {
+            attempt.abort()
+            unwatch?.()
+            // Rust's run() can stay pending after an asynchronous trap. Account for the completed attempt here,
+            // exactly once, and never update retry state belonging to a replacement session in this pane.
+            if (connectedAt !== undefined && this.sessions.get(pane) === session) {
+                this.reconnectedUntilNow(pane, connectedAt)
+            }
+            session.endConnection?.()
+            rdp.runtime?.dispose?.()
+        }
+    }
+
+    private async runConnection (
+        pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, rdp: any, endpoint: Endpoint,
+        signal: AbortSignal, onConnected: (at: number) => void,
+    ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
         const credentials = endpoint.credentials
-        const alive = () => this.sessions.get(pane) === session
+        const alive = () => !signal.aborted && this.sessions.get(pane) === session
         session.certificateProblem = null
         session.gatewayRefused = null
         session.withoutNla = false
@@ -3742,7 +3917,9 @@ export class RemoteDesktopService {
             session.host.replaceChildren(el)
             // The element only gets ready in the page: one whose desktop was closed meanwhile (the layer gone) never does.
             // Closed as it got ready, it isn't given the clipboard, files and the rest that closing it has ended already.
-            session.ui = await Promise.race([ready, session.disposed.then(() => null)])
+            session.ui = await Promise.race([ready, session.disposed.then(() => null), new Promise<null>(resolve => {
+                signal.addEventListener('abort', () => resolve(null), { once: true })
+            })])
             if (!session.ui || !alive()) {
                 return { connected: false }
             }
@@ -3887,6 +4064,8 @@ export class RemoteDesktopService {
             if (!alive()) {
                 return { connected: false }
             }
+            const connectedAt = Date.now()
+            onConnected(connectedAt)
             session.ui.setVisibility(true)
             this.applyKeyboardMode(session)
             session.remoteSize = { width, height, scale: 100 }
@@ -3930,11 +4109,13 @@ export class RemoteDesktopService {
                     e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
             }
             this.focusIfInFront(pane, session)
-            const connectedAt = Date.now()
             let end: any
             try {
                 end = await info.run()
             } catch (e: any) {
+                if (!alive()) {
+                    return { connected: false }
+                }
                 if (session.h264?.failed) {
                     // Reconnects (automatically, like any dropped connection) without H.264, unless the browser only
                     // took an idle decoder back (a hidden window): then with it, as a new stream starts with a key frame.
@@ -3954,15 +4135,8 @@ export class RemoteDesktopService {
                     return { connected: false, signInFailed: `${target.label} ended the connection at once: this account may not open ${spec.name}'s console. Use an administrator of the host, a member of its Hyper-V Administrators, or an account given access with Grant-VMConnectAccess.` }
                 }
                 return { connected: true, error }
-            } finally {
-                // The server can't close the microphone, or its files, once the connection is gone.
-                session.mic?.close()
-                session.drives?.dispose()
-                if (alive()) {
-                    this.reconnectedUntilNow(pane, connectedAt)
-                }
             }
-            return { connected: true, reason: end?.reason?.() }
+            return alive() ? { connected: true, reason: end?.reason?.() } : { connected: false }
         } catch (e: any) {
             return { connected: false, error: e?.message ?? String(e) }
         }

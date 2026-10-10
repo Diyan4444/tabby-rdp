@@ -7,7 +7,7 @@ import { BaseTerminalTabComponent, TerminalDecorator } from 'tabby-terminal'
 import { RemoteDesktopService } from './desktop.service'
 import { formatAddress, parseAddress } from './desktopForm'
 import { RemoteDesktopHelp } from './help'
-import { signInName } from './accounts'
+import { ASK_GATEWAY_ACCOUNT, signInName } from './accounts'
 import { newAccountOption } from './accountForm'
 import { CLIPBOARD_LABELS, ClipboardMode, ownClipboard } from './clipboard'
 import { configText, desktopIdOf } from './desktops'
@@ -42,6 +42,7 @@ export interface RDPProfile extends ConnectableProfile {
         /**
          * A saved account's id to sign in to the gateway with, or '' for the desktop's own sign-in (or the group's or
          * the global default's), or null: the desktop's own whatever the defaults (an imported profile's).
+         * ASK_GATEWAY_ACCOUNT asks for a separate gateway sign-in when connecting.
          */
         gatewayAccount: string | null
         /** The ways the clipboard goes with this desktop ('both', 'fromRemote', 'off'), or '' for the setting's. */
@@ -153,7 +154,7 @@ export class RDPTabRecovery extends TabRecoveryProvider<RDPTabComponent> {
 
 /**
  * The profile's own fields in Tabby's profile editor (name, group, icon and color are Tabby's). Plain DOM like the
- * rest of the plugin, writing to the profile as you type.
+ * rest of the plugin. Address and gateway edits stay in the form until Save validates both of them.
  */
 @Component({
     selector: 'rdp-profile-settings',
@@ -163,6 +164,7 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
     profile!: RDPProfile
     /** As the editor opened: what is kept per desktop moves along with a new address (see save()). */
     private before!: { id: string, account: string, via: string, gateway: string }
+    private connectionInputs?: { address: HTMLInputElement, gateway: HTMLInputElement }
 
     constructor (private element: ElementRef<HTMLElement>, private injector: Injector) { }
 
@@ -223,6 +225,7 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
                     Applies on the next connection.</div>
             </div>`
         const field = <T extends HTMLInputElement | HTMLSelectElement = HTMLInputElement>(name: string) => root.querySelector(`[name="${name}"]`) as T
+        this.connectionInputs = { address: field('address'), gateway: field('gateway') }
         field('address').value = o.host ? formatAddress(o.host, o.port || 3389) : ''
         field<HTMLSelectElement>('kind').value = o.kind === 'gnome' || o.kind === 'xrdp' ? o.kind : 'windows'
         field('username').value = o.username ?? ''
@@ -232,10 +235,6 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             const text = field('address').value
             const address = parseAddress(text)
             root.querySelector('[data-for=address]')!.textContent = text.trim() && !address ? 'This doesn\'t look like an address.' : ''
-            if (address) {
-                o.host = address.host
-                o.port = address.port
-            }
         })
         field<HTMLSelectElement>('kind').addEventListener('change', () => {
             const kind = field<HTMLSelectElement>('kind').value
@@ -264,12 +263,13 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
         field('username').addEventListener('input', () => { o.username = field('username').value.trim() })
         field('domain').addEventListener('input', () => { o.domain = field('domain').value.trim() })
 
-        // The gateway, and its account where that isn't the desktop's (offered once there is a gateway and a saved account).
+        // The gateway, and its separate account or sign-in prompt.
         const gateway = field('gateway')
         const gatewayAccount = field<HTMLSelectElement>('gatewayAccount')
         gateway.value = o.gateway ?? ''
-        gatewayAccount.append(new Option('The same as the desktop\'s', ''), ...accounts.map(a => new Option(label(a), a.id)))
-        if (o.gatewayAccount && !accounts.some(a => a.id === o.gatewayAccount)) {
+        gatewayAccount.append(new Option('The same as the desktop\'s', ''), new Option('Ask for a gateway account when connecting', ASK_GATEWAY_ACCOUNT),
+            ...accounts.map(a => new Option(label(a), a.id)))
+        if (o.gatewayAccount && o.gatewayAccount !== ASK_GATEWAY_ACCOUNT && !accounts.some(a => a.id === o.gatewayAccount)) {
             gatewayAccount.append(new Option('(a saved account that no longer exists)', o.gatewayAccount))
         }
         gatewayAccount.value = o.gatewayAccount ?? ''
@@ -278,10 +278,7 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             root.querySelector('[data-for=gateway]')!.textContent = text && !parseGateway(text) ? 'A name or address, with :port if it isn\'t 443.' : ''
             root.querySelector<HTMLElement>('[data-gateway-account]')!.hidden = !text || gatewayAccount.options.length < 2
         }
-        gateway.addEventListener('input', () => {
-            o.gateway = gateway.value.trim()
-            gatewayChanged()
-        })
+        gateway.addEventListener('input', gatewayChanged)
         gatewayAccount.addEventListener('change', () => { o.gatewayAccount = gatewayAccount.value })
         gatewayChanged()
 
@@ -306,8 +303,40 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
 
     save (): void {
         const o = this.profile.options
+        if (this.connectionInputs) {
+            const { address: addressInput, gateway: gatewayInput } = this.connectionInputs
+            const addressText = addressInput.value.trim()
+            const address = parseAddress(addressText)
+            const gatewayText = gatewayInput.value.trim()
+            // Empty addresses are useful in group/type defaults. They clear the destination instead of retaining it.
+            const addressError = addressText && !address ? 'This doesn\'t look like an address.' : ''
+            const gatewayError = gatewayText && !parseGateway(gatewayText) ? 'A name or address, with :port if it isn\'t 443.' : ''
+            const root = this.element.nativeElement
+            root.querySelector('[data-for=address]')!.textContent = addressError
+            root.querySelector('[data-for=gateway]')!.textContent = gatewayError
+            if (addressError || gatewayError) {
+                ;(addressError ? addressInput : gatewayInput).focus()
+                // Tabby invokes this synchronous hook before cleaning the proxy and closing the modal. Throwing
+                // stops that Save operation; a return value would be ignored by the host.
+                throw new Error(`Cannot save this RDP profile: ${addressError || gatewayError}`)
+            }
+            // Commit the two connection fields together only after both drafts pass validation.
+            o.host = address?.host ?? ''
+            // A blank destination carries no port edit: keep custom/inherited ports in group and type defaults.
+            if (address) { o.port = address.port }
+            o.gateway = gatewayText
+        }
         const { id, account, via, gateway } = this.before
         if (!id) {
+            return
+        }
+        if (!o.host) {
+            // A saved profile's address cleared: the desktop it led to is gone from it, as when the profile is removed
+            // (see RDPProfilesService.deleteProfile). Not for the type's or a group's defaults, which have no id of
+            // their own (an empty address is useful there): profiles that name that address keep what is saved for it.
+            if (!via && this.profile.id) {
+                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`).catch(() => null)
+            }
             return
         }
         if ((o.via ?? '') !== via) {
@@ -416,8 +445,9 @@ export class RDPProfilesService extends QuickConnectProfileProvider<RDPProfile> 
 
     override deleteProfile (profile: RDPProfile): void {
         // A direct desktop's saved passwords (through any gateway: one it went through before too) and certificate are
-        // its own; one behind a host shares them with that host's desktop at the same address.
-        if (!profile.options.via) {
+        // its own; one behind a host shares them with that host's desktop at the same address. A profile without an
+        // address of its own leads to no desktop of its own: desktopIdOf would name 127.0.0.1:3389 for it.
+        if (!profile.options.via && configText(profile.options.host)) {
             this.injector.get(RemoteDesktopService).forgetDesktop(desktopIdOf(profile.options), true, `"${profile.name}"`).catch(() => null)
         }
     }

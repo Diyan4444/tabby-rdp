@@ -78,6 +78,12 @@ function decode (data: Uint8Array): string {
     return b.toString('utf8')
 }
 
+/**
+ * The most an .rdp file may be: one Remote Desktop Connection saves is a few KB, a signed one a few more. A larger one is
+ * refused before it is read: what it holds would be parsed on the thread that runs Tabby's window.
+ */
+export const MAX_RDP_FILE = 1024 * 1024
+
 /** The connection a .rdp file describes, or null without a usable `full address`. */
 export function parseRdpFile (data: Uint8Array): RdpFile | null {
     const settings = new Map<string, string>()
@@ -85,9 +91,13 @@ export function parseRdpFile (data: Uint8Array): RdpFile | null {
     // twice, differently, gets the narrower of the two rather than whichever line comes last.
     let clipboardOff = false
     for (const line of decode(data).split(/\r?\n/)) {
-        const m = /^\s*([^:]+?)\s*:\s*([sib])\s*:(.*)$/i.exec(line)
-        if (m) {
-            const key = m[1].toLowerCase()
+        // The name up to the first colon, trimmed after: a pattern with room for spaces on both sides of the name (as
+        // `\s*([^:]+?)\s*:` had) tries every way of splitting a line of spaces without a colon before it fails, in time
+        // that grows with the cube of its length, and a line of a few thousand spaces held up Tabby's window for seconds
+        // (security review, finding 2). This one takes a line's length, whatever it holds.
+        const m = /^([^:]*):\s*([sib])\s*:(.*)$/i.exec(line)
+        const key = m?.[1].trim().toLowerCase()
+        if (m && key) {
             const value = m[3].trim()
             settings.set(key, value)
             clipboardOff ||= key === 'redirectclipboard' && /^[+-]?\d+$/.test(value) && Number(value) === 0

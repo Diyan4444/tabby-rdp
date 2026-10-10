@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.5.3
+
+**Added**
+- **Each desktop connection has its own WebAssembly instance**, while sharing compiled IronRDP code. Reconnecting
+  or recovering from an instance fault creates a fresh backend for that desktop without replacing other desktops.
+- **Instance lifecycle checks** cover independent memories, cleanup, reconnects and collection after disposal,
+  with a browser smoke test and a live two-desktop isolation suite.
+
+**Security** (a review of 0.5.3-rc.1; all of these were in 0.5.2 too)
+- **Moving the pointer over a desktop no longer gives it the keyboard and the clipboard.** IronRDP's canvas took the
+  focus without a click, so keys typed into the terminal next to it (a password at a prompt that doesn't echo
+  included) and this computer's clipboard went to that remote server; also from behind a maximized pane. A desktop
+  now takes the keyboard only in the pane in front, and gives it back to where it came from otherwise.
+- **A desktop lets go of the keyboard when its tab is left by keyboard** for one that takes no focus (Settings, the
+  welcome tab): it went on taking the keys typed and the clipboard copied, view only included. Keys that reach a
+  desktop not in front now stop at the plugin. The shortcut's modifier, still down as the tab goes, is let go of on
+  the remote too, whichever tab is left for: its keyup goes where the user went, and IronRDP lets go of nothing as its
+  canvas loses the focus, so the modifier stayed held there until it was pressed again (a held Alt has the next key
+  open a menu on Windows).
+- **A crafted .rdp file can't hang Tabby's window**: a line of whitespace took time that grew with the cube of its
+  length to parse (seconds for a few thousand spaces). Files over 1 MB are refused unread.
+
+**Fixed**
+- **Removing a profile without an address no longer forgets what was saved for 127.0.0.1:3389.**
+- **The architecture document gives the update check's real limit** (4 MB for the version catalog, not 256 KB).
+- **Tabby's window no longer crashes when a desktop reached directly is refused after TLS** (#69): on Linux, the
+  first connection to any desktop in a remote desktop tab (a profile, quick connect, an .rdp file), whose certificate
+  is asked about before anything of the sign-in goes to it, closed the window and left Tabby running in the
+  background. A changed certificate did the same. The plugin now closes TLS before the socket under it. Desktops
+  behind an SSH host were not affected.
+- **Removing a saved gateway account keeps gateway credentials separate.** Inherited gateway uses are listed in
+  the removal confirmation; affected desktops and group defaults ask for a gateway account on the next connection.
+  Missing named gateway accounts also ask separately instead of silently using the destination credentials.
+- **The desktop inventory shows effective profile settings**, including inherited gateway routing, gateway accounts,
+  SSH profiles, sign-in names and connection kinds.
+- **Ended connections release their backend and browser resources**, including timers, global listeners, media,
+  and the statistics indicator's canvas hook, while retaining the last picture for the disconnected pane.
+- **Profile Save validates the address and RD Gateway before committing either field.** Invalid edits keep the
+  editor open and focus the field to correct, instead of saving an invalid gateway or silently keeping an old address.
+  Blank destinations preserve custom and inherited default ports when saving unrelated changes.
+
+**Changed**
+- **The rollback minimum is 0.5.3.** Updates persists this minimum to protect saved separate gateway prompts
+  from older versions that would reuse desktop credentials, and records a target release's minimum on installation.
+- **Preview publishing uses npm's beta tag** for both beta and release-candidate versions. GitHub release drafts
+  remain unpublished until the staged npm package is approved and verified.
+
+Qualification and remaining stable-release checks are tracked in [#49](https://github.com/meanaverage/tabby-rdp/issues/49).
+
 ## 0.5.2
 
 **Added**
