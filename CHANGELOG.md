@@ -21,6 +21,8 @@ Local release candidate; not published on npm or as a GitHub release.
   the remote too, whichever tab is left for: its keyup goes where the user went, and IronRDP lets go of nothing as its
   canvas loses the focus, so the modifier stayed held there until it was pressed again (a held Alt has the next key
   open a menu on Windows).
+- **A crafted .rdp file can't hang Tabby's window**: a line of whitespace took time that grew with the cube of its
+  length to parse (seconds for a few thousand spaces). Files over 1 MB are refused unread.
 
 **Fixed**
 - **Removing a profile without an address no longer forgets what was saved for 127.0.0.1:3389.**
