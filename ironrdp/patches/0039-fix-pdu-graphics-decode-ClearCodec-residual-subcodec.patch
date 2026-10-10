@@ -1,0 +1,687 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 17:23:40 -0700
+Subject: [PATCH 39/51] fix(pdu,graphics): decode ClearCodec residual, subcodec
+ and RLEX data one item at a time
+
+The ClearCodec decoder painted its bands layer one V-bar at a time, but
+still collected the rest of a stream before painting it: every segment
+of the residual layer (eight bytes, for as few as four on the wire),
+every region of the subcodec layer (20 bytes in the WebAssembly build,
+32 on 64-bit, for a 13-byte header), and every segment of an RLEX
+region (eight bytes, for one or two). The vectors grew by doubling, and
+infallibly. On 64-bit, a 64 MiB residual layer took 384 MiB and a
+64 MiB subcodec layer 192 MiB. A layer can be 256 MiB, the most ZGFX
+lets one PDU decompress to, and an 8192x8192 RLEX region can carry
+192 MiB of one-byte segments: in the WebAssembly build, a command of
+such a region trapped a fresh instance, the one every session shares,
+after growing it to 2.9 GiB, its vector of segments short of the 2 GiB
+it was growing to.
+
+ironrdp-pdu's new decode_residual_layer_segments,
+decode_subcodec_layer_regions and decode_rlex_segments iterate over a
+residual layer's segments, a subcodec layer's regions and an RLEX
+region's segments (after its palette, of at most 127 entries), decoding
+one at a time, and the ClearCodec decoder paints each as it comes: the
+layers above now take no memory besides the image, and that RLEX
+command grows a fresh instance to 1 GiB, for itself, the copies ZGFX
+and the PDU decoder make of it, and the 256 MiB image. A stream fails
+where it failed before: the segments past a full image are still read,
+so a malformed one still fails it. decode_residual_layer,
+decode_subcodec_layer and decode_rlex still collect.
+---
+ crates/ironrdp-graphics/src/clearcodec/mod.rs |  39 ++--
+ .../ironrdp-pdu/src/codecs/clearcodec/mod.rs  |  10 +-
+ .../src/codecs/clearcodec/residual.rs         | 126 ++++++++++---
+ .../ironrdp-pdu/src/codecs/clearcodec/rlex.rs | 167 +++++++++++++-----
+ .../src/codecs/clearcodec/subcodec.rs         |  70 +++++++-
+ .../ironrdp-testsuite-core/tests/peak_heap.rs |  66 +++++++
+ 6 files changed, 380 insertions(+), 98 deletions(-)
+
+diff --git a/crates/ironrdp-graphics/src/clearcodec/mod.rs b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+index 29305435..9a23f66c 100644
+--- a/crates/ironrdp-graphics/src/clearcodec/mod.rs
++++ b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+@@ -17,7 +17,8 @@ const GLYPH_CACHE_WRAP: u16 = 4_000;
+ use ironrdp_core::{DecodeResult, ReadCursor, function, invalid_field_err, other_err_with_source};
+ use ironrdp_pdu::codecs::clearcodec::{
+     ClearCodecBitmapStream, CompositePayload, FLAG_GLYPH_INDEX, RgbRunSegment, SubcodecId, VBar,
+-    decode_bands_layer_vbars, decode_residual_layer, decode_subcodec_layer, encode_residual_layer,
++    decode_bands_layer_vbars, decode_residual_layer_segments, decode_rlex_segments, decode_subcodec_layer_regions,
++    encode_residual_layer,
+ };
+ 
+ /// ClearCodec decoder maintaining persistent cache state across frames.
+@@ -166,17 +167,20 @@ impl ClearCodecDecoder {
+         // Layer 1: Residual (BGR RLE) - fills the entire output.
+         // Cap pixel writes to the output buffer size to prevent CPU-spin DoS
+         // from adversarial run_length values (FreeRDP CVE GHSA-32q9-m5qr-9j2v).
++        // Each segment is painted as it is read, rather than the layer collected first: a segment
++        // takes as few as four bytes on the wire, and eight decoded.
+         if !composite.residual_data.is_empty() {
+-            let segments = decode_residual_layer(composite.residual_data)?;
+             let max_offset = output.len();
+             let mut offset = 0;
+-            for seg in &segments {
++            for seg in decode_residual_layer_segments(composite.residual_data) {
++                let seg = seg?;
+                 // Trim each segment's run_length to the bytes remaining in the
+                 // output buffer. When a segment's declared run would exceed
+                 // the buffer, the excess is intentionally dropped (not a
+                 // parse error) so a single malformed segment cannot CPU-spin
+-                // the decoder. Subsequent segments are also skipped via the
+-                // `break` below once the buffer is full.
++                // the decoder. Once the buffer is full, the segments left are
++                // still read, so that a malformed one fails the stream, but
++                // paint nothing.
+                 let pixels_remaining = (max_offset.saturating_sub(offset)) / 4;
+                 let effective_run = u32::try_from(pixels_remaining).unwrap_or(u32::MAX).min(seg.run_length);
+                 for _ in 0..effective_run {
+@@ -186,9 +190,6 @@ impl ClearCodecDecoder {
+                     output[offset + 3] = 0xFF; // Alpha
+                     offset += 4;
+                 }
+-                if offset >= max_offset {
+-                    break;
+-                }
+             }
+         }
+ 
+@@ -221,11 +222,12 @@ impl ClearCodecDecoder {
+             }
+         }
+ 
+-        // Layer 3: Subcodecs - composite on top
++        // Layer 3: Subcodecs - composite on top.
++        // Each region is painted as it is read, rather than the layer collected first: a region's
++        // header takes 13 bytes on the wire, and up to 32 decoded.
+         if !composite.subcodec_data.is_empty() {
+-            let subcodecs = decode_subcodec_layer(composite.subcodec_data)?;
+-            for sub in &subcodecs {
+-                Self::decode_subcodec_region(sub, output, width)?;
++            for sub in decode_subcodec_layer_regions(composite.subcodec_data) {
++                Self::decode_subcodec_region(&sub?, output, width)?;
+             }
+         }
+ 
+@@ -335,15 +337,20 @@ impl ClearCodecDecoder {
+                 }
+             }
+             SubcodecId::Rlex => {
+-                let rlex = ironrdp_pdu::codecs::clearcodec::decode_rlex(sub.bitmap_data)?;
++                // Each segment is painted as it is read, rather than the region's collected
++                // first: a segment takes one or two bytes on the wire, and eight decoded.
++                let mut segments = decode_rlex_segments(sub.bitmap_data)?;
+                 let w = usize::from(sub.width);
+                 let h = usize::from(sub.height);
+                 let pixel_budget = w * h;
+                 let mut px = 0usize;
+ 
+-                for seg in &rlex.segments {
++                while let Some(seg) = segments.next() {
++                    let seg = seg?;
++                    let palette = segments.palette();
++
+                     // Run: repeat start_index color for run_length pixels
+-                    if let Some(color) = rlex.palette.get(usize::from(seg.start_index)) {
++                    if let Some(color) = palette.get(usize::from(seg.start_index)) {
+                         for _ in 0..seg.run_length {
+                             if px >= pixel_budget {
+                                 break;
+@@ -368,7 +375,7 @@ impl ClearCodecDecoder {
+                         if px >= pixel_budget {
+                             break;
+                         }
+-                        if let Some(color) = rlex.palette.get(usize::from(palette_idx)) {
++                        if let Some(color) = palette.get(usize::from(palette_idx)) {
+                             let col = px % w;
+                             let row = px / w;
+                             let x = usize::from(sub.x_start) + col;
+diff --git a/crates/ironrdp-pdu/src/codecs/clearcodec/mod.rs b/crates/ironrdp-pdu/src/codecs/clearcodec/mod.rs
+index fdcd8c26..7d449f23 100644
+--- a/crates/ironrdp-pdu/src/codecs/clearcodec/mod.rs
++++ b/crates/ironrdp-pdu/src/codecs/clearcodec/mod.rs
+@@ -17,9 +17,13 @@ pub use self::bands::{
+     Band, BandHeader, BandsLayerVBars, MAX_BAND_HEIGHT, SHORT_VBAR_CACHE_SIZE, ShortVBarCacheMiss, VBAR_CACHE_SIZE,
+     VBar, decode_bands_layer, decode_bands_layer_vbars,
+ };
+-pub use self::residual::{RgbRunSegment, decode_residual_layer, encode_residual_layer};
+-pub use self::rlex::{MAX_PALETTE_COUNT, RlexData, RlexSegment, decode_rlex};
+-pub use self::subcodec::{Subcodec, SubcodecId, decode_subcodec_layer};
++pub use self::residual::{
++    ResidualLayerSegments, RgbRunSegment, decode_residual_layer, decode_residual_layer_segments, encode_residual_layer,
++};
++pub use self::rlex::{MAX_PALETTE_COUNT, RlexData, RlexSegment, RlexSegments, decode_rlex, decode_rlex_segments};
++pub use self::subcodec::{
++    Subcodec, SubcodecId, SubcodecLayerRegions, decode_subcodec_layer, decode_subcodec_layer_regions,
++};
+ 
+ // --- Flag constants ---
+ 
+diff --git a/crates/ironrdp-pdu/src/codecs/clearcodec/residual.rs b/crates/ironrdp-pdu/src/codecs/clearcodec/residual.rs
+index 5fdca056..f0cee21c 100644
+--- a/crates/ironrdp-pdu/src/codecs/clearcodec/residual.rs
++++ b/crates/ironrdp-pdu/src/codecs/clearcodec/residual.rs
+@@ -31,38 +31,72 @@ impl RgbRunSegment {
+ ///
+ /// Returns the sequence of run segments. The caller is responsible for
+ /// expanding them into a pixel buffer of `width * height` pixels.
++///
++/// This holds every segment of the layer at once, each twice the four bytes it can take on the
++/// wire; [`decode_residual_layer_segments`] reads them one at a time instead.
+ pub fn decode_residual_layer(data: &[u8]) -> DecodeResult<Vec<RgbRunSegment>> {
+-    let mut segments = Vec::new();
+-    let mut src = ReadCursor::new(data);
++    decode_residual_layer_segments(data).collect()
++}
+ 
+-    while src.len() >= RgbRunSegment::MIN_SIZE {
+-        let blue = src.read_u8();
+-        let green = src.read_u8();
+-        let red = src.read_u8();
+-        let factor1 = src.read_u8();
++/// Decodes the residual layer one run segment at a time.
++///
++/// The iterator yields each segment in wire order and ends after the first error. Unlike
++/// [`decode_residual_layer`], it holds one segment at a time, however many the layer has.
++pub fn decode_residual_layer_segments(data: &[u8]) -> ResidualLayerSegments<'_> {
++    ResidualLayerSegments {
++        src: ReadCursor::new(data),
++        done: false,
++    }
++}
+ 
+-        let run_length = if factor1 < 0xFF {
+-            u32::from(factor1)
+-        } else {
+-            ensure_size!(ctx: RgbRunSegment::NAME, in: src, size: 2);
+-            let factor2 = src.read_u16();
+-            if factor2 < 0xFFFF {
+-                u32::from(factor2)
+-            } else {
+-                ensure_size!(ctx: RgbRunSegment::NAME, in: src, size: 4);
+-                src.read_u32()
+-            }
+-        };
+-
+-        segments.push(RgbRunSegment {
+-            blue,
+-            green,
+-            red,
+-            run_length,
+-        });
++/// Iterator over the run segments of a residual layer, returned by
++/// [`decode_residual_layer_segments`].
++#[derive(Debug)]
++pub struct ResidualLayerSegments<'a> {
++    src: ReadCursor<'a>,
++    done: bool,
++}
++
++impl Iterator for ResidualLayerSegments<'_> {
++    type Item = DecodeResult<RgbRunSegment>;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        // Fewer bytes than a segment are left over, as decode_residual_layer has always allowed.
++        if self.done || self.src.len() < RgbRunSegment::MIN_SIZE {
++            return None;
++        }
++
++        let segment = decode_segment(&mut self.src);
++        self.done = segment.is_err();
++        Some(segment)
+     }
++}
++
++fn decode_segment(src: &mut ReadCursor<'_>) -> DecodeResult<RgbRunSegment> {
++    let blue = src.read_u8();
++    let green = src.read_u8();
++    let red = src.read_u8();
++    let factor1 = src.read_u8();
++
++    let run_length = if factor1 < 0xFF {
++        u32::from(factor1)
++    } else {
++        ensure_size!(ctx: RgbRunSegment::NAME, in: src, size: 2);
++        let factor2 = src.read_u16();
++        if factor2 < 0xFFFF {
++            u32::from(factor2)
++        } else {
++            ensure_size!(ctx: RgbRunSegment::NAME, in: src, size: 4);
++            src.read_u32()
++        }
++    };
+ 
+-    Ok(segments)
++    Ok(RgbRunSegment {
++        blue,
++        green,
++        red,
++        run_length,
++    })
+ }
+ 
+ /// Encode residual layer data from a sequence of BGR run segments.
+@@ -196,4 +230,42 @@ mod tests {
+         let decoded = decode_residual_layer(&encoded).unwrap();
+         assert_eq!(decoded, original);
+     }
++
++    #[test]
++    fn decode_residual_layer_segments_yields_each_segment_until_one_fails_to_decode() {
++        let data = [
++            0x01, 0x02, 0x03, 0x04, // run=4
++            0x05, 0x06, 0x07, 0xFF, 0x2C, 0x01, // run=300
++            0x08, 0x09, 0x0A, 0xFF, 0xFF, 0xFF, 0x70, // run=factor3, truncated
++        ];
++
++        let mut segments = decode_residual_layer_segments(&data);
++
++        assert_eq!(
++            segments.next().unwrap().unwrap(),
++            RgbRunSegment {
++                blue: 0x01,
++                green: 0x02,
++                red: 0x03,
++                run_length: 4
++            }
++        );
++        assert_eq!(segments.next().unwrap().unwrap().run_length, 300);
++        assert!(segments.next().unwrap().is_err());
++        assert!(segments.next().is_none());
++        decode_residual_layer(&data).unwrap_err();
++    }
++
++    #[test]
++    fn decode_residual_layer_segments_leaves_a_partial_segment_over() {
++        // A whole segment, then three bytes.
++        let data = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
++
++        let segments = decode_residual_layer_segments(&data)
++            .map(|segment| segment.unwrap().run_length)
++            .collect::<Vec<_>>();
++
++        assert_eq!(segments, [4]);
++        assert_eq!(decode_residual_layer(&data).unwrap().len(), 1);
++    }
+ }
+diff --git a/crates/ironrdp-pdu/src/codecs/clearcodec/rlex.rs b/crates/ironrdp-pdu/src/codecs/clearcodec/rlex.rs
+index 99135c11..9c1bc580 100644
+--- a/crates/ironrdp-pdu/src/codecs/clearcodec/rlex.rs
++++ b/crates/ironrdp-pdu/src/codecs/clearcodec/rlex.rs
+@@ -40,7 +40,24 @@ pub struct RlexData {
+ /// Bit widths derived from palette count:
+ /// - `stop_index_bits = floor(log2(palette_count - 1)) + 1`
+ /// - `suite_depth_bits = 8 - stop_index_bits`
++///
++/// This holds every segment at once, each eight bytes when it can take one or two on the wire;
++/// [`decode_rlex_segments`] reads them one at a time instead.
+ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
++    let mut segments = decode_rlex_segments(data)?;
++    let palette = core::mem::take(&mut segments.palette);
++    let segments = segments.collect::<DecodeResult<_>>()?;
++
++    Ok(RlexData { palette, segments })
++}
++
++/// Decodes the palette of RLEX subcodec data, and returns it with an iterator over the
++/// segments that follow it, which decodes them one at a time.
++///
++/// The data format is the one [`decode_rlex`] describes. The iterator yields each segment in
++/// wire order and ends after the first error, and [`RlexSegments::palette`] gives the palette.
++/// Unlike [`decode_rlex`], it holds one segment at a time, however many the data has.
++pub fn decode_rlex_segments(data: &[u8]) -> DecodeResult<RlexSegments<'_>> {
+     let mut src = ReadCursor::new(data);
+ 
+     ensure_size!(ctx: "RlexPalette", in: src, size: 1);
+@@ -72,59 +89,58 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
+     } else {
+         bit_length(u32::from(palette_count - 1))
+     };
+-    let suite_depth_bits = 8u8.saturating_sub(stop_index_bits);
+-
+-    // Decode segments from remaining bytes
+-    let mut segments = Vec::new();
+-    let remaining = src.len();
+ 
+-    if stop_index_bits == 0 {
+-        // Single palette entry: no stop/suite bits, only run lengths
+-        // Each byte is a run length factor for palette[0]
+-        decode_single_palette_segments(&mut src, &mut segments)?;
+-    } else {
+-        decode_multi_palette_segments(
+-            remaining,
+-            &mut src,
+-            stop_index_bits,
+-            suite_depth_bits,
+-            palette_count,
+-            &mut segments,
+-        )?;
+-    }
++    Ok(RlexSegments {
++        palette,
++        src,
++        palette_count,
++        stop_index_bits,
++        done: false,
++    })
++}
+ 
+-    Ok(RlexData { palette, segments })
++/// The palette of RLEX subcodec data, and an iterator over its segments, returned by
++/// [`decode_rlex_segments`].
++#[derive(Debug)]
++pub struct RlexSegments<'a> {
++    palette: Vec<[u8; 3]>,
++    /// The segments not yet read.
++    src: ReadCursor<'a>,
++    palette_count: u8,
++    /// Low bits of a segment's packed byte that hold its stop index: 0 for a palette of one
++    /// entry, whose segments are run lengths alone.
++    stop_index_bits: u8,
++    done: bool,
+ }
+ 
+-fn decode_single_palette_segments(src: &mut ReadCursor<'_>, segments: &mut Vec<RlexSegment>) -> DecodeResult<()> {
+-    while !src.is_empty() {
+-        let run_length = decode_run_length(src)?;
+-        segments.push(RlexSegment {
+-            start_index: 0,
+-            stop_index: 0,
+-            run_length,
+-        });
++impl RlexSegments<'_> {
++    /// BGR palette entries (3 bytes each).
++    pub fn palette(&self) -> &[[u8; 3]] {
++        &self.palette
+     }
+-    Ok(())
+-}
+ 
+-fn decode_multi_palette_segments(
+-    _remaining: usize,
+-    src: &mut ReadCursor<'_>,
+-    stop_index_bits: u8,
+-    suite_depth_bits: u8,
+-    palette_count: u8,
+-    segments: &mut Vec<RlexSegment>,
+-) -> DecodeResult<()> {
+-    let stop_mask = (1u8 << stop_index_bits) - 1;
+-    let depth_mask = (1u8 << suite_depth_bits) - 1;
++    fn decode_next(&mut self) -> DecodeResult<RlexSegment> {
++        if self.stop_index_bits == 0 {
++            // Single palette entry: no stop/suite bits, only run lengths
++            // Each byte is a run length factor for palette[0]
++            let run_length = decode_run_length(&mut self.src)?;
++            return Ok(RlexSegment {
++                start_index: 0,
++                stop_index: 0,
++                run_length,
++            });
++        }
+ 
+-    while !src.is_empty() {
++        let suite_depth_bits = 8u8.saturating_sub(self.stop_index_bits);
++        let stop_mask = (1u8 << self.stop_index_bits) - 1;
++        let depth_mask = (1u8 << suite_depth_bits) - 1;
++
++        let src = &mut self.src;
+         let packed = src.read_u8();
+         let stop_index = packed & stop_mask;
+-        let suite_depth = (packed >> stop_index_bits) & depth_mask;
++        let suite_depth = (packed >> self.stop_index_bits) & depth_mask;
+ 
+-        if stop_index >= palette_count {
++        if stop_index >= self.palette_count {
+             return Err(invalid_field_err!("rlexStopIndex", "stop_index exceeds palette count", in: src));
+         }
+ 
+@@ -137,14 +153,26 @@ fn decode_multi_palette_segments(
+ 
+         let run_length = decode_run_length(src)?;
+ 
+-        segments.push(RlexSegment {
++        Ok(RlexSegment {
+             start_index,
+             stop_index,
+             run_length,
+-        });
++        })
+     }
++}
+ 
+-    Ok(())
++impl Iterator for RlexSegments<'_> {
++    type Item = DecodeResult<RlexSegment>;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        if self.done || self.src.is_empty() {
++            return None;
++        }
++
++        let segment = self.decode_next();
++        self.done = segment.is_err();
++        Some(segment)
++    }
+ }
+ 
+ /// Decode a variable-length run length value.
+@@ -287,4 +315,51 @@ mod tests {
+         assert_eq!(rlex.segments[0].stop_index, 2);
+         assert_eq!(rlex.segments[0].run_length, 5);
+     }
++
++    #[test]
++    fn decode_rlex_segments_yields_each_segment_until_one_fails_to_decode() {
++        // palette_count=3: stop_index_bits=2, suite_depth_bits=6.
++        let mut data = vec![3, 0, 0, 0, 1, 1, 1, 2, 2, 2];
++        data.extend_from_slice(&[0x06, 5]); // stop_index=2, suite_depth=1, run=5
++        data.extend_from_slice(&[0x01, 0xFF, 0x2C, 0x01]); // stop_index=1, run=300
++        data.extend_from_slice(&[0x03, 1]); // stop_index=3, past the palette
++        data.extend_from_slice(&[0x00, 1]); // never read
++
++        let mut segments = decode_rlex_segments(&data).unwrap();
++
++        assert_eq!(segments.palette(), [[0, 0, 0], [1, 1, 1], [2, 2, 2]]);
++        assert_eq!(
++            segments.next().unwrap().unwrap(),
++            RlexSegment {
++                start_index: 1,
++                stop_index: 2,
++                run_length: 5
++            }
++        );
++        assert_eq!(
++            segments.next().unwrap().unwrap(),
++            RlexSegment {
++                start_index: 1,
++                stop_index: 1,
++                run_length: 300
++            }
++        );
++        assert!(segments.next().unwrap().is_err());
++        assert!(segments.next().is_none());
++        decode_rlex(&data).unwrap_err();
++    }
++
++    #[test]
++    fn decode_rlex_segments_of_a_single_entry_palette_are_run_lengths() {
++        let data = [1, 0x10, 0x20, 0x30, 4, 0xFF, 0x2C, 0x01, 0xFF];
++
++        let mut segments = decode_rlex_segments(&data).unwrap();
++
++        assert_eq!(segments.palette(), [[0x10, 0x20, 0x30]]);
++        assert_eq!(segments.next().unwrap().unwrap().run_length, 4);
++        assert_eq!(segments.next().unwrap().unwrap().run_length, 300);
++        // A run length whose second factor is missing.
++        assert!(segments.next().unwrap().is_err());
++        assert!(segments.next().is_none());
++    }
+ }
+diff --git a/crates/ironrdp-pdu/src/codecs/clearcodec/subcodec.rs b/crates/ironrdp-pdu/src/codecs/clearcodec/subcodec.rs
+index d7581dff..53952f4c 100644
+--- a/crates/ironrdp-pdu/src/codecs/clearcodec/subcodec.rs
++++ b/crates/ironrdp-pdu/src/codecs/clearcodec/subcodec.rs
+@@ -49,16 +49,46 @@ impl Subcodec<'_> {
+ }
+ 
+ /// Decode all subcodec regions from the subcodec layer data.
++///
++/// This holds every region of the layer at once, each up to two and a half times the 13 bytes
++/// its header can take on the wire; [`decode_subcodec_layer_regions`] reads them one at a time
++/// instead.
+ pub fn decode_subcodec_layer<'a>(data: &'a [u8]) -> DecodeResult<Vec<Subcodec<'a>>> {
+-    let mut regions = Vec::new();
+-    let mut src = ReadCursor::new(data);
++    decode_subcodec_layer_regions(data).collect()
++}
+ 
+-    while src.len() >= Subcodec::HEADER_SIZE {
+-        let region = decode_single_subcodec(&mut src)?;
+-        regions.push(region);
++/// Decodes the subcodec layer one region at a time.
++///
++/// The iterator yields each region in wire order and ends after the first error. Unlike
++/// [`decode_subcodec_layer`], it holds one region at a time, however many the layer has.
++pub fn decode_subcodec_layer_regions(data: &[u8]) -> SubcodecLayerRegions<'_> {
++    SubcodecLayerRegions {
++        src: ReadCursor::new(data),
++        done: false,
+     }
++}
++
++/// Iterator over the regions of a subcodec layer, returned by [`decode_subcodec_layer_regions`].
++#[derive(Debug)]
++pub struct SubcodecLayerRegions<'a> {
++    src: ReadCursor<'a>,
++    done: bool,
++}
+ 
+-    Ok(regions)
++impl<'a> Iterator for SubcodecLayerRegions<'a> {
++    type Item = DecodeResult<Subcodec<'a>>;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        // Fewer bytes than a region header are left over, as decode_subcodec_layer has always
++        // allowed.
++        if self.done || self.src.len() < Subcodec::HEADER_SIZE {
++            return None;
++        }
++
++        let region = decode_single_subcodec(&mut self.src);
++        self.done = region.is_err();
++        Some(region)
++    }
+ }
+ 
+ fn decode_single_subcodec<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Subcodec<'a>> {
+@@ -177,4 +207,32 @@ mod tests {
+         let regions = decode_subcodec_layer(&[]).unwrap();
+         assert!(regions.is_empty());
+     }
++
++    #[test]
++    fn decode_subcodec_layer_regions_yields_each_region_until_one_fails_to_decode() {
++        let mut data = Vec::new();
++        // A 1x1 raw region at (3, 4).
++        for value in [3u16, 4, 1, 1] {
++            data.extend_from_slice(&value.to_le_bytes());
++        }
++        data.extend_from_slice(&3u32.to_le_bytes());
++        data.push(0x00);
++        data.extend_from_slice(&[0x10, 0x20, 0x30]);
++        // A region claiming more bitmap data than there is.
++        for value in [0u16, 0, 1, 1] {
++            data.extend_from_slice(&value.to_le_bytes());
++        }
++        data.extend_from_slice(&4u32.to_le_bytes());
++        data.push(0x00);
++        data.extend_from_slice(&[0x10, 0x20, 0x30]);
++
++        let mut regions = decode_subcodec_layer_regions(&data);
++
++        let region = regions.next().unwrap().unwrap();
++        assert_eq!((region.x_start, region.y_start), (3, 4));
++        assert_eq!(region.bitmap_data, [0x10, 0x20, 0x30]);
++        assert!(regions.next().unwrap().is_err());
++        assert!(regions.next().is_none());
++        decode_subcodec_layer(&data).unwrap_err();
++    }
+ }
+diff --git a/crates/ironrdp-testsuite-core/tests/peak_heap.rs b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+index 26e9ca54..34ba9947 100644
+--- a/crates/ironrdp-testsuite-core/tests/peak_heap.rs
++++ b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+@@ -240,6 +240,72 @@ fn clearcodec_bands_past_the_destination_take_no_memory() {
+     assert!(peak < 1024 * 1024, "decoding the layer took {peak} bytes");
+ }
+ 
++#[test]
++fn clearcodec_residual_segments_take_no_memory() {
++    // A segment filling an 8x8 destination, then 16 Mi segments of no pixels, 64 MiB. Decoded
++    // whole, the layer took 384 MiB, growing a vector to 32 Mi segments.
++    let mut residual_data = vec![0x01, 0x02, 0x03, 64];
++    for _ in 0..16 * 1024 * 1024 {
++        residual_data.extend_from_slice(&[0x00, 0x00, 0x00, 0]);
++    }
++    let stream = clearcodec_stream(&residual_data, &[], &[]);
++    let mut decoder = ClearCodecDecoder::new();
++
++    let (pixels, peak) = peak_heap(|| decoder.decode(&stream, 8, 8));
++
++    assert_eq!(pixels.unwrap(), [0x01, 0x02, 0x03, 0xFF].repeat(64));
++    assert!(peak < 1024 * 1024, "decoding the layer took {peak} bytes");
++}
++
++#[test]
++fn clearcodec_subcodec_regions_take_no_memory() {
++    // 4 Mi raw regions of one pixel, 64 MiB, over a 1x1 destination. Decoded whole, the layer took
++    // 192 MiB on 64-bit targets.
++    let mut subcodec_data = Vec::new();
++    for i in 0..4 * 1024 * 1024u32 {
++        for value in [0u16, 0, 1, 1] {
++            subcodec_data.extend_from_slice(&value.to_le_bytes()); // x, y, width, height
++        }
++        subcodec_data.extend_from_slice(&3u32.to_le_bytes()); // bitmapDataByteCount
++        subcodec_data.push(0x00); // raw
++        subcodec_data.extend_from_slice(&i.to_le_bytes()[..3]);
++    }
++    let stream = clearcodec_stream(&[], &[], &subcodec_data);
++    let mut decoder = ClearCodecDecoder::new();
++
++    let (pixels, peak) = peak_heap(|| decoder.decode(&stream, 1, 1));
++
++    // The last region's pixel.
++    assert_eq!(pixels.unwrap(), [0xFF, 0xFF, 0x3F, 0xFF]);
++    assert!(peak < 1024 * 1024, "decoding the layer took {peak} bytes");
++}
++
++#[test]
++fn clearcodec_rlex_segments_take_no_memory() {
++    // A 2048x2048 RLEX region of one palette entry, and 4 Mi segments of one pixel, 4 MiB. Decoded
++    // whole, its segments took 48 MiB, on top of the 16 MiB image.
++    let mut rlex = vec![1, 0x10, 0x20, 0x30];
++    rlex.resize(rlex.len() + 4 * 1024 * 1024, 1);
++    let mut subcodec_data = Vec::new();
++    for value in [0u16, 0, 2048, 2048] {
++        subcodec_data.extend_from_slice(&value.to_le_bytes()); // x, y, width, height
++    }
++    subcodec_data.extend_from_slice(&u32::try_from(rlex.len()).unwrap().to_le_bytes());
++    subcodec_data.push(0x02); // RLEX
++    subcodec_data.extend_from_slice(&rlex);
++    let stream = clearcodec_stream(&[], &[], &subcodec_data);
++    let mut decoder = ClearCodecDecoder::new();
++
++    let (pixels, peak) = peak_heap(|| decoder.decode(&stream, 2048, 2048));
++
++    let pixels = pixels.unwrap();
++    assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0x10, 0x20, 0x30, 0xFF]));
++    assert!(
++        peak < 16 * 1024 * 1024 + 1024 * 1024,
++        "decoding the region took {peak} bytes"
++    );
++}
++
+ #[test]
+ fn clearcodec_image_is_held_once() {
+     // A 41-byte command: a ClearCodec stream without layers (flags, seq and three zero layer sizes)

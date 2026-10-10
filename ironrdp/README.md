@@ -51,6 +51,24 @@ for measurements, checks and remaining live tests.
 | 16 | **fix(svc): send chunked messages without CHANNEL_FLAG_SHOW_PROTOCOL** | Static-channel messages over one chunk (1600 bytes) were flagged `SHOW_PROTOCOL`, which asks the receiver to hand the channel header to the application; Windows' drive redirector doesn't expect that and dropped the channel on the first chunked read response. mstsc sets the flag only for channels opened with `CHANNEL_OPTION_SHOW_PROTOCOL`; chunks now carry only the flags the message asks for. | Not submitted yet |
 | 17 | **perf(web): read H.264 regions that are far apart one by one** | The decoder read a frame's regions back as their bounding box in one call; two small regions in opposite corners made that the whole picture (33 MB for a 4K frame, for eight bytes). When the box holds more than twice what the regions do, each is read on its own, straight into place. | Not submitted yet: builds on patches 8 and 14 |
 
+The release security follow-up also applies patches 31–42 and 52:
+
+| # | Patch | Effect |
+|---|---|---|
+| 31 | Bound Planar images and validate compressed size | At most 8192 pixels per edge; allocate planes and output fallibly after validating the input. |
+| 32 | Stream ClearCodec bands | Decode one V-bar at a time without expanding an intermediate object list. |
+| 33–34 | Bound pointer decoding and caching | At most 384×384 pixels and the advertised 32 cache slots. |
+| 35–37 | Budget Progressive state and stream its blocks | Bound retained contexts/references and decoded tiles; avoid collecting a whole message. |
+| 38–41 | Bound ClearCodec working memory and paint work | Fallible image allocation, in-place channel conversion, incremental residual/RLEX/subcodec decoding, row-sized NSCodec buffers, and a cumulative paint budget. |
+| 42 | Keep oversized surfaces out of client state | Reject unsupported dimensions before recording them or decoding their content. |
+| 52 | Tighten Progressive history and allocation failures | A 512 MiB retained-history budget; fallible pointer and tile-grid buffers with allocation-failure tests. |
+
+These limits reject or skip graphics that exceed the client's supported resource budget.
+The Progressive history budget supports one 8K or four 4K displays; larger combinations can exceed it.
+The limits apply per session, so opening several sessions still adds their memory use.
+The focused tests cover boundary acceptance/rejection, cache replacement and cleanup, bounded peak allocations,
+and injected allocation failures without a live server.
+
 Each patch carries its own tests where IronRDP has a place for them (`ironrdp-testsuite-core`, the patched crate, the
 web packages' vitest suites), and CI runs them: the web component's on every change (`ci.yml`), the Rust crates' and
 the RDP package's when the series changes and before a release (`ironrdp.yml`). Left out there, each by its exact name:
