@@ -87,7 +87,12 @@ be worth a user's update — a feature set, or a batch of fixes — not per chan
 security fixes and for bugs that make the plugin unusable; everything else waits. Features gather under the next
 minor version (see the milestones).
 
-**Version metadata.** Keep `package.json` and the root entries in `package-lock.json` on the same version. The
+**Runtime dependencies.** Pin runtime dependencies to exact versions and commit changes to `npm-shrinkwrap.json`.
+The shrinkwrap replaces `package-lock.json`: npm uses it for development and includes it in the published package,
+so plugin installs retain the reviewed versions, download URLs and integrity hashes. Upgrade dependencies through
+a reviewed change, run `npm ci --ignore-scripts`, build, and check the packed package before releasing.
+
+**Version metadata.** Keep `package.json` and the root entries in `npm-shrinkwrap.json` on the same version. The
 `tabbyRdp.minimumTabbyVersion` and `tabbyRdp.rollbackFloor` fields let release controls check compatibility and data
 migration limits; raise the floor only for a migration that prevents older packages from safely using the saved
 data. Version 0.5.1 is the explicitly supported baseline for packages that predate these fields.
