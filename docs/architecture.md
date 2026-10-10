@@ -785,7 +785,9 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   together ([above](#desktops-behind-a-host)). A Hyper-V VM's certificate, and the password it signs in with, are its
   host's, for all of that host's VMs: removing one VM's desktop leaves them.
 - **Gateway certificates** (`gateway#host:port`): the sign-in to an RD Gateway is NTLM, a proof of the password the
-  gateway keeps, sent before the desktop is reached, so a gateway is not trusted silently the way a desktop behind an
+  gateway keeps, sent before the desktop is reached, and bound to the gateway's TLS connection and service: a challenge
+  without the target information or the server's time that the binding and its integrity code go with is refused,
+  not answered unbound, so a gateway is not trusted silently the way a desktop behind an
   SSH host is: it is checked as a desktop connected to directly is (above), whether it is reached from here or from an
   SSH host, and the check comes before the gateway gets anything of the sign-in. The gateway's host is canonicalised for
   the key, the credential scope, the SNI and what is shown (lower case, international names as punycode, one trailing

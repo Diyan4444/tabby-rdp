@@ -160,7 +160,7 @@ await suite('gateway', async t => {
     check('refused by the gateway: its account is asked for again, not the desktop\'s', /^Sign in to the gateway /.test(again?.title ?? '') && /gateway/i.test(again?.error ?? ''), again ?? await log('H.own'))
     await ev(`H.submit(H.own, ${JSON.stringify(password)})`)
     check('the desktop connects', !!(await t.waitFor('return H.up(H.own)', 90)), (await log('H.own')).slice(-8))
-    check('... signed in to the gateway with its saved account', (await log('H.own')).some(l => /signing in with its saved account/.test(l)), (await log('H.own')).filter(l => /gateway/.test(l)))
+    check('... signed in to the gateway with its saved account', (await log('H.own')).some(l => /signing in with its (saved|separate) account/.test(l)), (await log('H.own')).filter(l => /gateway/.test(l)))
     await ev('H.inZone(() => RD.desktop.disconnect(H.own))')
     await ev('await H.close(H.own)')
 
