@@ -12,8 +12,8 @@
 #
 #     TEST_PASSWORD=... testbed/windows-server/libvirt.sh [vm-name] [windows-server-iso]
 #
-# Defaults: tabby-rdp-winserver, and the evaluation ISO, downloaded into $TESTBED_DIR (default
-# ~/.cache/tabby-rdp-testbed; 6 GB). TEST_PASSWORD is for the test account, tabbyrdp, here and in the guest VM, and
+# Defaults: tabby-rdp-winserver; a local evaluation ISO and WINDOWS_ISO_SHA256 are required (testbed/README.md).
+# TESTBED_DIR stores setup files (default ~/.cache/tabby-rdp-testbed). TEST_PASSWORD is for tabbyrdp and the guest, and
 # has to meet Windows Server's complexity rules (three of: capitals, small letters, digits, symbols); ADMIN_PASSWORD,
 # for the administrator account, tabbyadmin, is random unless set. SSH_KEY is a public key file that may sign in over
 # SSH as tabbyadmin (the hyperv suite lists the VMs that way; default ~/.ssh/id_ed25519.pub, or id_rsa.pub). It takes 16 GB of memory and one CPU (VCPUS) while it runs,
@@ -35,12 +35,10 @@ URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 V="virsh -c $URI"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed}"
 mkdir -p "$WORK"
-# Windows Server 2025 evaluation (180 days), x64, English, from Microsoft's Evaluation Center.
-EVAL_URL='https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us'
-if [ -z "$ISO" ]; then
-    ISO="$WORK/winserver-eval.iso"
-    [ -f "$ISO" ] || { curl -fL -o "$ISO.part" "$EVAL_URL" && mv "$ISO.part" "$ISO"; }
-fi
+# Installation media is selected and verified by the operator, never resolved through a mutable download link.
+: "${ISO:?pass a reviewed Windows Server 2025 evaluation ISO as the second argument}"
+: "${WINDOWS_ISO_SHA256:?set WINDOWS_ISO_SHA256 from a trusted publisher checksum}"
+sh "$HERE/../verify-image.sh" "$ISO" "$WINDOWS_ISO_SHA256"
 
 # The config disc: the answer file (found by Windows Setup at the root of any disc), setup.ps1 and server.ps1.
 # A value for the answer file: XML-escaped, then escaped for sed's replacement text.
@@ -83,10 +81,8 @@ upload() {  # upload <file> <volume>, replacing a volume left by an earlier run
     $V vol-create-as "$NAME" "$2" "$(wc -c < "$1")" --format raw >/dev/null
     $V vol-upload --pool "$NAME" "$2" "$1"
 }
-# The Windows ISO from an earlier run is kept if it is the same size (6 GB to upload otherwise).
-if [ "$($V vol-info --pool "$NAME" windows.iso --bytes 2>/dev/null | awk '/Capacity/ { print $2 }')" != "$(wc -c < "$ISO")" ]; then
-    upload "$ISO" windows.iso
-fi
+# Always replace cached media: equal lengths do not establish equal contents.
+upload "$ISO" windows.iso
 upload "$WORK/$NAME-config.iso" config.iso
 rm -f "$WORK/$NAME-config.iso"
 $V vol-delete --pool "$NAME" "$NAME.qcow2" >/dev/null 2>&1 || true

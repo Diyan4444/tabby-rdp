@@ -6,6 +6,19 @@ on the test account.
 
 ## Linux desktop host
 
+Select installation media explicitly before provisioning. Download a dated Ubuntu 24.04 cloud image for the VM's
+architecture from [Ubuntu's cloud image archive](https://cloud-images.ubuntu.com/noble/), authenticate its published
+SHA256SUMS using Ubuntu's signing key, and record the image, build date and digest in your test run notes. Set:
+
+```sh
+export UBUNTU_IMAGE=/absolute/path/to/reviewed-noble-image.img
+export UBUNTU_IMAGE_SHA256='<64 hexadecimal characters from the authenticated checksum list>'
+```
+
+Both Linux VM scripts verify the local file before booting it. Multipass must run on the machine holding this file;
+the selected image must match its architecture. There is no default `current` image or release alias. A missing or
+incorrect digest stops setup. A digest computed only from an untrusted download is not publisher verification.
+
 Ubuntu 24.04 with GNOME Remote Desktop 46, reachable over SSH with your key. Either:
 
 **A Multipass VM** ([Multipass](https://canonical.com/multipass) runs on macOS, Linux and Windows):
@@ -26,13 +39,21 @@ testbed/linux/libvirt.sh [name] [keys.pub]   # on the libvirt host; keys.pub: th
 **Or any Ubuntu 24.04 VM** (virt-manager, UTM, Hyper-V, a cloud instance), with SSH set up for your key:
 
 ```sh
-scp testbed/linux/provision.sh user@host: && ssh -t user@host sudo sh provision.sh
+scp testbed/linux/provision.sh testbed/linux/winrm-requirements.txt user@host:
+ssh -t user@host sudo sh provision.sh
 ```
 
 [`provision.sh`](linux/provision.sh) installs a minimal GNOME desktop (`ubuntu-desktop-minimal`), GNOME Remote
 Desktop, PipeWire's tools, Python's GObject bindings, `pywinrm`, tmux and OpenSSH; switches the boot target to text
 mode (the plugin runs its own headless GNOME session); and lets the test user's systemd run without a login. Give the
 VM 2 CPUs, 4 GB of memory and 20 GB of disk. No GPU is needed.
+
+`winrm-requirements.txt` pins pywinrm and every dependency, with SHA-256 hashes for CPython 3.12 Linux x86_64 and
+ARM64 wheels. Provisioning requires that file beside `provision.sh`, rejects other Ubuntu releases, disables pip
+source builds, and requires matching hashes. To upgrade, download the complete wheel tree for both architectures
+without installing it, review the versions and publisher artifacts, update the pins and wheel hashes, and verify
+`pip download --require-hashes --only-binary=:all: -r winrm-requirements.txt` for both targets. Ubuntu packages still
+receive updates from the distribution's signed apt repositories; this is not a frozen operating-system snapshot.
 
 ### xrdp, for the xrdp suite (optional)
 
@@ -74,11 +95,12 @@ port 3391 (the test user's has 3389). Then `TRD_TEST_NESTED=trdhop npm test -- n
 Windows 10 or 11 Pro (or Windows Server), for example a VM on the same virtual network as the Linux test host.
 
 **A libvirt VM**, next to the Linux one, installed unattended from Microsoft's Windows 11 Enterprise evaluation ISO
-(90 days; downloaded the first time, 7 GB) and prepared with `setup.ps1`. It needs `virtinst`, `genisoimage` and
+(90 days; about 7 GB) and prepared with `setup.ps1`. It needs `virtinst`, `genisoimage` and
 `swtpm` (Windows 11 wants UEFI Secure Boot and a TPM), and takes 15 to 30 minutes:
 
 ```sh
-TEST_PASSWORD='<a password for the test account>' testbed/windows/libvirt.sh   # on the libvirt host
+export WINDOWS_ISO_SHA256='<digest authenticated against Microsoft publication for this exact ISO>'
+TEST_PASSWORD='<a password for the test account>' testbed/windows/libvirt.sh tabby-rdp-windows /path/to/windows.iso
 # prints the settings for the Windows suite, and the administrator's password
 ```
 
@@ -112,10 +134,11 @@ For the two ways to a desktop that need a server: a VM's console through its Hyp
 Manager's Connect does), and a desktop behind a Remote Desktop Gateway. One machine does both.
 
 **A libvirt VM**, next to the others, installed unattended from Microsoft's Windows Server 2025 evaluation ISO (180
-days; downloaded the first time, 6 GB):
+days; about 6 GB):
 
 ```sh
-TEST_PASSWORD='<a password for the test account>' testbed/windows-server/libvirt.sh   # on the libvirt host
+export WINDOWS_ISO_SHA256='<digest authenticated against Microsoft publication for this exact ISO>'
+TEST_PASSWORD='<a password for the test account>' testbed/windows-server/libvirt.sh tabby-rdp-winserver /path/to/server.iso
 # prints the addresses, and the administrator's password
 ```
 
@@ -153,3 +176,11 @@ disc in a drive. In an elevated PowerShell on it, after `setup.ps1`:
 .\server.ps1 -Password '<the test account's password>'   # restarts once, and finishes at startup
 # -SshKeys <a file of public keys>: may sign in over SSH as an administrator (the hyperv suite lists the VMs that way)
 ```
+
+Get Windows media from [Microsoft's Evaluation Center](https://www.microsoft.com/en-us/evalcenter/) and verify the
+exact edition, language, architecture and SHA-256 against Microsoft's publication. Both Windows scripts require a
+local ISO and `WINDOWS_ISO_SHA256`; neither follows a mutable download redirect. They verify the file on each run
+and upload it again instead of trusting an existing libvirt volume's length. If an authoritative digest is not
+available for your media, stop and obtain verified media; there is no skip-verification option.
+
+Run `python3 testbed/test_images.py` to exercise valid, malformed, missing and mismatched media digests locally.
