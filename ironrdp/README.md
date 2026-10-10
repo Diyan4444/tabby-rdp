@@ -51,6 +51,13 @@ for measurements, checks and remaining live tests.
 | 16 | **fix(svc): send chunked messages without CHANNEL_FLAG_SHOW_PROTOCOL** | Static-channel messages over one chunk (1600 bytes) were flagged `SHOW_PROTOCOL`, which asks the receiver to hand the channel header to the application; Windows' drive redirector doesn't expect that and dropped the channel on the first chunked read response. mstsc sets the flag only for channels opened with `CHANNEL_OPTION_SHOW_PROTOCOL`; chunks now carry only the flags the message asks for. | Not submitted yet |
 | 17 | **perf(web): read H.264 regions that are far apart one by one** | The decoder read a frame's regions back as their bounding box in one call; two small regions in opposite corners made that the whole picture (33 MB for a 4K frame, for eight bytes). When the box holds more than twice what the regions do, each is read on its own, straight into place. | Not submitted yet: builds on patches 8 and 14 |
 
+Security patch **25 — require nonce-bound CredSSP version 5 or later** rejects legacy server TSRequests before
+NTLM AUTHENTICATE or public-key binding is generated, addressing CVE-2018-0886. There is no legacy override.
+Offline protocol tests cover versions 2–6. Adapted from the local security candidate; not submitted upstream.
+
+Security patches keep their original candidate numbers so separate release fixes can be combined without renumbering.
+Servers offering only CredSSP versions 2–4 must be updated before connecting; TLS certificate acceptance does not bypass this requirement.
+
 Each patch carries its own tests where IronRDP has a place for them (`ironrdp-testsuite-core`, the patched crate, the
 web packages' vitest suites), and CI runs them: the web component's on every change (`ci.yml`), the Rust crates' and
 the RDP package's when the series changes and before a release (`ironrdp.yml`). Left out there, each by its exact name:

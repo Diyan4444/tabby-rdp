@@ -19,7 +19,7 @@ class Z {
    * @param {Uint8Array} binary
    */
   addBinary(A, I) {
-    const g = R(A, C.__wbindgen_malloc, C.__wbindgen_realloc), B = k, E = lA(I, C.__wbindgen_malloc), D = k;
+    const g = R(A, C.__wbindgen_malloc, C.__wbindgen_realloc), B = k, E = WA(I, C.__wbindgen_malloc), D = k;
     C.clipboarddata_addBinary(this.__wbg_ptr, g, B, E, D);
   }
   /**
@@ -70,7 +70,7 @@ class f {
     let A, I;
     try {
       const g = C.clipboarditem_mimeType(this.__wbg_ptr);
-      return A = g[0], I = g[1], y(g[0], g[1]);
+      return A = g[0], I = g[1], M(g[0], g[1]);
     } finally {
       C.__wbindgen_free(A, I, 1);
     }
@@ -235,10 +235,10 @@ class N {
   }
 }
 Symbol.dispose && (N.prototype[Symbol.dispose] = N.prototype.free);
-class e {
+class v {
   __destroy_into_raw() {
     const A = this.__wbg_ptr;
-    return this.__wbg_ptr = 0, iA.unregister(this), A;
+    return this.__wbg_ptr = 0, wA.unregister(this), A;
   }
   free() {
     const A = this.__destroy_into_raw();
@@ -254,18 +254,18 @@ class e {
   }
   constructor() {
     const A = C.inputtransaction_create();
-    return this.__wbg_ptr = A, iA.register(this, this.__wbg_ptr, this), this;
+    return this.__wbg_ptr = A, wA.register(this, this.__wbg_ptr, this), this;
   }
 }
-Symbol.dispose && (e.prototype[Symbol.dispose] = e.prototype.free);
+Symbol.dispose && (v.prototype[Symbol.dispose] = v.prototype.free);
 class T {
   static __wrap(A) {
     const I = Object.create(T.prototype);
-    return I.__wbg_ptr = A, wA.register(I, I.__wbg_ptr, I), I;
+    return I.__wbg_ptr = A, iA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
     const A = this.__wbg_ptr;
-    return this.__wbg_ptr = 0, wA.unregister(this), A;
+    return this.__wbg_ptr = 0, iA.unregister(this), A;
   }
   free() {
     const A = this.__destroy_into_raw();
@@ -278,7 +278,7 @@ class T {
     let A, I;
     try {
       const g = C.ironerror_backtrace(this.__wbg_ptr);
-      return A = g[0], I = g[1], y(g[0], g[1]);
+      return A = g[0], I = g[1], M(g[0], g[1]);
     } finally {
       C.__wbindgen_free(A, I, 1);
     }
@@ -294,13 +294,13 @@ class T {
    */
   rdcleanpathDetails() {
     const A = C.ironerror_rdcleanpathDetails(this.__wbg_ptr);
-    return A === 0 ? void 0 : n.__wrap(A);
+    return A === 0 ? void 0 : r.__wrap(A);
   }
 }
 Symbol.dispose && (T.prototype[Symbol.dispose] = T.prototype.free);
-class n {
+class r {
   static __wrap(A) {
-    const I = Object.create(n.prototype);
+    const I = Object.create(r.prototype);
     return I.__wbg_ptr = A, GA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -357,7 +357,7 @@ class n {
     return A === 16777215 ? void 0 : A;
   }
 }
-Symbol.dispose && (n.prototype[Symbol.dispose] = n.prototype.free);
+Symbol.dispose && (r.prototype[Symbol.dispose] = r.prototype.free);
 class QA {
   __destroy_into_raw() {
     const A = this.__wbg_ptr;
@@ -386,7 +386,7 @@ class QA {
   getStr(A) {
     const I = R(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = k, B = C.rdpfile_getStr(this.__wbg_ptr, I, g);
     let E;
-    return B[0] !== 0 && (E = y(B[0], B[1]).slice(), C.__wbindgen_free(B[0], B[1] * 1, 1)), E;
+    return B[0] !== 0 && (E = M(B[0], B[1]).slice(), C.__wbindgen_free(B[0], B[1] * 1, 1)), E;
   }
   /**
    * @param {string} key
@@ -418,16 +418,16 @@ class QA {
     let A, I;
     try {
       const g = C.rdpfile_write(this.__wbg_ptr);
-      return A = g[0], I = g[1], y(g[0], g[1]);
+      return A = g[0], I = g[1], M(g[0], g[1]);
     } finally {
       C.__wbindgen_free(A, I, 1);
     }
   }
 }
 Symbol.dispose && (QA.prototype[Symbol.dispose] = QA.prototype.free);
-class r {
+class n {
   static __wrap(A) {
-    const I = Object.create(r.prototype);
+    const I = Object.create(n.prototype);
     return I.__wbg_ptr = A, NA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -442,7 +442,7 @@ class r {
    * @param {InputTransaction} transaction
    */
   applyInputs(A) {
-    V(A, e);
+    V(A, v);
     var I = A.__destroy_into_raw();
     const g = C.session_applyInputs(this.__wbg_ptr, I);
     if (g[1])
@@ -518,7 +518,7 @@ class r {
       throw q(E[0]);
   }
 }
-Symbol.dispose && (r.prototype[Symbol.dispose] = r.prototype.free);
+Symbol.dispose && (n.prototype[Symbol.dispose] = n.prototype.free);
 class c {
   static __wrap(A) {
     const I = Object.create(c.prototype);
@@ -680,7 +680,7 @@ class P {
     let A, I;
     try {
       const g = C.sessionterminationinfo_reason(this.__wbg_ptr);
-      return A = g[0], I = g[1], y(g[0], g[1]);
+      return A = g[0], I = g[1], M(g[0], g[1]);
     } finally {
       C.__wbindgen_free(A, I, 1);
     }
@@ -702,7 +702,7 @@ function UA() {
       },
       __wbg___wbindgen_debug_string_c25d447a39f5578f: function(A, I) {
         const g = gA(I), B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg___wbindgen_is_function_1ff95bcc5517c252: function(A) {
         return typeof A == "function";
@@ -722,27 +722,27 @@ function UA() {
       },
       __wbg___wbindgen_number_get_394265ed1e1b84ee: function(A, I) {
         const g = I, B = typeof g == "number" ? g : void 0;
-        M().setFloat64(A + 8, h(B) ? 0 : B, true), M().setInt32(A + 0, !h(B), true);
+        y().setFloat64(A + 8, h(B) ? 0 : B, true), y().setInt32(A + 0, !h(B), true);
       },
       __wbg___wbindgen_string_get_b0ca35b86a603356: function(A, I) {
         const g = I, B = typeof g == "string" ? g : void 0;
         var E = h(B) ? 0 : R(B, C.__wbindgen_malloc, C.__wbindgen_realloc), D = k;
-        M().setInt32(A + 4, D, true), M().setInt32(A + 0, E, true);
+        y().setInt32(A + 4, D, true), y().setInt32(A + 0, E, true);
       },
       __wbg___wbindgen_throw_344f42d3211c4765: function(A, I) {
-        throw new Error(y(A, I));
+        throw new Error(M(A, I));
       },
       __wbg__wbg_cb_unref_fffb441def202758: function(A) {
         A._wbg_cb_unref();
       },
       __wbg_addEventListener_520e749bbae24529: function() {
         return o(function(A, I, g, B, E) {
-          A.addEventListener(y(I, g), B, E);
+          A.addEventListener(M(I, g), B, E);
         }, arguments);
       },
       __wbg_addEventListener_d85450ee1320c989: function() {
         return o(function(A, I, g, B) {
-          A.addEventListener(y(I, g), B);
+          A.addEventListener(M(I, g), B);
         }, arguments);
       },
       __wbg_apply_23dd4d2439189415: function() {
@@ -812,7 +812,7 @@ function UA() {
       __wbg_error_a6fa202b58aa1cd3: function(A, I) {
         let g, B;
         try {
-          g = A, B = I, console.error(y(A, I));
+          g = A, B = I, console.error(M(A, I));
         } finally {
           C.__wbindgen_free(g, B, 1);
         }
@@ -825,7 +825,7 @@ function UA() {
       },
       __wbg_getContext_e79ddf6a9cb3cc76: function() {
         return o(function(A, I, g) {
-          const B = A.getContext(y(I, g));
+          const B = A.getContext(M(I, g));
           return h(B) ? 0 : L(B);
         }, arguments);
       },
@@ -950,7 +950,7 @@ function UA() {
       },
       __wbg_new_08cb2fa678b17a48: function() {
         return o(function(A, I) {
-          return new URL(y(A, I));
+          return new URL(M(A, I));
         }, arguments);
       },
       __wbg_new_0_3da9e97f24fc69be: function() {
@@ -969,7 +969,7 @@ function UA() {
       },
       __wbg_new_bf8729ffe10e9ee7: function() {
         return o(function(A, I) {
-          return new WebSocket(y(A, I));
+          return new WebSocket(M(A, I));
         }, arguments);
       },
       __wbg_new_cd45aabdf6073e84: function(A) {
@@ -991,13 +991,13 @@ function UA() {
       },
       __wbg_new_typed_1824d93f294193e5: function(A, I) {
         try {
-          var g = { a: A, b: I }, B = (D, i) => {
-            const w = g.a;
+          var g = { a: A, b: I }, B = (D, w) => {
+            const i = g.a;
             g.a = 0;
             try {
-              return sA(w, g.b, D, i);
+              return sA(i, g.b, D, w);
             } finally {
-              g.a = w;
+              g.a = i;
             }
           };
           return new Promise(B);
@@ -1007,17 +1007,17 @@ function UA() {
       },
       __wbg_new_with_event_init_dict_7b62c0f9fb241877: function() {
         return o(function(A, I, g) {
-          return new CloseEvent(y(A, I), g);
+          return new CloseEvent(M(A, I), g);
         }, arguments);
       },
       __wbg_new_with_str_54bc0f9c32770e1e: function() {
         return o(function(A, I) {
-          return new Request(y(A, I));
+          return new Request(M(A, I));
         }, arguments);
       },
       __wbg_new_with_str_and_init_d95cbe11ce28e65e: function() {
         return o(function(A, I, g) {
-          return new Request(y(A, I), g);
+          return new Request(M(A, I), g);
         }, arguments);
       },
       __wbg_new_with_u8_array_sequence_bdda73b0f202f149: function() {
@@ -1074,11 +1074,11 @@ function UA() {
       },
       __wbg_reason_5dc8e429d537d6a9: function(A, I) {
         const g = I.reason, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg_removeEventListener_a3f23c70077bdcc1: function() {
         return o(function(A, I, g, B) {
-          A.removeEventListener(y(I, g), B);
+          A.removeEventListener(M(I, g), B);
         }, arguments);
       },
       __wbg_resolve_2191a4dfe481c25b: function(A) {
@@ -1086,7 +1086,7 @@ function UA() {
       },
       __wbg_search_c905fb82fd20bc6b: function(A, I) {
         const g = I.search, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg_send_1733c45567a373ff: function() {
         return o(function(A, I) {
@@ -1095,11 +1095,11 @@ function UA() {
       },
       __wbg_send_df98dd5ede9b3f4d: function() {
         return o(function(A, I, g) {
-          A.send(y(I, g));
+          A.send(M(I, g));
         }, arguments);
       },
       __wbg_session_new: function(A) {
-        return r.__wrap(A);
+        return n.__wrap(A);
       },
       __wbg_sessionterminationinfo_new: function(A) {
         return P.__wrap(A);
@@ -1116,7 +1116,7 @@ function UA() {
       },
       __wbg_set_0de9c62c23d04ad5: function() {
         return o(function(A, I, g, B, E) {
-          A.set(y(I, g), y(B, E));
+          A.set(M(I, g), M(B, E));
         }, arguments);
       },
       __wbg_set_8535240470bf2500: function() {
@@ -1140,23 +1140,23 @@ function UA() {
         A.height = I >>> 0;
       },
       __wbg_set_method_5532d59b92d76467: function(A, I, g) {
-        A.method = y(I, g);
+        A.method = M(I, g);
       },
       __wbg_set_once_51a9fb6b8af8a72b: function(A, I) {
         A.once = I !== 0;
       },
       __wbg_set_reason_18dc06ea0d60243b: function(A, I, g) {
-        A.reason = y(I, g);
+        A.reason = M(I, g);
       },
       __wbg_set_search_f9700de567764208: function(A, I, g) {
-        A.search = y(I, g);
+        A.search = M(I, g);
       },
       __wbg_set_width_8e30d010cd66830d: function(A, I) {
         A.width = I >>> 0;
       },
       __wbg_stack_3b0d974bbf31e44f: function(A, I) {
         const g = I.stack, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg_static_accessor_GLOBAL_4ef717fb391d88b7: function() {
         const A = typeof global > "u" ? null : global;
@@ -1176,7 +1176,7 @@ function UA() {
       },
       __wbg_statusText_9f08c32741a99815: function(A, I) {
         const g = I.statusText, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg_status_c45b3b9b3033184a: function(A) {
         return A.status;
@@ -1195,12 +1195,12 @@ function UA() {
       },
       __wbg_url_f6cd241d61f89b82: function(A, I) {
         const g = I.url, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+        y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
       },
       __wbg_userAgent_0558f0ac642f7771: function() {
         return o(function(A, I) {
           const g = I.userAgent, B = R(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = k;
-          M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
+          y().setInt32(A + 4, E, true), y().setInt32(A + 0, B, true);
         }, arguments);
       },
       __wbg_warn_b1370d804fa3e259: function(A) {
@@ -1213,31 +1213,31 @@ function UA() {
         return A.width;
       },
       __wbindgen_cast_0000000000000001: function(A, I) {
-        return S(A, I, LA);
+        return H(A, I, LA);
       },
       __wbindgen_cast_0000000000000002: function(A, I) {
-        return S(A, I, aA);
+        return H(A, I, aA);
       },
       __wbindgen_cast_0000000000000003: function(A, I) {
-        return S(A, I, HA);
+        return H(A, I, SA);
       },
       __wbindgen_cast_0000000000000004: function(A, I) {
-        return S(A, I, SA);
+        return H(A, I, HA);
       },
       __wbindgen_cast_0000000000000005: function(A, I) {
-        return S(A, I, qA);
+        return H(A, I, qA);
       },
       __wbindgen_cast_0000000000000006: function(A, I) {
-        return S(A, I, KA);
+        return H(A, I, KA);
       },
       __wbindgen_cast_0000000000000007: function(A, I) {
-        return S(A, I, hA);
+        return H(A, I, hA);
       },
       __wbindgen_cast_0000000000000008: function(A) {
         return A;
       },
       __wbindgen_cast_0000000000000009: function(A, I) {
-        return y(A, I);
+        return M(A, I);
       },
       __wbindgen_init_externref_table: function() {
         const A = C.__wbindgen_externrefs, I = A.grow(4);
@@ -1255,10 +1255,10 @@ function hA(Q, A) {
 function aA(Q, A, I) {
   C.wasm_bindgen__convert__closures_____invoke__h64a57be2ca3e0d69(Q, A, I);
 }
-function HA(Q, A, I) {
+function SA(Q, A, I) {
   C.wasm_bindgen__convert__closures_____invoke__h64a57be2ca3e0d69_2(Q, A, I);
 }
-function SA(Q, A, I) {
+function HA(Q, A, I) {
   C.wasm_bindgen__convert__closures_____invoke__h64a57be2ca3e0d69_3(Q, A, I);
 }
 function LA(Q, A, I) {
@@ -1282,9 +1282,9 @@ const ZA = ["blob", "arraybuffer"], u = typeof FinalizationRegistry > "u" ? { re
 }, unregister: () => {
 } } : new FinalizationRegistry((Q) => C.__wbg_deviceevent_free(Q, 1)), DA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
-} } : new FinalizationRegistry((Q) => C.__wbg_extension_free(Q, 1)), iA = typeof FinalizationRegistry > "u" ? { register: () => {
+} } : new FinalizationRegistry((Q) => C.__wbg_extension_free(Q, 1)), wA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
-} } : new FinalizationRegistry((Q) => C.__wbg_inputtransaction_free(Q, 1)), wA = typeof FinalizationRegistry > "u" ? { register: () => {
+} } : new FinalizationRegistry((Q) => C.__wbg_inputtransaction_free(Q, 1)), iA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
 } } : new FinalizationRegistry((Q) => C.__wbg_ironerror_free(Q, 1)), GA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
@@ -1350,38 +1350,38 @@ ${Q.stack}` : g;
 }
 function pA(Q, A) {
   Q = Q >>> 0;
-  const I = M(), g = [];
+  const I = y(), g = [];
   for (let B = Q; B < Q + 4 * A; B += 4)
     g.push(C.__wbindgen_externrefs.get(I.getUint32(B, true)));
   return C.__externref_drop_slice(Q, A), g;
 }
 function dA(Q, A) {
-  return Q = Q >>> 0, WA().subarray(Q / 4, Q / 4 + A);
+  return Q = Q >>> 0, xA().subarray(Q / 4, Q / 4 + A);
 }
 function t(Q, A) {
-  return Q = Q >>> 0, W().subarray(Q / 1, Q / 1 + A);
+  return Q = Q >>> 0, x().subarray(Q / 1, Q / 1 + A);
 }
 function VA(Q, A) {
-  return Q = Q >>> 0, xA().subarray(Q / 1, Q / 1 + A);
+  return Q = Q >>> 0, lA().subarray(Q / 1, Q / 1 + A);
 }
 let s = null;
-function M() {
+function y() {
   return (s === null || s.buffer.detached === true || s.buffer.detached === void 0 && s.buffer !== C.memory.buffer) && (s = new DataView(C.memory.buffer)), s;
 }
-function y(Q, A) {
+function M(Q, A) {
   return jA(Q >>> 0, A);
 }
 let b = null;
-function WA() {
+function xA() {
   return (b === null || b.byteLength === 0) && (b = new Uint32Array(C.memory.buffer)), b;
 }
 let m = null;
-function W() {
+function x() {
   return (m === null || m.byteLength === 0) && (m = new Uint8Array(C.memory.buffer)), m;
 }
-let O = null;
-function xA() {
-  return (O === null || O.byteLength === 0) && (O = new Uint8ClampedArray(C.memory.buffer)), O;
+let X = null;
+function lA() {
+  return (X === null || X.byteLength === 0) && (X = new Uint8ClampedArray(C.memory.buffer)), X;
 }
 function o(Q, A) {
   try {
@@ -1394,7 +1394,7 @@ function o(Q, A) {
 function h(Q) {
   return Q == null;
 }
-function S(Q, A, I) {
+function H(Q, A, I) {
   const g = { a: Q, b: A, cnt: 1 }, B = (...E) => {
     g.cnt++;
     const D = g.a;
@@ -1409,27 +1409,27 @@ function S(Q, A, I) {
     --g.cnt === 0 && (C.__wbindgen_destroy_closure(g.a, g.b), g.a = 0, RA.unregister(g));
   }, RA.register(B, g, g), B;
 }
-function lA(Q, A) {
+function WA(Q, A) {
   const I = A(Q.length * 1, 1) >>> 0;
-  return W().set(Q, I / 1), k = Q.length, I;
+  return x().set(Q, I / 1), k = Q.length, I;
 }
 function R(Q, A, I) {
   if (I === void 0) {
-    const i = X.encode(Q), w = A(i.length, 1) >>> 0;
-    return W().subarray(w, w + i.length).set(i), k = i.length, w;
+    const w = O.encode(Q), i = A(w.length, 1) >>> 0;
+    return x().subarray(i, i + w.length).set(w), k = w.length, i;
   }
   let g = Q.length, B = A(g, 1) >>> 0;
-  const E = W();
+  const E = x();
   let D = 0;
   for (; D < g; D++) {
-    const i = Q.charCodeAt(D);
-    if (i > 127) break;
-    E[B + D] = i;
+    const w = Q.charCodeAt(D);
+    if (w > 127) break;
+    E[B + D] = w;
   }
   if (D !== g) {
     D !== 0 && (Q = Q.slice(D)), B = I(B, g, g = D + Q.length * 3, 1) >>> 0;
-    const i = W().subarray(B + D, B + g), w = X.encodeInto(Q, i);
-    D += w.written, B = I(B, g, D, 1) >>> 0;
+    const w = x().subarray(B + D, B + g), i = O.encodeInto(Q, w);
+    D += i.written, B = I(B, g, D, 1) >>> 0;
   }
   return k = D, B;
 }
@@ -1437,16 +1437,16 @@ function q(Q) {
   const A = C.__wbindgen_externrefs.get(Q);
   return C.__externref_table_dealloc(Q), A;
 }
-let z = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
-z.decode();
+let e = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
+e.decode();
 const tA = 2146435072;
 let AA = 0;
 function jA(Q, A) {
-  return AA += A, AA >= tA && (z = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true }), z.decode(), AA = A), z.decode(W().subarray(Q, Q + A));
+  return AA += A, AA >= tA && (e = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true }), e.decode(), AA = A), e.decode(x().subarray(Q, Q + A));
 }
-const X = new TextEncoder();
-"encodeInto" in X || (X.encodeInto = function(Q, A) {
-  const I = X.encode(Q);
+const O = new TextEncoder();
+"encodeInto" in O || (O.encodeInto = function(Q, A) {
+  const I = O.encode(Q);
   return A.set(I), {
     read: Q.length,
     written: I.length
@@ -1454,7 +1454,7 @@ const X = new TextEncoder();
 });
 let k = 0, C;
 function bA(Q, A) {
-  return C = Q.exports, s = null, b = null, m = null, O = null, C.__wbindgen_start(), C;
+  return C = Q.exports, s = null, b = null, m = null, X = null, C.__wbindgen_start(), C;
 }
 async function mA(Q, A) {
   if (typeof Response == "function" && Q instanceof Response) {
@@ -1483,7 +1483,7 @@ async function mA(Q, A) {
     return false;
   }
 }
-async function OA(Q) {
+async function XA(Q) {
   if (C !== void 0) return C;
   Q !== void 0 && (Object.getPrototypeOf(Q) === Object.prototype ? { module_or_path: Q } = Q : console.warn("using deprecated parameters for the initialization function; pass a single object instead")), Q === void 0 && (Q = new URL("ironrdp_web_bg.wasm", import.meta.url));
   const A = UA();
@@ -1491,10 +1491,10 @@ async function OA(Q) {
   const { instance: I, module: g } = await mA(await Q, A);
   return bA(I);
 }
-const XA = "avc1.640033";
-function MA() {
+const OA = "avc1.640033";
+function yA() {
   return {
-    codec: XA,
+    codec: OA,
     optimizeForLatency: true,
     hardwareAcceleration: "no-preference",
     colorSpace: { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: true }
@@ -1504,7 +1504,7 @@ async function BI() {
   if (typeof VideoDecoder > "u" || typeof EncodedVideoChunk > "u")
     return false;
   try {
-    return (await VideoDecoder.isConfigSupported(MA())).supported === true;
+    return (await VideoDecoder.isConfigSupported(yA())).supported === true;
   } catch {
     return false;
   }
@@ -1564,7 +1564,7 @@ const _cA = class _cA {
   close() {
     this.closed = true, this.stopWatchdog();
     for (const A of this.surfaces.values())
-      yA(A.decoder);
+      MA(A.decoder);
     this.surfaces.clear(), this.stats.pending = 0;
   }
   open(A) {
@@ -1579,7 +1579,7 @@ const _cA = class _cA {
       waitingSince: null,
       pending: /* @__PURE__ */ new Map()
     };
-    return I.decoder.configure(MA()), this.surfaces.set(A, I), I;
+    return I.decoder.configure(yA()), this.surfaces.set(A, I), I;
   }
   output(A, I) {
     const g = I.timestamp, B = A.pending.get(g);
@@ -1606,44 +1606,44 @@ const _cA = class _cA {
   }
   /** The RGBA of the frame's regions, in turn. */
   async readRegions(A, I) {
-    const g = A.visibleRect ?? { x: 0, y: 0, width: A.codedWidth, height: A.codedHeight }, B = I.destination, [E, D] = g.width >= B.right && g.height >= B.bottom ? [0, 0] : [B.left, B.top], i = I.regions.map((G) => ({
+    const g = A.visibleRect ?? { x: 0, y: 0, width: A.codedWidth, height: A.codedHeight }, B = I.destination, [E, D] = g.width >= B.right && g.height >= B.bottom ? [0, 0] : [B.left, B.top], w = I.regions.map((G) => ({
       x: G.left - E,
       y: G.top - D,
       width: G.right - G.left,
       height: G.bottom - G.top
     }));
-    for (const G of i)
+    for (const G of w)
       if (G.x < 0 || G.y < 0 || G.x + G.width > g.width || G.y + G.height > g.height)
         throw new Error(
           `region ${JSON.stringify(G)} is outside the ${g.width}x${g.height} picture`
         );
-    const w = i.reduce((G, H) => G + H.width * H.height * 4, 0), F = new Uint8Array(w);
-    if (i.length === 0)
+    const i = w.reduce((G, S) => G + S.width * S.height * 4, 0), F = new Uint8Array(i);
+    if (w.length === 0)
       return F;
-    const a = Math.min(...i.map((G) => G.x)), J = Math.min(...i.map((G) => G.y)), Y = {
+    const a = Math.min(...w.map((G) => G.x)), J = Math.min(...w.map((G) => G.y)), Y = {
       x: a,
       y: J,
-      width: Math.max(...i.map((G) => G.x + G.width)) - a,
-      height: Math.max(...i.map((G) => G.y + G.height)) - J
+      width: Math.max(...w.map((G) => G.x + G.width)) - a,
+      height: Math.max(...w.map((G) => G.y + G.height)) - J
     };
-    if (i.length === 1)
+    if (w.length === 1)
       return await this.readBox(A, g, Y, F), F;
-    if (Y.width * Y.height * 4 > w * _cA.BOX_WASTE) {
+    if (Y.width * Y.height * 4 > i * _cA.BOX_WASTE) {
       let G = 0;
-      for (const H of i) {
-        const d = H.width * H.height * 4;
-        await this.readBox(A, g, H, F.subarray(G, G + d)), G += d;
+      for (const S of w) {
+        const d = S.width * S.height * 4;
+        await this.readBox(A, g, S, F.subarray(G, G + d)), G += d;
       }
       return F;
     }
-    const l = new Uint8Array(Y.width * Y.height * 4);
-    await this.readBox(A, g, Y, l);
-    let v = 0;
-    for (const G of i) {
-      const H = G.width * 4;
+    const W = new Uint8Array(Y.width * Y.height * 4);
+    await this.readBox(A, g, Y, W);
+    let z = 0;
+    for (const G of w) {
+      const S = G.width * 4;
       for (let d = 0; d < G.height; d++) {
         const BA = ((G.y - Y.y + d) * Y.width + (G.x - Y.x)) * 4;
-        F.set(l.subarray(BA, BA + H), v), v += H;
+        F.set(W.subarray(BA, BA + S), z), z += S;
       }
     }
     return F;
@@ -1658,9 +1658,9 @@ const _cA = class _cA {
           return;
         }
         this.stats.readback = "canvas";
-      } catch (i) {
-        if (!(i instanceof DOMException && i.name === "NotSupportedError") && !(i instanceof TypeError))
-          throw i;
+      } catch (w) {
+        if (!(w instanceof DOMException && w.name === "NotSupportedError") && !(w instanceof TypeError))
+          throw w;
         this.stats.readback = "canvas";
       }
     }
@@ -1700,7 +1700,7 @@ const _cA = class _cA {
     this.failed = A, this.stopWatchdog();
     const I = [...this.surfaces.values()].flatMap((g) => [...g.pending.values()]);
     for (const g of this.surfaces.values())
-      yA(g.decoder);
+      MA(g.decoder);
     this.surfaces.clear(), this.stats.pending = 0, (_b = (_a = this.options).onFailure) == null ? void 0 : _b.call(_a, A);
     for (const { frame: g, done: B } of I)
       B(g.id, null, A);
@@ -1709,7 +1709,7 @@ const _cA = class _cA {
 /** A bounding box may be this many times what its regions hold before they are read one by one instead. */
 __publicField(_cA, "BOX_WASTE", 2);
 let cA = _cA;
-function yA(Q) {
+function MA(Q) {
   if (Q.state !== "closed")
     try {
       Q.close();
@@ -1737,19 +1737,19 @@ function fA(Q) {
 function TA(Q) {
   return new N("file_contents_request_callback", Q);
 }
-function nA(Q) {
+function rA(Q) {
   return new N("file_contents_response_callback", Q);
 }
-function rA(Q) {
+function nA(Q) {
   return new N("lock_callback", Q);
 }
 function PA(Q) {
   return new N("unlock_callback", Q);
 }
-function vA(Q) {
+function zA(Q) {
   return new N("locks_expired_callback", Q);
 }
-function zA(Q) {
+function eA(Q) {
   return new N("format_list_response_callback", Q);
 }
 const QI = {
@@ -1765,10 +1765,10 @@ function EI(Q) {
 function DI(Q) {
   return new N("printer_device_id", Q);
 }
-function iI(Q) {
+function wI(Q) {
   return new N("printer_driver_name", Q);
 }
-function eA(Q) {
+function vA(Q) {
   return new N("request_file_contents", Q);
 }
 function uA(Q) {
@@ -1848,7 +1848,7 @@ class AI {
     }
   }
 }
-const _x = class _x {
+const _l = class _l {
   constructor(A, I, g) {
     __publicField(this, "name", "opfs");
     /** Sequence counter for generating unique temp file names. */
@@ -1863,7 +1863,7 @@ const _x = class _x {
    */
   static async create(A, I) {
     const g = I ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, B = await A.getDirectoryHandle("ironrdp-transfers", { create: true }), E = await B.getDirectoryHandle(g, { create: true });
-    return _x.cleanupStale(B, g), new _x(A, E, g);
+    return _l.cleanupStale(B, g), new _l(A, E, g);
   }
   // 24 hours
   /**
@@ -1884,7 +1884,7 @@ const _x = class _x {
         if (!E)
           continue;
         const D = Number(E[1]);
-        if (g - D > _x.STALE_SESSION_THRESHOLD_MS)
+        if (g - D > _l.STALE_SESSION_THRESHOLD_MS)
           try {
             await A.removeEntry(B, { recursive: true });
           } catch {
@@ -1941,8 +1941,8 @@ const _x = class _x {
   }
 };
 /** Maximum age (in milliseconds) before a session directory is considered stale. */
-__publicField(_x, "STALE_SESSION_THRESHOLD_MS", 1440 * 60 * 1e3);
-let x = _x;
+__publicField(_l, "STALE_SESSION_THRESHOLD_MS", 1440 * 60 * 1e3);
+let l = _l;
 function II(Q) {
   let A = Q.replace(/[\u0000-\u001f]/g, "");
   A = A.replace(/[/\\]/g, "_"), A = A.replace(/^\.+/, ""), A.length === 0 && (A = "unnamed");
@@ -1961,8 +1961,8 @@ async function gI(Q = "auto", A) {
   if (typeof ((_b = (_a = globalThis.navigator) == null ? void 0 : _a.storage) == null ? void 0 : _b.getDirectory) == "function")
     try {
       const I = await navigator.storage.getDirectory();
-      if (await x.probe(I))
-        return x.create(I, A);
+      if (await l.probe(I))
+        return l.create(I, A);
       console.debug("OPFS probe failed (createWritable not functional), falling back to blob storage");
     } catch (I) {
       console.debug("OPFS unavailable, falling back to blob storage:", I);
@@ -2057,7 +2057,7 @@ const _U = class _U {
   // with invokeExtension() to keep the Session interface protocol-agnostic.
   sendRequestFileContents(A, I, g, B, E, D) {
     this.ensureSession().invokeExtension(
-      eA({
+      vA({
         stream_id: A,
         file_index: I,
         flags: g,
@@ -2084,11 +2084,11 @@ const _U = class _U {
         (A, I) => this.handleFilesAvailable(A, I)
       ),
       TA((A) => this.handleFileContentsRequest(A)),
-      nA((A) => this.handleFileContentsResponse(A)),
-      rA((A) => this.handleLock(A)),
+      rA((A) => this.handleFileContentsResponse(A)),
+      nA((A) => this.handleLock(A)),
       PA((A) => this.handleUnlock(A)),
-      vA((A) => this.handleLocksExpired(A)),
-      zA((A) => this.handleFormatListResponse(A))
+      zA((A) => this.handleLocksExpired(A)),
+      eA((A) => this.handleFormatListResponse(A))
     ];
   }
   /**
@@ -2157,23 +2157,23 @@ const _U = class _U {
    * Internal: execute the async download workflow for a single file.
    */
   async executeDownload(A, I, g) {
-    const B = this.clipDataId, E = new Promise((D, i) => {
-      const w = {
+    const B = this.clipDataId, E = new Promise((D, w) => {
+      const i = {
         fileInfo: A,
         fileIndex: I,
         streamId: g,
         clipDataId: B,
         bytesReceived: 0,
         resolve: D,
-        reject: i
+        reject: w
       };
-      this.activeDownloads.set(g, w);
+      this.activeDownloads.set(g, i);
     });
     try {
       this.sendRequestFileContents(g, I, j.SIZE, 0, 8, B);
     } catch (D) {
       this.activeDownloads.delete(g);
-      const i = {
+      const w = {
         message: "Failed to request file size",
         transferId: g,
         fileIndex: I,
@@ -2181,7 +2181,7 @@ const _U = class _U {
         direction: "download",
         cause: D
       };
-      throw this.emit("error", i), new Error(i.message, { cause: D });
+      throw this.emit("error", w), new Error(w.message, { cause: D });
     }
     return E;
   }
@@ -2223,23 +2223,23 @@ const _U = class _U {
    * ```
    */
   async downloadFilesConcurrent(A, I = {}) {
-    const g = I.maxConcurrent ?? 3, B = /* @__PURE__ */ new Map(), E = [], D = A.map((w, F) => async () => {
+    const g = I.maxConcurrent ?? 3, B = /* @__PURE__ */ new Map(), E = [], D = A.map((i, F) => async () => {
       try {
-        const { completion: a } = this.downloadFile(w, F), J = await a;
+        const { completion: a } = this.downloadFile(i, F), J = await a;
         B.set(F, J);
       } catch (a) {
         E.push({ index: F, error: a });
       }
-    }), i = [];
-    for (const w of D) {
-      const F = w().finally(() => {
-        i.splice(i.indexOf(F), 1);
+    }), w = [];
+    for (const i of D) {
+      const F = i().finally(() => {
+        w.splice(w.indexOf(F), 1);
       });
-      i.push(F), i.length >= g && await Promise.race(i);
+      w.push(F), w.length >= g && await Promise.race(w);
     }
-    if (await Promise.all(i), E.length > 0)
+    if (await Promise.all(w), E.length > 0)
       throw new Error(
-        `Failed to download ${E.length} file(s): ` + E.map((w) => `file ${w.index}: ${w.error}`).join(", ")
+        `Failed to download ${E.length} file(s): ` + E.map((i) => `file ${i.index}: ${i.error}`).join(", ")
       );
     return B;
   }
@@ -2264,15 +2264,15 @@ const _U = class _U {
   uploadFiles(A) {
     this.uploadState !== void 0 && this.supersedeUpload(), this.retainedFiles = void 0;
     const I = _U.normalizeToDroppedFiles(A), g = /* @__PURE__ */ new Map();
-    for (let w = 0; w < I.length; w++)
-      g.set(w, this.generateStreamId());
-    const B = I.map((w) => ({
-      name: w.name,
-      size: w.size,
-      lastModified: w.lastModified,
-      path: w.path,
-      isDirectory: w.isDirectory
-    })), E = I.filter((w) => w.isDirectory !== true).length, D = I.map((w) => w.file), i = new Promise((w, F) => {
+    for (let i = 0; i < I.length; i++)
+      g.set(i, this.generateStreamId());
+    const B = I.map((i) => ({
+      name: i.name,
+      size: i.size,
+      lastModified: i.lastModified,
+      path: i.path,
+      isDirectory: i.isDirectory
+    })), E = I.filter((i) => i.isDirectory !== true).length, D = I.map((i) => i.file), w = new Promise((i, F) => {
       this.uploadState = {
         files: D,
         droppedFiles: I,
@@ -2283,7 +2283,7 @@ const _U = class _U {
         activeReaders: /* @__PURE__ */ new Map(),
         readerTimeouts: /* @__PURE__ */ new Map(),
         transferIds: g,
-        resolve: w,
+        resolve: i,
         reject: F
       }, this.suppressUploadMonitoring();
       try {
@@ -2300,7 +2300,7 @@ const _U = class _U {
       }
       this.armPasteAckWatchdog();
     });
-    return { transferIds: g, completion: i };
+    return { transferIds: g, completion: w };
   }
   /** Whether an upload batch is currently advertised or in flight (a fresh upload, or a re-paste
    *  rebuilt from retained files). */
@@ -2453,8 +2453,8 @@ const _U = class _U {
     return new Promise((I) => {
       const g = document.createElement("input");
       g.type = "file", g.style.display = "none", (A == null ? void 0 : A.multiple) === true && (g.multiple = true), (A == null ? void 0 : A.accept) !== void 0 && A.accept.length > 0 && (g.accept = A.accept), g.addEventListener("change", () => {
-        const i = Array.from(g.files || []);
-        E(), window.removeEventListener("focus", D), I(i);
+        const w = Array.from(g.files || []);
+        E(), window.removeEventListener("focus", D), I(w);
       });
       let B = false;
       const E = () => {
@@ -2505,8 +2505,8 @@ const _U = class _U {
         if (D)
           g.push(D);
         else {
-          const i = E.getAsFile();
-          i && B.push(i);
+          const w = E.getAsFile();
+          w && B.push(w);
         }
       }
       for (const E of g)
@@ -2553,8 +2553,8 @@ const _U = class _U {
         return;
       }
       if (A.isFile) {
-        const E = await new Promise((D, i) => {
-          A.file(D, i);
+        const E = await new Promise((D, w) => {
+          A.file(D, w);
         });
         g.push({
           file: E,
@@ -2573,9 +2573,9 @@ const _U = class _U {
           path: I,
           isDirectory: true
         });
-        const D = A.createReader(), i = await _U.readAllDirectoryEntries(D);
-        for (const w of i)
-          await this.traverseEntry(w, E, g, B + 1);
+        const D = A.createReader(), w = await _U.readAllDirectoryEntries(D);
+        for (const i of w)
+          await this.traverseEntry(i, E, g, B + 1);
       }
     }
   }
@@ -2678,18 +2678,18 @@ const _U = class _U {
     }
     if (E == null) {
       if ((A.flags & j.SIZE) !== 0) {
-        const w = new Uint8Array(8);
-        this.sendSubmitFileContents(A.streamId, false, w);
+        const i = new Uint8Array(8);
+        this.sendSubmitFileContents(A.streamId, false, i);
       } else
         this.sendSubmitFileContents(A.streamId, true, new Uint8Array());
       return;
     }
-    const i = E;
+    const w = E;
     if ((A.flags & j.SIZE) !== 0) {
-      const w = new Uint8Array(8);
-      new DataView(w.buffer).setBigUint64(0, BigInt(i.size), true), this.sendSubmitFileContents(A.streamId, false, w), i.size === 0 && this.markUploadFileComplete(A.index, i, I.transferIds.get(A.index) ?? -1);
+      const i = new Uint8Array(8);
+      new DataView(i.buffer).setBigUint64(0, BigInt(w.size), true), this.sendSubmitFileContents(A.streamId, false, i), w.size === 0 && this.markUploadFileComplete(A.index, w, I.transferIds.get(A.index) ?? -1);
     } else if ((A.flags & j.RANGE) !== 0) {
-      const w = i.slice(A.position, A.position + A.size), F = new FileReader();
+      const i = w.slice(A.position, A.position + A.size), F = new FileReader();
       I.activeReaders.set(A.streamId, F);
       const a = setTimeout(() => {
         var _a;
@@ -2713,15 +2713,15 @@ const _U = class _U {
         if (this.sendSubmitFileContents(A.streamId, false, J), this.uploadState !== void 0) {
           const Y = (this.uploadState.bytesServed.get(A.index) ?? 0) + J.length;
           this.uploadState.bytesServed.set(A.index, Y);
-          const l = this.uploadState.transferIds.get(A.index) ?? -1, v = {
-            transferId: l,
+          const W = this.uploadState.transferIds.get(A.index) ?? -1, z = {
+            transferId: W,
             fileIndex: A.index,
             fileName: D.name,
             bytesTransferred: Y,
-            totalBytes: i.size,
-            percentage: i.size === 0 ? 100 : Math.min(Y / i.size * 100, 100)
+            totalBytes: w.size,
+            percentage: w.size === 0 ? 100 : Math.min(Y / w.size * 100, 100)
           };
-          this.emit("upload-progress", v), Y >= i.size && this.markUploadFileComplete(A.index, i, l);
+          this.emit("upload-progress", z), Y >= w.size && this.markUploadFileComplete(A.index, w, W);
         }
       }, F.onerror = () => {
         var _a, _b;
@@ -2742,7 +2742,7 @@ const _U = class _U {
           cause: F.error
         };
         this.emit("error", J), this.uploadState !== void 0 && (this.uploadState.failedFiles.add(A.index), this.uploadState.completedFiles.add(A.index), this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount && this.finishUploadBatch(this.uploadState));
-      }, F.readAsArrayBuffer(w);
+      }, F.readAsArrayBuffer(i);
     }
   }
   /**
@@ -2894,7 +2894,7 @@ const _U = class _U {
         await g.write(I);
       } catch (B) {
         this.activeDownloads.delete(A.streamId), this.abortWriteHandle(A);
-        const i = {
+        const w = {
           message: B instanceof DOMException && B.name === "QuotaExceededError" ? `Storage quota exceeded while downloading "${A.fileInfo.name}"` : "Failed to write download chunk to storage",
           transferId: A.streamId,
           fileIndex: A.fileIndex,
@@ -2902,7 +2902,7 @@ const _U = class _U {
           direction: "download",
           cause: B
         };
-        this.emit("error", i), A.reject(new Error(i.message, { cause: B }));
+        this.emit("error", w), A.reject(new Error(w.message, { cause: B }));
         return;
       }
       if (A.bytesReceived += I.length, A.expectedSize !== void 0 && A.bytesReceived > A.expectedSize * 2) {
@@ -3061,12 +3061,12 @@ __publicField(_U, "MAX_DIRECTORY_DEPTH", 32);
 /** Maximum total entries (files + directories) collected from a single drop. */
 __publicField(_U, "MAX_DIRECTORY_ENTRIES", 1e3);
 let U = _U;
-async function wI(Q, A) {
-  await OA(A === void 0 ? void 0 : { module_or_path: A }), JA(Q);
+async function iI(Q, A) {
+  await XA(A === void 0 ? void 0 : { module_or_path: A }), JA(Q);
 }
 const GI = {
   DesktopSize: p,
-  InputTransaction: e,
+  InputTransaction: v,
   SessionBuilder: c,
   ClipboardData: Z,
   DeviceEvent: K
@@ -3089,13 +3089,13 @@ function FI(Q) {
 function RI(Q) {
   return new N("h264_decoder", Q);
 }
-function yI(Q) {
+function MI(Q) {
   return new N("audio_playback", Q);
 }
 function YI(Q) {
   return new N("drive_redirection", Q);
 }
-function MI(Q) {
+function yI(Q) {
   return new N("audio_input", Q);
 }
 function cI(Q) {
@@ -3121,38 +3121,38 @@ export {
   GI as Backend,
   YA as BlobStorageBackend,
   j as FileContentsFlags,
-  x as OpfsStorageBackend,
+  l as OpfsStorageBackend,
   QI as PrinterDriverName,
   QA as RdpFile,
   U as RdpFileTransferProvider,
   cA as WebCodecsH264Decoder,
-  MI as audioInput,
+  yI as audioInput,
   cI as audioInputData,
-  yI as audioPlayback,
+  MI as audioPlayback,
   gI as detectStorageBackend,
   kI as displayControl,
   YI as driveRedirection,
   KI as enableCredssp,
   hI as enableServerPointer,
   TA as fileContentsRequestCallback,
-  nA as fileContentsResponseCallback,
+  rA as fileContentsResponseCallback,
   fA as filesAvailableCallback,
   FI as graphicsPipeline,
   RI as h264Decoder,
   BI as h264Supported,
-  wI as init,
+  iI as init,
   _A as initiateFileCopy,
   JI as kdcProxyUrl,
   aI as legacyGraphics,
-  rA as lockCallback,
-  vA as locksExpiredCallback,
+  nA as lockCallback,
+  zA as locksExpiredCallback,
   UI as outboundMessageSizeLimit,
   oI as preConnectionBlob,
   CI as printJobStreamCallbacks,
   DI as printerDeviceId,
-  iI as printerDriverName,
+  wI as printerDriverName,
   EI as printerName,
-  eA as requestFileContents,
+  vA as requestFileContents,
   uA as submitFileContents,
   PA as unlockCallback,
   NI as vmConnect

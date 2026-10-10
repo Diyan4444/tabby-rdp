@@ -1,0 +1,251 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <aaronhritz@gmail.com>
+Date: Sat, 10 Oct 2026 16:37:51 -0700
+Subject: [PATCH] fix(connector): require nonce-bound CredSSP version 5 or
+ later
+
+---
+ crates/ironrdp-connector/src/credssp.rs       |  19 ++
+ .../tests/connector/credssp.rs                | 169 ++++++++++++++++++
+ .../tests/connector/mod.rs                    |   1 +
+ 3 files changed, 189 insertions(+)
+ create mode 100644 crates/ironrdp-testsuite-core/tests/connector/credssp.rs
+
+diff --git a/crates/ironrdp-connector/src/credssp.rs b/crates/ironrdp-connector/src/credssp.rs
+index 41302326..93eb1f83 100644
+--- a/crates/ironrdp-connector/src/credssp.rs
++++ b/crates/ironrdp-connector/src/credssp.rs
+@@ -9,8 +9,14 @@ use tracing::debug;
+ 
+ use crate::{
+     ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
++    reason_err,
+ };
+ 
++/// Version 5 introduced nonce-bound public-key hashes, fixing the encryption oracle in CVE-2018-0886.
++///
++/// [MS-CSSP 3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c
++const MIN_SERVER_VERSION: u32 = 5;
++
+ #[derive(Debug, Clone)]
+ pub struct KerberosConfig {
+     pub kdc_proxy_url: Option<url::Url>,
+@@ -177,11 +183,22 @@ impl CredsspSequence {
+ 
+     /// Returns Some(ts_request) when a TS request is received from server,
+     /// and None when an early user auth result PDU is received instead.
++    /// Rejects CredSSP versions older than 5 before authentication or public-key binding is produced.
+     pub fn decode_server_message(&mut self, input: &[u8]) -> ConnectorResult<Option<credssp::TsRequest>> {
+         match self.state {
+             CredsspState::Ongoing => {
+                 let message = credssp::TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+                 debug!(?message, "Received");
++
++                // SSPI selects the public-key binding from the server's first TSRequest. With NTLM, the reply to
++                // that message contains both AUTHENTICATE and pubKeyAuth, so reject before SSPI processes it.
++                if message.version < MIN_SERVER_VERSION {
++                    return Err(reason_err!(
++                        "CredSSP",
++                        "server uses CredSSP version {}, older than {MIN_SERVER_VERSION}, without the fix for CVE-2018-0886",
++                        message.version
++                    ));
++                }
+                 Ok(Some(message))
+             }
+             CredsspState::EarlyUserAuthResult => {
+@@ -206,6 +223,8 @@ impl CredsspSequence {
+         }
+     }
+ 
++    /// Processes the initial request from [`init`](Self::init), then requests validated by
++    /// [`decode_server_message`](Self::decode_server_message).
+     pub fn process_ts_request(&mut self, request: credssp::TsRequest) -> CredsspProcessGenerator<'_> {
+         self.client.process(request)
+     }
+diff --git a/crates/ironrdp-testsuite-core/tests/connector/credssp.rs b/crates/ironrdp-testsuite-core/tests/connector/credssp.rs
+new file mode 100644
+index 00000000..2493787f
+--- /dev/null
++++ b/crates/ironrdp-testsuite-core/tests/connector/credssp.rs
+@@ -0,0 +1,169 @@
++//! The CredSSP client against sspi's CredSSP server (NTLM), with the server announcing a given TSRequest version.
++
++use ironrdp_connector::credssp::CredsspSequence;
++use ironrdp_connector::sspi::credssp::{
++    CredSspServer, CredentialsProxy, ServerError, ServerMode, ServerState, TsRequest,
++};
++use ironrdp_connector::sspi::ntlm::NtlmConfig;
++use ironrdp_connector::sspi::{AuthIdentity, Username};
++use ironrdp_connector::{ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName};
++use ironrdp_core::WriteBuf;
++use ironrdp_pdu::nego::SecurityProtocol;
++use rstest::rstest;
++
++const USERNAME: &str = "user";
++const PASSWORD: &str = "password";
++
++/// The server's TLS public key, as the client reads it from the server's certificate.
++///
++/// A malicious server chooses it. Before CredSSP version 5, the client sends it back sealed as it is.
++const SERVER_PUBLIC_KEY: &[u8] = b"any bytes the server chooses, such as a request to another service";
++
++/// The NTLM signature in front of what the client sealed.
++const SIGNATURE_LEN: usize = 16;
++/// A SHA-256 hash: what the client seals from version 5 on.
++const HASH_LEN: usize = 32;
++
++struct Users;
++
++impl CredentialsProxy for Users {
++    type AuthenticationData = AuthIdentity;
++
++    fn auth_data_by_user(&mut self, _: &Username) -> std::io::Result<AuthIdentity> {
++        Ok(identity())
++    }
++
++    fn auth_data(&mut self) -> std::io::Result<Vec<AuthIdentity>> {
++        Ok(vec![identity()])
++    }
++}
++
++fn identity() -> AuthIdentity {
++    AuthIdentity {
++        username: Username::new(USERNAME, None).unwrap(),
++        password: PASSWORD.to_owned().into(),
++    }
++}
++
++struct Exchange {
++    /// What the client sent, as read back from the wire.
++    sent: Vec<TsRequest>,
++    /// How it ended for the client.
++    result: ConnectorResult<()>,
++    /// Whether the server got the credentials.
++    server_got_credentials: bool,
++}
++
++/// Runs the client's CredSSP sequence against a server announcing `server_version`.
++///
++/// The client refuses legacy servers before producing NTLM AUTHENTICATE or pubKeyAuth.
++fn exchange(server_version: u32) -> Exchange {
++    let (mut sequence, mut request) = CredsspSequence::init(
++        Credentials::UsernamePassword {
++            username: USERNAME.to_owned(),
++            password: PASSWORD.to_owned(),
++        },
++        None,
++        SecurityProtocol::HYBRID,
++        ServerName::new("server"),
++        SERVER_PUBLIC_KEY.to_vec(),
++        None,
++    )
++    .unwrap();
++
++    let mut server = CredSspServer::new_with_version(
++        SERVER_PUBLIC_KEY.to_vec(),
++        Users,
++        server_version,
++        ServerMode::Ntlm(NtlmConfig::default()),
++    )
++    .unwrap();
++
++    let mut sent = Vec::new();
++    let mut server_got_credentials = false;
++
++    let result = loop {
++        let state = match sequence.process_ts_request(request).resolve_to_result() {
++            Ok(state) => state,
++            Err(e) => break Err(ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e))),
++        };
++        let mut output = WriteBuf::new();
++        sequence.handle_process_result(state, &mut output).unwrap();
++        let mut message = TsRequest::from_buffer(output.filled()).unwrap();
++        sent.push(message.clone());
++
++        // A legacy server binds the key the way its own version does, but sspi's server goes by the version the
++        // client announces (6): show it the lower of the two.
++        message.version = message.version.min(server_version);
++        let reply = match server.process(message).resolve_to_result() {
++            Ok(ServerState::ReplyNeeded(reply)) => reply,
++            Ok(ServerState::Finished(_)) => {
++                server_got_credentials = true;
++                break Ok(());
++            }
++            Err(ServerError {
++                ts_request: Some(reply),
++                ..
++            }) => *reply,
++            Err(e) => panic!("the server failed without a reply: {:?}", e.error),
++        };
++
++        let mut bytes = Vec::new();
++        reply.encode_ts_request(&mut bytes).unwrap();
++        match sequence.decode_server_message(&bytes) {
++            Ok(Some(next)) => request = next,
++            Ok(None) => break Ok(()),
++            Err(e) => break Err(e),
++        }
++    };
++
++    Exchange {
++        sent,
++        result,
++        server_got_credentials,
++    }
++}
++
++/// Versions 2 to 4 bind the TLS key by sealing it as it is: the server picks a plaintext and gets it back sealed
++/// with the session key of the user's authentication, which it can relay elsewhere (CVE-2018-0886). The client
++/// must stop at the server's first message, before its NTLM AUTHENTICATE message and any sealed key leave.
++#[rstest]
++#[case::v2(2)]
++#[case::v3(3)]
++#[case::v4(4)]
++fn server_older_than_version_5_is_refused(#[case] server_version: u32) {
++    let exchange = exchange(server_version);
++
++    let error = exchange
++        .result
++        .expect_err("the client went on with a server older than version 5");
++    assert!(
++        matches!(error.kind(), ConnectorErrorKind::Reason(reason) if reason.contains("CredSSP version")),
++        "{error}"
++    );
++    assert_eq!(
++        exchange.sent.len(),
++        1,
++        "only the NTLM NEGOTIATE message may have been sent"
++    );
++    assert!(
++        exchange
++            .sent
++            .iter()
++            .all(|m| m.pub_key_auth.is_none() && m.auth_info.is_none())
++    );
++    assert!(!exchange.server_got_credentials);
++}
++
++/// Windows (since the 2018 CredSSP updates), FreeRDP's server (GNOME Remote Desktop) and sspi's announce version 6.
++#[rstest]
++#[case::v5(5)]
++#[case::v6(6)]
++fn server_from_version_5_binds_the_key_hash(#[case] server_version: u32) {
++    let exchange = exchange(server_version);
++
++    exchange.result.unwrap();
++    assert!(exchange.server_got_credentials);
++    let pub_key_auth = exchange.sent.iter().find_map(|m| m.pub_key_auth.as_ref()).unwrap();
++    assert_eq!(pub_key_auth.len(), SIGNATURE_LEN + HASH_LEN);
++}
+diff --git a/crates/ironrdp-testsuite-core/tests/connector/mod.rs b/crates/ironrdp-testsuite-core/tests/connector/mod.rs
+index 79a675d4..5f9465e0 100644
+--- a/crates/ironrdp-testsuite-core/tests/connector/mod.rs
++++ b/crates/ironrdp-testsuite-core/tests/connector/mod.rs
+@@ -3,6 +3,7 @@ use ironrdp_pdu::gcc;
+ use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+ 
+ mod autodetect;
++mod credssp;
+ mod early_capabilities;
+ 
+ fn test_config() -> ironrdp_connector::Config {
