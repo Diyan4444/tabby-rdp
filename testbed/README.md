@@ -39,7 +39,12 @@ VM 2 CPUs, 4 GB of memory and 20 GB of disk. No GPU is needed.
 On the same host, after `provision.sh`:
 
 ```sh
-scp testbed/linux/xrdp.sh user@host: && ssh -t user@host "sudo TEST_PASSWORD='<a password>' sh xrdp.sh"
+scp testbed/linux/xrdp.sh user@host:
+# On the host, read the password without echoing it or putting it in shell history:
+read -r -s -p 'xrdp password: ' TEST_PASSWORD; echo
+export TEST_PASSWORD
+sh xrdp.sh
+unset TEST_PASSWORD
 ```
 
 [`xrdp.sh`](linux/xrdp.sh) installs xrdp with XFCE (and `pipewire-module-xrdp` for sound, where the release has it),
@@ -79,14 +84,14 @@ Windows 10 or 11 Pro (or Windows Server), for example a VM on the same virtual n
 
 ```sh
 TEST_PASSWORD='<a password for the test account>' testbed/windows/libvirt.sh   # on the libvirt host
-# prints the settings for the Windows suite, and the administrator's password
+# prints the settings and a private file containing the administrator's password
 ```
 
 **Or any Windows machine.** In an elevated PowerShell on it:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\setup.ps1 -Password '<a password for the test account>'
+.\setup.ps1 -PasswordFile 'C:\private\test-password.txt'
 ```
 
 [`setup.ps1`](windows/setup.ps1) turns on Remote Desktop (with Network Level Authentication) and WinRM (marking the
@@ -116,7 +121,7 @@ days; downloaded the first time, 6 GB):
 
 ```sh
 TEST_PASSWORD='<a password for the test account>' testbed/windows-server/libvirt.sh   # on the libvirt host
-# prints the addresses, and the administrator's password
+# prints the addresses and a private file containing the administrator's password
 ```
 
 It is prepared with `setup.ps1` (as the Windows machine above) and [`server.ps1`](windows-server/server.ps1), which
@@ -150,6 +155,25 @@ capitals, small letters, digits, symbols).
 disc in a drive. In an elevated PowerShell on it, after `setup.ps1`:
 
 ```powershell
-.\server.ps1 -Password '<the test account's password>'   # restarts once, and finishes at startup
+.\server.ps1 -PasswordFile 'C:\private\test-password.txt'   # restarts once, and finishes at startup
 # -SshKeys <a file of public keys>: may sign in over SSH as an administrator (the hyperv suite lists the VMs that way)
 ```
+
+Provisioning credentials are test-only secrets. The Windows scripts need Python 3 and build their answer file and
+password file in a new mode-700 temporary directory, with mode-600 files. Passwords reach the renderer through
+stdin; Windows setup reads the password file from the config disc rather than a process argument. Exit and signal
+traps remove local answer files and config ISOs, eject the uploaded config disc, and delete its libvirt volume.
+If libvirt cannot delete the volume, the script prints the cleanup command; remove it before reusing the machine.
+An interrupted unattended installation may need to be restarted because its config disc is removed.
+
+On success the administrator password is saved to the printed, randomly named mode-600 file in `TESTBED_DIR`,
+instead of the terminal or CI log. Move it into your secret store, then delete that file. On Windows, protect any
+manually supplied password file with an administrators-only ACL and remove it after setup; the scripts still
+accept `-Password` for compatibility, but it can expose a secret in process arguments and history. The Server's
+second stage needs its administrators-only `C:\tabby-rdp\guest.txt` across a reboot; failure handlers and the
+second-stage finally block remove it. After a failure, restart provisioning with the password file and remove any
+unfinished guest VM before retrying or discarding the test machine.
+Never run provisioning with shell tracing enabled. Catchable signals are cleaned up; a killed host or SIGKILL
+requires deleting any leftover `provision.*` directory and `config.iso` volume manually.
+
+Run `python3 testbed/test_credentials.py` for the local answer-file and cleanup regression checks.

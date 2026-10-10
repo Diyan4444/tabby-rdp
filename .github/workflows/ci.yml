@@ -92,6 +92,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 test/unit/trd-pty.py remote/trd-pty.py
+      - run: python3 testbed/test_credentials.py
 
   ironrdp-patches:
     name: IronRDP patches apply

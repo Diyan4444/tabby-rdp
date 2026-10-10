@@ -27,7 +27,7 @@ ISO="${2:-}"
 if [ -z "${ADMIN_PASSWORD:-}" ]; then
     ADMIN_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '/+=')Aa1"
 fi
-for c in virsh virt-install genisoimage swtpm curl bash; do
+for c in virsh virt-install genisoimage swtpm curl bash python3; do
     command -v $c >/dev/null || { echo "$c is not installed (virtinst, genisoimage, swtpm)" >&2; exit 2; }
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -35,6 +35,7 @@ URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 V="virsh -c $URI"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed}"
 mkdir -p "$WORK"
+. "$HERE/../config-workspace.sh"
 # Windows Server 2025 evaluation (180 days), x64, English, from Microsoft's Evaluation Center.
 EVAL_URL='https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us'
 if [ -z "$ISO" ]; then
@@ -43,19 +44,11 @@ if [ -z "$ISO" ]; then
 fi
 
 # The config disc: the answer file (found by Windows Setup at the root of any disc), setup.ps1 and server.ps1.
-# A value for the answer file: XML-escaped, then escaped for sed's replacement text.
-answer_value() { printf %s "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e 's/[\\|&]/\\&/g'; }
-CFG="$WORK/$NAME-config"
-rm -rf "$CFG"; mkdir -p "$CFG"
 COMPUTER=$(printf %s "$NAME" | tr -cd 'A-Za-z0-9-' | cut -c1-15)
-ADMIN_VALUE=$(answer_value "$ADMIN_PASSWORD")
-TEST_VALUE=$(answer_value "$TEST_PASSWORD")
 # START_GUEST=0: the Windows guest is made but left off (see below, and server.ps1).
 SERVER_ARGS=; [ "${START_GUEST:-1}" = 0 ] && SERVER_ARGS=-NoGuestStart
-sed -e "s|@@COMPUTER_NAME@@|$COMPUTER|g" -e "s|@@ADMIN_USER@@|tabbyadmin|g" -e "s|@@TEST_USER@@|tabbyrdp|g" \
-    -e "s|@@SERVER_ARGS@@|$SERVER_ARGS|g" \
-    -e "s|@@ADMIN_PASSWORD@@|$ADMIN_VALUE|g" -e "s|@@TEST_PASSWORD@@|$TEST_VALUE|g" \
-    "$HERE/autounattend.xml" > "$CFG/autounattend.xml"
+printf '%s\0%s\0%s\0%s' "$COMPUTER" "$ADMIN_PASSWORD" "$TEST_PASSWORD" "$SERVER_ARGS" | \
+    python3 "$HERE/../render-answer.py" "$HERE/autounattend.xml" "$CFG"
 cp "$HERE/../windows/setup.ps1" "$HERE/server.ps1" "$CFG/"
 # The key(s) for SSH as the administrator: server.ps1 takes the file next to it.
 if [ -z "${SSH_KEY:-}" ]; then
@@ -67,8 +60,7 @@ if [ -n "${SSH_KEY:-}" ]; then
     [ -f "$SSH_KEY" ] || { echo "SSH_KEY: no such file: $SSH_KEY" >&2; exit 2; }
     grep -v '^[[:space:]]*$' "$SSH_KEY" > "$CFG/authorized_keys"
 fi
-genisoimage -quiet -J -R -V TABBYRDP -o "$WORK/$NAME-config.iso" "$CFG"
-rm -rf "$CFG"   # it holds the passwords
+genisoimage -quiet -J -R -V TABBYRDP -o "$PRIVATE_WORK/config.iso" "$CFG"
 
 # A storage pool of the VM's name, with its disk and both discs, uploaded through libvirt (no root needed).
 if ! $V pool-info "$NAME" >/dev/null 2>&1; then
@@ -87,8 +79,8 @@ upload() {  # upload <file> <volume>, replacing a volume left by an earlier run
 if [ "$($V vol-info --pool "$NAME" windows.iso --bytes 2>/dev/null | awk '/Capacity/ { print $2 }')" != "$(wc -c < "$ISO")" ]; then
     upload "$ISO" windows.iso
 fi
-upload "$WORK/$NAME-config.iso" config.iso
-rm -f "$WORK/$NAME-config.iso"
+CONFIG_UPLOADED=1
+upload "$PRIVATE_WORK/config.iso" config.iso
 $V vol-delete --pool "$NAME" "$NAME.qcow2" >/dev/null 2>&1 || true
 $V vol-create-as "$NAME" "$NAME.qcow2" 120G --format qcow2 >/dev/null
 
@@ -136,10 +128,13 @@ echo
 [ -n "$READY" ] || { echo "the gateway or Hyper-V didn't come up; see C:\\tabby-rdp\\server.log there (VNC: $V vncdisplay $NAME)" >&2; exit 1; }
 sleep 60
 $V change-media "$NAME" sdc --eject --config --live >/dev/null 2>&1 || true
-$V vol-delete --pool "$NAME" config.iso >/dev/null 2>&1 || true
+$V vol-delete --pool "$NAME" config.iso >/dev/null
+CONFIG_UPLOADED=
 
 echo
-echo "Windows Server test machine ready at $IP. Administrator: tabbyadmin, password $ADMIN_PASSWORD"
+ADMIN_PASSWORD_FILE=$(mktemp "$WORK/$NAME-admin-password.XXXXXX")
+printf '%s' "$ADMIN_PASSWORD" > "$ADMIN_PASSWORD_FILE"
+echo "Windows Server test machine ready at $IP. Administrator: tabbyadmin; password saved in $ADMIN_PASSWORD_FILE (mode 600)."
 echo "Test account tabbyrdp, here and in the Hyper-V guest \"tabby-rdp-guest\" (Windows; it finishes its first start in"
 echo "the background, unless START_GUEST=0 left it off). \"tabby-rdp-empty\" is a guest without a disk, at its firmware's"
 echo "screen. C:\\tabby-rdp\\ready.txt has their ids:"
@@ -148,6 +143,6 @@ echo "    Hyper-V consoles:  $IP:2179; SSH (PowerShell) on $IP:22 to list the VM
 echo "    Remote Desktop:    $IP:3389, WinRM on $IP:5985"
 echo
 echo "For the suites (test/README.md), where Tabby reaches $IP:"
-echo "    export TRD_TEST_HYPERV=tabbyadmin@$IP TRD_TEST_HYPERV_PASSWORD='<the administrator password above>'"
+echo "    export TRD_TEST_HYPERV=tabbyadmin@$IP TRD_TEST_HYPERV_PASSWORD='<the saved administrator password>'"
 echo "    export TRD_TEST_HYPERV_CONSOLE=tabbyrdp TRD_TEST_HYPERV_CONSOLE_PASSWORD='<the test account password>'"
 echo "    export TRD_TEST_GATEWAY=$IP TRD_TEST_GATEWAY_USER=tabbyrdp TRD_TEST_GATEWAY_PASSWORD='<the test account password>'"
