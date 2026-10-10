@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4-rc.1
+
+Local release candidate; not published on npm or as a GitHub release.
+
 ## 0.5.3
 
 **Added**
