@@ -4,6 +4,10 @@
 
 Local release candidate; not published on npm or as a GitHub release.
 
+**Security** (the rest of the review of 0.5.3-rc.1; all of these were in 0.5.2 too)
+- **The RD Gateway's NTLM sign-in is always bound to its TLS connection.** A challenge without the target information
+  or the time that the binding goes with is refused, rather than answered without the binding and the integrity code.
+
 ## 0.5.3
 
 **Added**

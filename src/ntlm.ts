@@ -199,18 +199,25 @@ export function authenticateMessage (
     account: { username: string, domain?: string, password: string, workstation?: string, channelBinding?: Buffer, targetName?: string },
 ): Buffer {
     const server = parseChallenge(challenge)
+    // The sign-in is bound to the TLS connection and the service it is for by the pairs the client adds to the server's
+    // target information (see clientTargetInfo), and covered whole by the integrity code, which goes with the server's
+    // time among those pairs. A challenge without target information, or without the time, would have the answer go
+    // out bound to neither, with an LMv2 response besides that binds nothing either: one a gateway could pass on to
+    // another service that only checks the binding when it is there. Every Windows since Vista sends both, and an RD
+    // Gateway is a Windows Server 2012 R2 or later: such a challenge is refused (security review, finding 5).
+    if (!server.targetInfo.length) {
+        throw new Error('the gateway\'s NTLM challenge has no target information, so the sign-in couldn\'t be bound to this connection: not answered')
+    }
+    if (!avPair(server.targetInfo, AV_TIMESTAMP)) {
+        throw new Error('the gateway\'s NTLM challenge doesn\'t say when it is, so the sign-in couldn\'t be bound to this connection: not answered')
+    }
     const split = /^([^\\]+)\\(.+)$/.exec(account.username)
     const [domain, username] = split ? [split[1], split[2]] : [account.domain ?? '', account.username]
-    // The server says when it is (a timestamp among its pairs) on every Windows since Vista: the response then
-    // carries an integrity code, and the LM response is left empty.
-    const timed = !!avPair(server.targetInfo, AV_TIMESTAMP)
-    const targetInfo = server.targetInfo.length
-        ? clientTargetInfo(server.targetInfo, { mic: timed, channelBinding: account.channelBinding, targetName: account.targetName })
-        : server.targetInfo
+    const targetInfo = clientTargetInfo(server.targetInfo, { mic: true, channelBinding: account.channelBinding, targetName: account.targetName })
     const hash = ntlmV2Hash(username, domain, account.password)
-    const clientChallenge = randomBytes(8)
-    const { response, sessionKey } = ntlmV2Response(hash, server.challenge, targetInfo, undefined, clientChallenge)
-    const lm = timed ? Buffer.alloc(24) : Buffer.concat([hmacMd5(hash, server.challenge, clientChallenge), clientChallenge])
+    const { response, sessionKey } = ntlmV2Response(hash, server.challenge, targetInfo)
+    // No LM response next to the server's time: the NT response and the integrity code are the proof.
+    const lm = Buffer.alloc(24)
     const fields = [lm, response, utf16(domain), utf16(username), utf16(account.workstation ?? ''), Buffer.alloc(0)]
     // 64 bytes of fields and flags, 8 of version (none), 16 of integrity code, then what the fields point at.
     const header = Buffer.alloc(88)
@@ -227,8 +234,6 @@ export function authenticateMessage (
         NEGOTIATE_128 | NEGOTIATE_56
     header.writeUInt32LE((server.flags & ours & ~NEGOTIATE_VERSION) >>> 0, 60)
     const message = Buffer.concat([header, ...fields])
-    if (timed) {
-        hmacMd5(sessionKey, negotiate, challenge, message).copy(message, 72)
-    }
+    hmacMd5(sessionKey, negotiate, challenge, message).copy(message, 72)
     return message
 }
