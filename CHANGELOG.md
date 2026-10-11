@@ -14,6 +14,10 @@ Local release candidate; not published on npm or as a GitHub release.
 - **H.264 decoders are held to 16 per desktop**, a surface gets one only with a key frame, and surfaces left behind
   (by resizes) are closed to make room: a server could have the window open a decoder, with its thread, for every
   surface it named.
+- **A shared folder's listing gives the server at most 10,000 names**, read a few at a time, rather than the whole
+  folder for each listing the server asks for. A name past those is still there to open by its path, though not to
+  find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
+  bounded yet, so this slows what a server can have the desktop keep rather than ends it.
 
 ## 0.5.3
 

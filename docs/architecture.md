@@ -510,7 +510,14 @@ IronRDP's.
   and FUSE ones say 1) and shown read-only; a link made to it while it is open isn't looked for. A desktop has at most
   `MAX_OPEN_FILES` (1,024) files open, opens under way included, and all the desktops of a window `WINDOW_OPEN_FILES`
   (2,048) together, since the window's file descriptors are one process's (the module counts them; it is loaded once per
-  window); more get `EMFILE`. That leaves most of what the window may have open to everything else where it may have far
+  window); more get `EMFILE`. A folder's listing gives the server `MAX_LISTED` (10,000) of its names at most, read a
+  few at a time in the file system's own order: IronRDP keeps a listing whole with each folder handle (patch 15), and
+  answers the server's queries of the folder from it, so a name left out is still there to open by its path, though not
+  to find by a query of the folder. Only what one handle holds is bounded so: the server opens as many folder handles
+  as it likes, which patch 15 doesn't bound (only the file opens count toward `MAX_OPEN_FILES`), so it can still have
+  the desktop keep a listing for each, and the window's memory grow with them: at 10,000 names each, far more slowly
+  than with whole listings of a large folder, which is what this closes.
+  That leaves most of what the window may have open to everything else where it may have far
   more: on macOS, where Node raises its limit to the system's hard one as it starts (some 138,000 on a Mac, measured
   with Electron 40), and on Windows (8,192, the C runtime's most). On Linux the window's limit wasn't measured: where it
   is 4,096 or less, these 2,048 are half of it or more. A file counts until its close has finished, not from when the
