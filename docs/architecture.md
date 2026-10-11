@@ -612,10 +612,15 @@ the next wait, and the reconnecting stops after the last.
 
 `HostCompatibility` (`src/hostCompat.ts`) provides one host identity and capability snapshot per window. Optional
 host, Electron, Node and xterm metadata can be unknown independently. The xterm version is the host package's
-declared dependency, not a verified runtime version. Terminal input adapters and modal drag fallbacks probe the
-features they use, so forks and nightlies need not match the capabilities of an official version with the same
+declared dependency, not a verified runtime version. Terminal input adapters probe the features they use, so
+forks and nightlies need not match the capabilities of an official version with the same
 number. Connection logs and the host smoke suites use the same diagnostics. Development tools expose the snapshot
 through `window.__remoteDesktop.compat.snapshot(paneElement?)`.
+
+Standard dialogs use Tabby's own window drag region, shipped in 1.0.238
+([upstream #11766](https://github.com/Eugeny/tabby/pull/11766)). The plugin no longer scans or watches host dialogs
+to insert a fallback. Older hosts remain supported, but need updating to drag the window while a standard dialog
+is open. The plugin's plain-DOM settings overlays keep their own strips because they are not host `.modal` elements.
 
 ## Release controls
 
