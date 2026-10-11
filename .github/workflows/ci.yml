@@ -39,6 +39,7 @@ jobs:
           grep -q 'vendor/iron-remote-desktop-rdp.js' pack.txt
           grep -q 'vendor/ironrdp_web_bg.wasm' pack.txt
           grep -q 'remote/trd-pty.py' pack.txt
+          grep -q 'npm-shrinkwrap.json' pack.txt
           if grep -qE ' (src|test|testbed|ironrdp)/' pack.txt; then exit 1; fi
           # The troubleshooting page links this one packaged guide; other documentation stays out.
           awk '/ docs\// && !/ docs\/desk\.md[[:space:]]*$/ { bad = 1 } END { exit bad }' pack.txt
@@ -57,10 +58,6 @@ jobs:
   electron:
     name: Unit tests in Electron
     runs-on: ubuntu-24.04
-    env:
-      # The Electron of the Tabby release the plugin is qualified on (Tabby 1.0.238 ships 43.7.0): the unit tests that
-      # need its TLS library (BoringSSL, not Node's OpenSSL) and its native sockets run in it, as Tabby's window does.
-      ELECTRON_VERSION: 43.7.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,13 +69,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Electron
-        # In a folder of its own, outside the project's dependencies and its lockfile.
+        # Tabby 1.0.238 ships Electron 43.7.0. The separate manifest and lock pin the complete download toolchain.
         run: |
           mkdir -p "$RUNNER_TEMP/electron"
+          cp scripts/electron/package.json scripts/electron/package-lock.json "$RUNNER_TEMP/electron/"
           cd "$RUNNER_TEMP/electron"
-          npm init -y > /dev/null
-          npm install --no-audit --no-fund "electron@$ELECTRON_VERSION"
-          # The package fetches its binary on first use, and says so on the output the path is read from: fetched first.
+          npm ci --ignore-scripts --no-audit --no-fund
+          # Run only the locked Electron installer explicitly; other dependencies' lifecycle scripts stay disabled.
+          # This fetches Electron's versioned binary and verifies its upstream checksum before use.
           node node_modules/electron/install.js
           electron="$(node -p "require('electron')")"
           test -x "$electron"
@@ -94,6 +92,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 test/unit/trd-pty.py remote/trd-pty.py
+      - run: python3 testbed/test_images.py
+      - run: python3 testbed/test_credentials.py
 
   ironrdp-patches:
     name: IronRDP patches apply
@@ -123,19 +123,23 @@ jobs:
 
   names:
     name: No internal names
+    # Never inject private patterns into a pull request or an unprotected branch run.
+    if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_protected
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The maintainers' private host and domain names, one extended regex per line, in the repository secret
-      # INTERNAL_NAMES (not in the repository, where they would be what it keeps out). Skipped without it, as for
-      # pull requests from forks, which don't get secrets.
+      # INTERNAL_NAMES (not in the repository, where they would be what it keeps out). The job runs only after a
+      # push to a protected branch; pull requests and unprotected branch pushes never receive this secret.
       - name: Check
         env:
           INTERNAL_NAMES: ${{ secrets.INTERNAL_NAMES }}
         run: |
           if [ -z "$INTERNAL_NAMES" ]; then echo "INTERNAL_NAMES is not set: skipped"; exit 0; fi
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/names" "$RUNNER_TEMP/hits"' EXIT
           printf '%s\n' "$INTERNAL_NAMES" | sed '/^[[:space:]]*$/d' > "$RUNNER_TEMP/names"
           # vendor/ is IronRDP's build: its base64 data matches short names by chance.
           if git ls-files -z | grep -zv '^vendor/' | xargs -0 grep -n -I -i -E -f "$RUNNER_TEMP/names" > "$RUNNER_TEMP/hits"; then

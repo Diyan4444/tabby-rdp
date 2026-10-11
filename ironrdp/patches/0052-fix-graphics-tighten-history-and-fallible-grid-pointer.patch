@@ -1,0 +1,170 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <meanaverage@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 16:40:10 -0700
+Subject: [PATCH] fix(graphics): tighten progressive history and report grid
+ and pointer allocation failures
+
+---
+ crates/ironrdp-graphics/src/pointer.rs        | 15 +++++++++--
+ crates/ironrdp-graphics/src/progressive.rs    | 16 +++++++++---
+ crates/ironrdp-session/src/fast_path.rs       |  1 +
+ .../ironrdp-testsuite-core/tests/peak_heap.rs | 25 +++++++++++++++++++
+ 4 files changed, 51 insertions(+), 6 deletions(-)
+
+diff --git a/crates/ironrdp-graphics/src/pointer.rs b/crates/ironrdp-graphics/src/pointer.rs
+index 14fe3a68..cf34853d 100644
+--- a/crates/ironrdp-graphics/src/pointer.rs
++++ b/crates/ironrdp-graphics/src/pointer.rs
+@@ -41,6 +41,7 @@ pub enum PointerError {
+     InvalidAndMaskSize { expected: usize, actual: usize },
+     NotSupportedBpp { bpp: u16 },
+     DimensionsTooLarge { width: u16, height: u16 },
++    OutOfMemory(std::collections::TryReserveError),
+     Pdu(ironrdp_pdu::PduError),
+ }
+ 
+@@ -69,6 +70,7 @@ impl core::fmt::Display for PointerError {
+                 )
+             }
+             PointerError::Pdu(err) => err.fmt(f),
++            PointerError::OutOfMemory(_) => write!(f, "not enough memory to decode the pointer"),
+         }
+     }
+ }
+@@ -81,6 +83,7 @@ impl core::error::Error for PointerError {
+             PointerError::NotSupportedBpp { .. } => None,
+             PointerError::DimensionsTooLarge { .. } => None,
+             PointerError::Pdu(error) => error.source(),
++            PointerError::OutOfMemory(error) => Some(error),
+         }
+     }
+ }
+@@ -252,9 +255,14 @@ impl DecodedPointer {
+             });
+         }
+ 
+-        let default_and_mask = vec![0x00; and_stride.length * usize::from(data.height)];
++        let mut default_and_mask = Vec::new();
+         let mut and_mask = data.and_mask;
+         if and_mask.is_empty() {
++            let len = and_stride.length * usize::from(data.height);
++            default_and_mask
++                .try_reserve_exact(len)
++                .map_err(PointerError::OutOfMemory)?;
++            default_and_mask.resize(len, 0);
+             and_mask = &default_and_mask;
+         } else if and_mask.len() != and_stride.length * usize::from(data.height) {
+             return Err(PointerError::InvalidAndMaskSize {
+@@ -263,7 +271,10 @@ impl DecodedPointer {
+             });
+         }
+ 
+-        let mut bitmap_data = Vec::with_capacity(usize::from(data.width) * usize::from(data.height) * 4);
++        let mut bitmap_data = Vec::new();
++        bitmap_data
++            .try_reserve_exact(usize::from(data.width) * usize::from(data.height) * 4)
++            .map_err(PointerError::OutOfMemory)?;
+ 
+         for row_idx in 0..data.height {
+             // For non-monochrome cursors we read strides from bottom to top
+diff --git a/crates/ironrdp-graphics/src/progressive.rs b/crates/ironrdp-graphics/src/progressive.rs
+index fc24b86b..31db3133 100644
+--- a/crates/ironrdp-graphics/src/progressive.rs
++++ b/crates/ironrdp-graphics/src/progressive.rs
+@@ -1092,12 +1092,17 @@ impl SurfaceTiles {
+         let tiles_wide = width_pixels.div_ceil(64);
+         let tiles_high = height_pixels.div_ceil(64);
+         let count = usize::from(tiles_wide) * usize::from(tiles_high);
++        let mut tiles = Vec::new();
++        tiles
++            .try_reserve_exact(count)
++            .map_err(ProgressiveDecodeError::OutOfMemory)?;
++        tiles.resize_with(count, || None);
+ 
+         Ok(Self {
+             tiles_wide,
+             tiles_high,
+             use_reduce_extrapolate,
+-            tiles: core::iter::repeat_with(|| None).take(count).collect(),
++            tiles,
+         })
+     }
+ 
+@@ -1181,9 +1186,9 @@ const MAX_REGION_CLIPPING_WORK: usize = 1 << 20;
+ ///
+ /// The server chooses the surfaces, codec contexts and tiles the decoder keeps state for, and
+ /// each tile it fills takes about 60 KiB: a [`TileState`] (36 KiB) and its surface's sub-band
+-/// reference (24 KiB). 1 GiB holds every tile of 64 Mi pixels of surface: the 256 MiB of 32 bpp
+-/// surfaces the EGFX compositor displays at most, which is two 8K monitors.
+-pub const MAX_PROGRESSIVE_BYTES: usize = 1 << 30;
++/// reference (24 KiB). 512 MiB holds one 8K display or four 4K displays, while bounding the
++/// per-session decoder history independently of the compositor and other sessions.
++pub const MAX_PROGRESSIVE_BYTES: usize = 512 * 1024 * 1024;
+ 
+ /// Most tiles one [`ProgressiveDecoder::decode_bitmap`] call may decode or redraw.
+ ///
+@@ -1216,6 +1221,8 @@ pub enum ProgressiveDecodeError {
+     MemoryLimitExceeded { limit: usize },
+     /// A bitmap decodes or redraws more tiles than [`MAX_TILES_PER_BITMAP`].
+     TileLimitExceeded { limit: usize },
++    /// A fallible allocation could not reserve the tile grid.
++    OutOfMemory(std::collections::TryReserveError),
+ }
+ 
+ impl core::fmt::Display for ProgressiveDecodeError {
+@@ -1247,6 +1254,7 @@ impl core::fmt::Display for ProgressiveDecodeError {
+             Self::TileLimitExceeded { limit } => {
+                 write!(f, "progressive bitmap decodes or redraws more than {limit} tiles")
+             }
++            Self::OutOfMemory(_) => write!(f, "not enough memory for the progressive tile grid"),
+         }
+     }
+ }
+diff --git a/crates/ironrdp-session/src/fast_path.rs b/crates/ironrdp-session/src/fast_path.rs
+index fb376a08..82451002 100644
+--- a/crates/ironrdp-session/src/fast_path.rs
++++ b/crates/ironrdp-session/src/fast_path.rs
+@@ -698,6 +698,7 @@ impl Processor {
+             PointerError::InvalidAndMaskSize { .. } => "InvalidAndMaskSize",
+             PointerError::NotSupportedBpp { .. } => "NotSupportedBpp",
+             PointerError::DimensionsTooLarge { .. } => "DimensionsTooLarge",
++            PointerError::OutOfMemory(_) => "OutOfMemory",
+             PointerError::Pdu(_) => "Pdu",
+         };
+         warn!(pointer_error = error_kind, "Ignoring unsupported pointer update");
+diff --git a/crates/ironrdp-testsuite-core/tests/peak_heap.rs b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+index 8580a49b..dad565e4 100644
+--- a/crates/ironrdp-testsuite-core/tests/peak_heap.rs
++++ b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+@@ -126,6 +126,31 @@ fn with_heap_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
+ 
+ struct NoopHandler;
+ 
++#[test]
++fn progressive_grid_allocation_failure_is_reported() {
++    use ironrdp_graphics::progressive::SurfaceTiles;
++    let result = with_heap_limit(0, || SurfaceTiles::new(64, 64, false));
++    assert!(matches!(result, Err(ProgressiveDecodeError::OutOfMemory(_))));
++}
++
++#[test]
++fn pointer_allocation_failure_is_reported() {
++    use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget, PointerError};
++    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16};
++    let pointer = ColorPointerAttribute {
++        cache_index: 0,
++        hot_spot: Point16 { x: 0, y: 0 },
++        width: 1,
++        height: 1,
++        xor_mask: &[0, 0, 0, 0],
++        and_mask: &[0, 0],
++    };
++    let result = with_heap_limit(0, || {
++        DecodedPointer::decode_color_pointer_attribute(&pointer, PointerBitmapTarget::Accelerated)
++    });
++    assert!(matches!(result, Err(PointerError::OutOfMemory(_))));
++}
++
+ impl GraphicsPipelineHandler for NoopHandler {}
+ 
+ /// The message a server sends for `pdu`: the PDU in an uncompressed ZGFX segment.

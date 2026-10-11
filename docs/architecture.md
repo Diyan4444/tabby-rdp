@@ -102,8 +102,13 @@ GNOME Remote Desktop (grd) accepts a client only with a TLS certificate, a passw
 connect, the plugin runs a short script as the SSH user over an exec channel (`src/remoteSetup.ts`). No root, nothing
 installed beforehand:
 
-1. **Keys and password:** `~/.local/share/tabby-rdp/` (mode 0700) holds a self-signed TLS key and certificate and a
-   random RDP password (0600), made once.
+1. **Keys and password:** `~/.local/share/tabby-rdp/hosts/<machine-id>/` (mode 0700) holds a self-signed TLS key and
+   certificate and a random RDP password (0600), made once per user and machine. The ID must be the initialized,
+   nonzero 32-character lowercase hex value in `/etc/machine-id`; unavailable or malformed IDs fail setup. The
+   credential directories and files must be owned by this user and may not be symbolic links. A per-machine
+   `setup.lock` directory serializes initialization, and ordinary errors/signals release it. If setup is killed
+   without cleanup, subsequent attempts stop after about ten seconds; remove that lock only after confirming no
+   setup is active. Desk's helpers and key keep their existing home-wide locations.
 2. **grd, headless mode:** `grdctl --headless` with the user `tabby` and that password, view-only off.
 3. **A headless GNOME session:** if none runs, `systemd-run --user --unit=tabby-headless-shell gnome-shell --headless`,
    with a session identity (`XDG_CURRENT_DESKTOP`, Ubuntu's session mode when present) so that Settings and
@@ -126,7 +131,9 @@ installed beforehand:
    that can't be written (read-only) is left as it is, with a note (`RD_NOTE`) in the desktop's log; one whose writing
    fails part way (a full disk) leaves what it should hold in the plugin's folder, and the note says where.
 5. **grd restarts only when its configuration changed:** it reads credentials at startup, and a restart drops open
-   sessions.
+   sessions. Moving from the old home-wide credential paths always generates fresh secrets; no old key or password
+   is imported. Setup selects these new paths and credentials and restarts grd on each host's first updated
+   connection. Old files remain for unupgraded hosts, which must each be reconnected to rotate their active secrets.
 6. **Clients connected already:** the script counts the established connections to grd's port (again for up to 2 s,
    so a connection of the plugin's own being replaced isn't one) and reports them. grd gives each client a screen of
    its own, so the plugin asks before connecting: take it over (the script runs again with `TRD_TAKEOVER=1`, which
@@ -320,9 +327,9 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
 
 - **Order:** the web client hands each H.264 frame to the decoder as it arrives, and applies the decoded pixels (the
   frame's region rectangles, read back as RGBA) to the EGFX surface in the order the server sent them. Commands after
-  a frame wait for it, and so does its frame acknowledgement: the server paces what it sends by those, so the queue
-  stays short and the picture never runs ahead of what was drawn. Everything after decoding (surfaces, caches,
-  ResetGraphics on resize, device pixels for Retina) is the same path as for the other codecs.
+  a frame wait for it, and so does its frame acknowledgement. Command and byte budgets bound this queue even if the
+  server ignores acknowledgements; the picture never runs ahead of what was drawn. Everything after decoding
+  (surfaces, caches, ResetGraphics on resize, device pixels for Retina) is the same path as for the other codecs.
 - **Latency:** without a VUI `bitstream_restriction` in the stream, conformant decoders (Chromium's among them) hold
   every picture until their buffer is full, so the SPS is amended to declare no reordering, as WebRTC does. Colors
   are decoded as full-range BT.709 whatever the stream signals, as MS-RDPEGFX specifies.
@@ -330,6 +337,19 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
   reconnects by itself without H.264 for that desktop (until Tabby restarts, or the setting is turned on again). A
   decoder the browser takes back (`QuotaExceededError`: an idle one, in a hidden window) reconnects with H.264, as a new
   stream starts with a key frame; taken back again within ten minutes, it counts as a failure like the others.
+- **Surfaces:** the plugin sets IronRDP's public `maxDecoders` option to 16 (`src/h264.ts`), counting active and
+  retiring `VideoDecoder`s together. The original decoder instance handles surface deletion, reuse and graphics
+  reset notifications, including when no later video frame arrives. A retiring decoder flushes outstanding work
+  before closing. A new surface gets a decoder only with a key frame; a bounded set waiting for one is checked by
+  the 3 s watchdog. Deltas for further unknown surfaces are dropped without retaining their data or opening codecs.
+  Exceeding decoder capacity fails H.264 and uses the fallback above, rather than evicting a live stream. The plugin
+  does not inspect private decoder state or update its counters: lifecycle, byte accounting and statistics stay
+  with the vendor implementation.
+- **Budgets:** EGFX messages are processed incrementally with limits on frames, AVC rectangles and queued commands.
+  H.264 independently bounds pending access units, decoder construction rate, concurrent readbacks, readback output
+  bytes and the full decoded pictures retained during asynchronous copies. Rust also bounds queued pixel callbacks.
+  These are per-session limits on separate allocations, not a single ceiling on renderer memory; multiple sessions
+  and browser codec internals consume additional resources.
 - **GNOME** sends H.264 only with a hardware encoder (VA-API or NVENC on the remote); otherwise RemoteFX, as before.
 - **Windows** gets the graphics pipeline only with H.264. It streams H.264 only to EGFX 10 and later (to 8.1 it
   confirms the version without AVC420), and only for what it takes for video: areas of natural picture that keep
@@ -453,13 +473,15 @@ IronRDP's.
     lets the next go), and past 256 waiting (`MAX_WAITING`) get an error. Each also takes room in the connection for as
     much as it may be, from before it is read until it is answered (`ServerFlow`, which the desktop's proxy gives), and
     what its answer hands the connection takes room of its own: the room is 64 MB (`FLOW_WINDOW`) less what was taken
-    and the proxy hasn't read from the connection since. Whatever the proxy reads from it makes room, the connection's
-    other messages too. What is handed to the connection waits in the window until the proxy reads it, and the proxy
-    reads no further than `HIGH_WATER`, 8 MB, ahead of what the server takes. With a server that reads nothing at all,
-    what was read for the remote and not yet taken by the proxy stays within the room and one part more (80 MB), with
-    about those 8 MB more in the proxy. With one that reads while it keeps asking, it can grow past that: each byte of
-    the connection's other messages the proxy reads makes room for a byte of answers, so what waits grows by as much as
-    the proxy reads of them meanwhile. A request waits its turn while there is no room; the room it took is given back
+    and the proxy hasn't read from the connection since, and less what the proxy has read and the server hasn't taken
+    yet (its backlog). The proxy reads the connection whatever the server does, so what is handed to it waits in the
+    proxy, where it is counted, rather than in the WebSocket's own queue to send, where nothing is. Whatever waits for
+    the server counts, the connection's other messages too, and the server taking it makes room. With a server that
+    reads nothing at all, what was read for the remote and not yet taken by the server stays within the room and one
+    part more (80 MB). Only answers wait for room, though: everything else the connection sends (input, the
+    clipboard's answers, sound) goes to the proxy as it is, bounded there alone by the 104 MB and one message more past
+    which the proxy ends the connection (`SERVER_BACKLOG`, [Security notes](#security-notes)). A request waits its turn
+    while there is no room; the room it took is given back
     once it is answered, or stops counting (below). Sizes and errors are answered at once, without waiting for room:
     each is about as large as the request it answers. A shared folder's answers other than its reads (the names in a
     folder, a file's details) take no room either (below). Every request tells the provider that the remote is pulling
@@ -502,7 +524,14 @@ IronRDP's.
   and FUSE ones say 1) and shown read-only; a link made to it while it is open isn't looked for. A desktop has at most
   `MAX_OPEN_FILES` (1,024) files open, opens under way included, and all the desktops of a window `WINDOW_OPEN_FILES`
   (2,048) together, since the window's file descriptors are one process's (the module counts them; it is loaded once per
-  window); more get `EMFILE`. That leaves most of what the window may have open to everything else where it may have far
+  window); more get `EMFILE`. A folder's listing gives the server `MAX_LISTED` (10,000) of its names at most, read a
+  few at a time in the file system's own order: IronRDP keeps a listing whole with each folder handle (patch 15), and
+  answers the server's queries of the folder from it, so a name left out is still there to open by its path, though not
+  to find by a query of the folder. Only what one handle holds is bounded so: the server opens as many folder handles
+  as it likes, which patch 15 doesn't bound (only the file opens count toward `MAX_OPEN_FILES`), so it can still have
+  the desktop keep a listing for each, and the window's memory grow with them: at 10,000 names each, far more slowly
+  than with whole listings of a large folder, which is what this closes.
+  That leaves most of what the window may have open to everything else where it may have far
   more: on macOS, where Node raises its limit to the system's hard one as it starts (some 138,000 on a Mac, measured
   with Electron 40), and on Windows (8,192, the C runtime's most). On Linux the window's limit wasn't measured: where it
   is 4,096 or less, these 2,048 are half of it or more. A file counts until its close has finished, not from when the
@@ -590,10 +619,15 @@ the next wait, and the reconnecting stops after the last.
 
 `HostCompatibility` (`src/hostCompat.ts`) provides one host identity and capability snapshot per window. Optional
 host, Electron, Node and xterm metadata can be unknown independently. The xterm version is the host package's
-declared dependency, not a verified runtime version. Terminal input adapters and modal drag fallbacks probe the
-features they use, so forks and nightlies need not match the capabilities of an official version with the same
+declared dependency, not a verified runtime version. Terminal input adapters probe the features they use, so
+forks and nightlies need not match the capabilities of an official version with the same
 number. Connection logs and the host smoke suites use the same diagnostics. Development tools expose the snapshot
 through `window.__remoteDesktop.compat.snapshot(paneElement?)`.
+
+Standard dialogs use Tabby's own window drag region, shipped in 1.0.238
+([upstream #11766](https://github.com/Eugeny/tabby/pull/11766)). The plugin no longer scans or watches host dialogs
+to insert a fallback. Older hosts remain supported, but need updating to drag the window while a standard dialog
+is open. The plugin's plain-DOM settings overlays keep their own strips because they are not host `.modal` elements.
 
 ## Release controls
 
@@ -624,7 +658,10 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
 - **grd listens on all interfaces:** it has no bind-address setting, so port 3389 is reachable from the network
   (password-protected, TLS). The plugin doesn't change the firewall. For loopback-only access, as root:
   `iptables -I INPUT -p tcp --dport 3389 ! -i lo -j DROP` (and the same with `ip6tables`).
-- **Credentials:** the generated RDP password is in a 0600 file in a 0700 folder. The setup compares it with grd's
+- **Credentials:** the generated RDP password is in a 0600 file in a per-machine 0700 folder. This avoids credential
+  reuse when a home is shared, but is not a trust boundary between machines able to access that same account's
+  home: they can still read other hosts' secrets and alter GNOME's own shared settings. Such machines need separate
+  accounts or host-local storage to isolate them. The setup compares the password with grd's
   in the shell, never as a command's argument, which other users of the host could read in its process list. Setting
   it (the first connect, or when grd's differs) first leaves it off `grdctl`'s command line and gives it on its input,
   which versions that ask for a missing password read; where that doesn't take, `grdctl` gets it as an argument, and
@@ -641,8 +678,15 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   GrantFileProtocolExtraPrivileges fuse is on, as it is in Tabby's builds (checked on macOS); a build with it off would
   have its pages say `null`, as sandboxed ones do, and its desktops refused by their own proxy, which would show at the
   first connection. `null` stays refused rather than let sandboxed pages in. Past that, the first message is capped at a
-  request's size and has ten seconds to arrive, messages at 32 MB, and data waiting for a slow side at 8 MB (64 MB
-  inside an SSH channel). The token being the address's path, the plugin takes it out of IronRDP's errors (one names the
+  request's size and has ten seconds to arrive, and messages at 32 MB. Data waiting for a client that is slow to read
+  pauses the server at 8 MB (64 MB inside an SSH channel). Data waiting for a server that is slow to read stays in the
+  proxy, which goes on reading the client: the client's own queue to send counts nothing, and a remote that keeps
+  asking for the clipboard would have the answers it doesn't read pile up there. Past 104 MB (`SERVER_BACKLOG`: the
+  room for answers, one message more and 8 MB) the proxy ends the connection. A session in good faith can end so too,
+  rarely: what is pasted on the remote from here goes as it is, however large (the plugin puts no bound on the
+  clipboard), so an item of more than 104 MB pasted over a link that takes long to carry it (through an SSH channel,
+  say) ends the connection rather than wait. The failure says how much waited for the server, so that the log tells the
+  two apart. The token being the address's path, the plugin takes it out of IronRDP's errors (one names the
   address it couldn't connect to) before they reach the desktop's status and its log, which **Copy log** hands out.
   IronRDP itself prints the address only at its debug and trace levels (`localStorage.trdLogLevel`), to the window's
   console, which Tabby doesn't write to its log file; its debug level printed the token before too, in the request it
@@ -977,11 +1021,11 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   requests waiting, one at a time on a stream), and pasted files are read off the window's thread. What is read for the
   remote, parts of files and a shared folder's reads (4 MB at most), waits in the window until the server takes it, so a
   remote that keeps asking while it reads its connection slowly, or not at all, could have it fill the window's memory:
-  what is read for it, or handed to the connection, beyond what the local proxy has read from the connection stays
-  within 64 MB and one answer more (`ServerFlow`), and the proxy lets no more than `HIGH_WATER` (8 MB) wait for the
-  server. Whatever the proxy reads from the connection makes room, its other messages too: a server that reads nothing
-  at all has no more than that waiting, and one that reads while it keeps asking can have what waits grow past it by as
-  much as the proxy reads of those messages meanwhile. A file's size and errors, and a shared folder's answers other
+  what is read for it, handed to the connection, or read by the local proxy and not yet taken by the server stays
+  within 64 MB and one answer more (`ServerFlow`). What else waits for the server (the connection's other messages,
+  the clipboard's answers among them) takes room too, and past 104 MB of it all the proxy ends the connection
+  (`SERVER_BACKLOG`): the proxy reads the connection whatever the server does, so nothing piles up uncounted in the
+  WebSocket's own queue to send. A file's size and errors, and a shared folder's answers other
   than its reads (the names in a folder, a file's details), are answered outside that; a size or an error is about as
   large as the request it answers. Saved files get names without invisible characters, folders of their own and the
   system's mark for downloads, so Gatekeeper and SmartScreen can apply.

@@ -5,6 +5,7 @@
 #
 #     testbed/linux/libvirt.sh [vm-name] [public-key-file]
 # Rocky uses Xfce/xrdp; set TEST_XRDP_PASSWORD_FILE to a private file for its dedicated tabbyxrdp account.
+# fedora44-kde uses Plasma/KRDP; set TEST_KRDP_PASSWORD_FILE, then complete its documented console setup.
 #
 # Defaults: tabby-rdp-linux, and ~/.ssh/id_ed25519.pub (or id_rsa.pub). The key file can hold several keys, one per
 # line: this host's (for provisioning) and that of the machine that runs the tests, if another.
@@ -26,59 +27,33 @@ for c in virsh virt-install cloud-localds; do
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 V="virsh -c ${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-case "$(uname -m)" in
-    aarch64|arm64) IMAGE_ARCH=arm64 ;;
-    x86_64) IMAGE_ARCH=amd64 ;;
-    *) echo 'unsupported host architecture' >&2; exit 2 ;;
-esac
 DISTRO="${TEST_DISTRO:-ubuntu2404}"
 case "$DISTRO" in
-    ubuntu2404)
-        IMAGE_BASE="https://cloud-images.ubuntu.com/noble/${UBUNTU_IMAGE_BUILD:-current}"
-        IMAGE_NAME="noble-server-cloudimg-$IMAGE_ARCH.img"
-        MANIFEST=SHA256SUMS; CHECK=sha256sum; GUEST_USER=ubuntu; OS_VARIANT=ubuntu24.04
-        ;;
-    debian13)
-        IMAGE_BASE="https://cloud.debian.org/images/cloud/trixie/${DEBIAN_IMAGE_BUILD:-latest}"
-        IMAGE_NAME="debian-13-generic-$IMAGE_ARCH.qcow2"
-        MANIFEST=SHA512SUMS; CHECK=sha512sum; GUEST_USER=debian; OS_VARIANT=debian13
-        ;;
-    fedora44)
-        case "$IMAGE_ARCH" in arm64) FEDORA_ARCH=aarch64 ;; amd64) FEDORA_ARCH=x86_64 ;; esac
-        IMAGE_BASE="https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/$FEDORA_ARCH/images"
-        IMAGE_NAME="Fedora-Cloud-Base-Generic-44-1.7.$FEDORA_ARCH.qcow2"
-        MANIFEST="Fedora-Cloud-44-1.7-$FEDORA_ARCH-CHECKSUM"; CHECK=sha256sum; GUEST_USER=fedora; OS_VARIANT=fedora-unknown
-        ;;
-    rocky9)
-        case "$IMAGE_ARCH" in arm64) ROCKY_ARCH=aarch64 ;; amd64) ROCKY_ARCH=x86_64 ;; esac
-        IMAGE_BASE="https://download.rockylinux.org/pub/rocky/9/images/$ROCKY_ARCH"
-        IMAGE_NAME="Rocky-9-GenericCloud-Base-${ROCKY_IMAGE_BUILD:-9.8-20260525.0}.$ROCKY_ARCH.qcow2"
-        MANIFEST="$IMAGE_NAME.CHECKSUM"; CHECK=sha256sum; GUEST_USER=rocky; OS_VARIANT=rocky9
-        [ -f "${TEST_XRDP_PASSWORD_FILE:-}" ] || { echo 'Set TEST_XRDP_PASSWORD_FILE to a private password file for Rocky/Xfce/xrdp' >&2; exit 2; }
-        ;;
-    *) echo 'TEST_DISTRO must be ubuntu2404, debian13, fedora44 or rocky9' >&2; exit 2 ;;
+    ubuntu2404) GUEST_USER=ubuntu; OS_VARIANT=ubuntu24.04 ;;
+    debian13) GUEST_USER=debian; OS_VARIANT=debian13 ;;
+    fedora44|fedora44-kde) GUEST_USER=fedora; OS_VARIANT=fedora-unknown ;;
+    rocky9) GUEST_USER=rocky; OS_VARIANT=rocky9 ;;
+    *) echo 'TEST_DISTRO must be ubuntu2404, debian13, fedora44, fedora44-kde or rocky9' >&2; exit 2 ;;
 esac
-IMAGE_URL="$IMAGE_BASE/$IMAGE_NAME"
+if [ "$DISTRO" = rocky9 ]; then
+    [ -f "${TEST_XRDP_PASSWORD_FILE:-}" ] || { echo 'Set TEST_XRDP_PASSWORD_FILE to a private password file for Rocky/Xfce/xrdp' >&2; exit 2; }
+fi
+if [ "$DISTRO" = fedora44-kde ]; then
+    [ -f "${TEST_KRDP_PASSWORD_FILE:-}" ] || { echo 'Set TEST_KRDP_PASSWORD_FILE to a private password file for the dedicated KDE account' >&2; exit 2; }
+fi
+# Preserve the release branch's reviewed-media requirement for every distro.
+# UBUNTU_IMAGE/SHA256 remain compatible aliases only for the Ubuntu profile.
+if [ "$DISTRO" = ubuntu2404 ]; then
+    TEST_IMAGE="${TEST_IMAGE:-${UBUNTU_IMAGE:-}}"
+    TEST_IMAGE_SHA256="${TEST_IMAGE_SHA256:-${UBUNTU_IMAGE_SHA256:-}}"
+fi
+: "${TEST_IMAGE:?set TEST_IMAGE to a reviewed local cloud image for the selected distro and architecture}"
+: "${TEST_IMAGE_SHA256:?set TEST_IMAGE_SHA256 to the reviewed image SHA-256}"
+sh "$HERE/../verify-image.sh" "$TEST_IMAGE" "$TEST_IMAGE_SHA256"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed/$DISTRO}"
 mkdir -p "$WORK"
 # Refuse to modify an existing guest, including another test thread's VM.
 if $V dominfo "$NAME" >/dev/null 2>&1; then echo "VM already exists: $NAME" >&2; exit 2; fi
-[ -f "$WORK/$IMAGE_NAME" ] || curl --connect-timeout 20 --max-time 1800 -fL -o "$WORK/$IMAGE_NAME" "$IMAGE_URL"
-curl --connect-timeout 20 --max-time 60 -fsSL "$IMAGE_BASE/$MANIFEST" -o "$WORK/$MANIFEST"
-# Verify this exact file, not whichever entries happen to exist in the cache.
-python3 - "$WORK/$MANIFEST" "$IMAGE_NAME" > "$WORK/image.checksum" <<'CHECKSUM'
-import re, sys
-manifest, name = sys.argv[1:]
-lines = open(manifest).read().splitlines()
-found = []
-for line in lines:
-    match = re.fullmatch(r'([a-fA-F0-9]{64}|[a-fA-F0-9]{128})\s+[* ]?' + re.escape(name), line)
-    bsd = re.fullmatch(r'SHA256 \(' + re.escape(name) + r'\) = ([a-fA-F0-9]{64})', line)
-    if match or bsd: found.append((match or bsd).group(1))
-if len(found) != 1: raise SystemExit('Expected exactly one checksum for requested image')
-print(found[0] + '  ' + name)
-CHECKSUM
-(cd "$WORK" && $CHECK --check image.checksum)
 printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-data"
 {
     printf '#cloud-config\nhostname: %s\nusers:\n  - default\nssh_pwauth: false\nssh_authorized_keys:\n' "$NAME"
@@ -87,7 +62,7 @@ printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-dat
 # DHCP by MAC address: the desktop packages bring NetworkManager, which asks for a lease by MAC, and the address
 # would change at the first reboot otherwise.
 RENDERER=''
-case "$DISTRO" in fedora44|rocky9) ;; *) RENDERER='renderer: networkd' ;; esac
+case "$DISTRO" in fedora44|fedora44-kde|rocky9) ;; *) RENDERER='renderer: networkd' ;; esac
 printf 'version: 2\n%s\nethernets:\n  lan:\n    match: {name: "en*"}\n    dhcp4: true\n    dhcp-identifier: mac\n' "$RENDERER" \
     > "$WORK/network-config"
 cloud-localds -N "$WORK/network-config" "$WORK/seed.iso" "$WORK/user-data" "$WORK/meta-data"
@@ -100,7 +75,7 @@ if ! $V pool-info "$NAME" >/dev/null 2>&1; then
     $V pool-autostart "$NAME" >/dev/null
 fi
 $V vol-create-as "$NAME" "$NAME.qcow2" 4G --format qcow2 >/dev/null
-$V vol-upload --pool "$NAME" "$NAME.qcow2" "$WORK/$IMAGE_NAME"
+$V vol-upload --pool "$NAME" "$NAME.qcow2" "$TEST_IMAGE"
 $V vol-resize --pool "$NAME" "$NAME.qcow2" 20G >/dev/null
 $V vol-create-as "$NAME" seed.iso "$(wc -c < "$WORK/seed.iso")" --format raw >/dev/null
 $V vol-upload --pool "$NAME" seed.iso "$WORK/seed.iso"
@@ -111,9 +86,11 @@ BOOT_OPTION=''
 if [ "${TEST_SECURE_BOOT:-1}" = 0 ]; then
     BOOT_OPTION='uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no'
 fi
+DISPLAY_ARGS='--graphics none'
+if [ "$DISTRO" = fedora44-kde ]; then DISPLAY_ARGS='--graphics vnc,listen=127.0.0.1 --video virtio'; fi
 virt-install ${BOOT_OPTION:+--boot "$BOOT_OPTION"} --connect "${LIBVIRT_DEFAULT_URI:-qemu:///system}" --name "$NAME" --memory 4096 --vcpus 2 --import \
     --disk "vol=$NAME/$NAME.qcow2,bus=virtio" --disk "vol=$NAME/seed.iso,device=cdrom" --os-variant "$OS_VARIANT" \
-    --network network=default,model=virtio --tpm none --graphics none --noautoconsole >/dev/null
+    --network network=default,model=virtio --tpm none $DISPLAY_ARGS --noautoconsole >/dev/null
 
 printf 'Waiting for its address'
 IP=
@@ -130,8 +107,14 @@ i=0; until $SSH true 2>/dev/null; do
 done
 # Let cloud-init finish first (it exits 2 for "done, with warnings", which is fine here).
 $SSH cloud-init status --wait >/dev/null 2>&1 || true
-$SSH 'cat > /tmp/provision.sh' < "$HERE/provision.sh"
-$SSH sudo sh /tmp/provision.sh "$GUEST_USER"
+if [ "$DISTRO" = fedora44-kde ]; then
+    $SSH 'cat > /tmp/provision.sh' < "$HERE/kde.sh"
+    $SSH sudo sh /tmp/provision.sh "$GUEST_USER" < "$TEST_KRDP_PASSWORD_FILE"
+else
+    $SSH 'cat > /tmp/provision.sh' < "$HERE/provision.sh"
+    $SSH 'cat > /tmp/winrm-requirements.txt' < "$HERE/winrm-requirements.txt"
+    $SSH sudo sh /tmp/provision.sh "$GUEST_USER"
+fi
 if [ "$DISTRO" = rocky9 ]; then
     $SSH 'cat > /tmp/trd-xrdp-provision.sh' < "$HERE/xrdp.sh"
     $SSH sudo env TEST_PASSWORD_FILE=- sh /tmp/trd-xrdp-provision.sh tabbyxrdp "$GUEST_USER" < "$TEST_XRDP_PASSWORD_FILE"
@@ -151,7 +134,8 @@ i=0; until $SSH true 2>/dev/null; do
 done
 
 echo
-echo "Test host ready at $IP (on this host's libvirt network). For the suites, on this host:"
+echo "Test SSH host ready at $IP (on this host's libvirt network). For the suites, on this host:"
+if [ "$DISTRO" = fedora44-kde ]; then echo 'KDE visual tests additionally require the wallet/display setup in docs/visual-qa.md.'; fi
 echo "    export TRD_TEST_HOST=$IP TRD_TEST_USER=$GUEST_USER"
 echo "From another machine, forward a port to it, for example:"
 echo "    ssh -N -L 127.0.0.1:2222:$IP:22 $(id -un)@$(hostname)"

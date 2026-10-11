@@ -1,0 +1,447 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:19:04 -0700
+Subject: [PATCH 44/51] fix(egfx): bound what waits for the external H.264
+ decoder
+
+With an external decoder, the commands after an H.264 frame wait for
+its pixels, and the pixels of frames decoded ahead of their turn wait
+for the frames before them. Nothing bounded either. A server could send
+a frame the decoder holds on to, then any number of commands behind it,
+while every frame decoded meanwhile kept its pixels (up to 256 MiB
+each) in the WebAssembly memory that all of a page's sessions share,
+until it ran out; only the decoder's watchdog (3 s without a picture)
+stopped that. And each completion looked for its frame through the
+whole queue, so the completions behind a long queue took quadratic
+time.
+
+What waits is now bounded at all times, whatever the timing:
+
+- At most 65,536 commands, frames included. A frame holds a handful of
+  commands, a full repaint from the bitmap cache one per 64x64 tile
+  (2,040 for a 4K screen), and servers pace themselves by the frame
+  acknowledgements, which wait too.
+- At most 512 MiB of commands (as sent), regions, access units not yet
+  taken, and pixels decoded ahead of their turn: twice what the
+  compositor holds, or four whole 8K pictures (127 MiB each) waiting
+  behind a fifth.
+
+Both are checked as each command is queued and as each frame completes,
+and the command or completion that goes past either fails `process` or
+`complete_h264_frame`, which ends the session. For that, the commands
+of a message are queued one at a time, each processed (or left
+waiting) before the next is queued: a message holds up to 256 MiB of
+them, and handing out a frame allocates, so a check at its end could
+come after any number of them. A frame's acknowledgement therefore
+counts the frames after it in the same message only once they wait,
+no longer as soon as the message arrives.
+
+A completion now finds its frame in constant time: frames are applied
+in the order they are handed out, so the pending ones are those handed
+out last.
+---
+ crates/ironrdp-egfx/src/client.rs             | 178 +++++++++++++++---
+ .../tests/egfx/external_h264.rs               |  93 ++++++++-
+ 2 files changed, 246 insertions(+), 25 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index ff022586..25abeb17 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -55,7 +55,7 @@
+ 
+ use std::collections::{BTreeMap, VecDeque};
+ 
+-use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
++use ironrdp_core::{Decode as _, Encode as _, ReadCursor, impl_as_any};
+ use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
+ use ironrdp_graphics::clearcodec::ClearCodecDecoder;
+ use ironrdp_graphics::progressive::{ProgressiveDecoder, TILE_BYTES_PER_PIXEL, TILE_DIM};
+@@ -257,6 +257,30 @@ enum Queued {
+     },
+ }
+ 
++impl Queued {
++    /// What it holds while it waits, as counted against [`MAX_HELD_BYTES`]: a command's size on the wire, or a
++    /// frame's regions.
++    fn held_bytes(&self) -> usize {
++        match self {
++            Self::Pdu(pdu) => pdu.size(),
++            Self::H264 { regions, .. } => regions.len().saturating_mul(size_of::<ExclusiveRectangle>()),
++        }
++    }
++}
++
++/// The most commands that may wait for the external H.264 decoder, its frames among them.
++///
++/// Commands wait while a frame before them decodes, and so do the acknowledgements that pace the server. A frame
++/// holds a handful of commands, a full repaint from the bitmap cache one per 64x64 tile (2,040 for a 4K screen):
++/// 65,536 is dozens of those.
++const MAX_QUEUED_COMMANDS: usize = 65_536;
++
++/// The most bytes that may wait for the external H.264 decoder: the commands behind its frames (as sent), and the
++/// pixels of frames decoded ahead of their turn.
++///
++/// Twice what the compositor holds: four whole 8K pictures (7680x4320 RGBA, 127 MiB each) waiting behind a fifth.
++const MAX_HELD_BYTES: usize = 512 * 1024 * 1024;
++
+ // ============================================================================
+ // Handler Trait
+ // ============================================================================
+@@ -480,6 +504,12 @@ pub struct GraphicsPipelineClient {
+     h264_results: BTreeMap<u32, Option<Vec<u8>>>,
+     /// Commands waiting behind a frame the external decoder has not finished.
+     queue: VecDeque<Queued>,
++    /// The frames in `queue`: handed out, not applied yet. As frames are applied in the order they were handed out,
++    /// these have the most recent ids.
++    pending_h264: usize,
++    /// What waits for the external decoder, in bytes: the commands and frames in `queue`, the pixels in
++    /// `h264_results` and the access units in `h264_frames`.
++    held_bytes: usize,
+     /// `EndFrame`s in `queue`: frames received but not yet processed.
+     queued_frame_ends: u32,
+     /// Surface sizes as of the commands received so far, which can be ahead of `surfaces` while commands wait in
+@@ -518,6 +548,8 @@ impl GraphicsPipelineClient {
+             h264_frames: Vec::new(),
+             h264_results: BTreeMap::new(),
+             queue: VecDeque::new(),
++            pending_h264: 0,
++            held_bytes: 0,
+             queued_frame_ends: 0,
+             received_surfaces: BTreeMap::new(),
+         }
+@@ -533,6 +565,10 @@ impl GraphicsPipelineClient {
+     /// wait until then: surface commands read and write the pixels the frame produces, and the acknowledgement
+     /// tells the server the frame was shown, which paces what it sends. Frames can be decoded ahead (all taken
+     /// frames can be in flight at once); their pixels are applied in order.
++    ///
++    /// What waits is bounded at all times: it is checked as each command is queued and each frame completes, and
++    /// the command or completion that takes it past 65,536 commands (frames included), or past 512 MiB of them and
++    /// of pixels decoded ahead of their turn, fails `process` or [`Self::complete_h264_frame`].
+     #[must_use]
+     pub fn with_external_h264(mut self) -> Self {
+         self.external_h264 = true;
+@@ -542,7 +578,13 @@ impl GraphicsPipelineClient {
+     /// Takes the AVC420 frames to decode, in the order received (see [`Self::with_external_h264`]).
+     #[must_use]
+     pub fn take_h264_frames(&mut self) -> Vec<H264Frame> {
+-        core::mem::take(&mut self.h264_frames)
++        let frames = core::mem::take(&mut self.h264_frames);
++        let taken = frames
++            .iter()
++            .map(|frame| frame.data.len())
++            .fold(0usize, usize::saturating_add);
++        self.held_bytes = self.held_bytes.saturating_sub(taken);
++        frames
+     }
+ 
+     /// Hands back a frame from [`Self::take_h264_frames`], and processes what waited for it.
+@@ -551,25 +593,27 @@ impl GraphicsPipelineClient {
+     /// the frame was not decoded (a decoder that is waiting for a key frame, say), which leaves its regions as they
+     /// were. Returns the messages to send, frame acknowledgements among them.
+     pub fn complete_h264_frame(&mut self, id: u32, pixels: Option<Vec<u8>>) -> PduResult<Vec<DvcMessage>> {
+-        if !self
+-            .queue
+-            .iter()
+-            .any(|queued| matches!(queued, Queued::H264 { id: queued_id, .. } if *queued_id == id))
+-        {
++        // Frames are applied in the order they were handed out, so the pending ones are the last `pending_h264` handed
++        // out: `next_h264_id` is 1 to `pending_h264` past their ids.
++        let age = self.next_h264_id.wrapping_sub(id);
++        if !usize::try_from(age).is_ok_and(|age| 0 < age && age <= self.pending_h264) {
+             warn!(id, "Completion for an H.264 frame that is not pending");
+             return Ok(Vec::new());
+         }
+-        self.h264_results.insert(id, pixels);
+-        self.process_queue()
++        let bytes = pixels.as_ref().map_or(0, Vec::len);
++        if let Some(Some(replaced)) = self.h264_results.insert(id, pixels) {
++            self.held_bytes = self.held_bytes.saturating_sub(replaced.len());
++        }
++        self.held_bytes = self.held_bytes.saturating_add(bytes);
++        let responses = self.process_queue()?;
++        self.check_held()?;
++        Ok(responses)
+     }
+ 
+     /// Frames handed to the external decoder whose pixels have not been applied yet.
+     #[must_use]
+     pub fn pending_h264_frames(&self) -> usize {
+-        self.queue
+-            .iter()
+-            .filter(|queued| matches!(queued, Queued::H264 { .. }))
+-            .count()
++        self.pending_h264
+     }
+ 
+     // ========================================================================
+@@ -659,8 +703,11 @@ impl GraphicsPipelineClient {
+                         Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2
+                     ) =>
+             {
+-                let queued = self.hand_out_avc(&wire)?;
+-                self.queue.extend(queued);
++                for queued in self.hand_out_avc(&wire)? {
++                    self.pending_h264 = self.pending_h264.saturating_add(1);
++                    self.held_bytes = self.held_bytes.saturating_add(queued.held_bytes());
++                    self.queue.push_back(queued);
++                }
+                 return Ok(());
+             }
+             other => other,
+@@ -668,7 +715,24 @@ impl GraphicsPipelineClient {
+         if matches!(pdu, GfxPdu::EndFrame(_)) {
+             self.queued_frame_ends = self.queued_frame_ends.saturating_add(1);
+         }
+-        self.queue.push_back(Queued::Pdu(pdu));
++        let queued = Queued::Pdu(pdu);
++        self.held_bytes = self.held_bytes.saturating_add(queued.held_bytes());
++        self.queue.push_back(queued);
++        Ok(())
++    }
++
++    /// Fails once more waits for the external decoder than a server makes wait (see [`MAX_QUEUED_COMMANDS`] and
++    /// [`MAX_HELD_BYTES`]).
++    fn check_held(&self) -> PduResult<()> {
++        if MAX_QUEUED_COMMANDS < self.queue.len() || MAX_HELD_BYTES < self.held_bytes {
++            warn!(
++                commands = self.queue.len(),
++                frames = self.pending_h264,
++                bytes = self.held_bytes,
++                "Too much waits for the H.264 decoder"
++            );
++            return Err(pdu_other_err!("too much waits for the H.264 decoder"));
++        }
+         Ok(())
+     }
+ 
+@@ -684,22 +748,27 @@ impl GraphicsPipelineClient {
+             if !ready {
+                 break;
+             }
+-            match self.queue.pop_front() {
+-                Some(Queued::Pdu(pdu)) => {
++            let Some(queued) = self.queue.pop_front() else {
++                break;
++            };
++            self.held_bytes = self.held_bytes.saturating_sub(queued.held_bytes());
++            match queued {
++                Queued::Pdu(pdu) => {
+                     if matches!(pdu, GfxPdu::EndFrame(_)) {
+                         self.queued_frame_ends = self.queued_frame_ends.saturating_sub(1);
+                     }
+                     responses.extend(self.handle_pdu(pdu)?);
+                 }
+-                Some(Queued::H264 {
++                Queued::H264 {
+                     id,
+                     surface_id,
+                     regions,
+-                }) => {
++                } => {
++                    self.pending_h264 = self.pending_h264.saturating_sub(1);
+                     let pixels = self.h264_results.remove(&id).flatten();
++                    self.held_bytes = self.held_bytes.saturating_sub(pixels.as_ref().map_or(0, Vec::len));
+                     self.apply_h264_frame(surface_id, &regions, pixels)?;
+                 }
+-                None => break,
+             }
+         }
+         Ok(responses)
+@@ -777,6 +846,7 @@ impl GraphicsPipelineClient {
+                 regions = regions.len(),
+                 "H.264 access unit handed out"
+             );
++            self.held_bytes = self.held_bytes.saturating_add(data.len());
+             self.h264_frames.push(H264Frame {
+                 id,
+                 surface_id: pdu.surface_id,
+@@ -1557,11 +1627,15 @@ impl DvcProcessor for GraphicsPipelineClient {
+             }
+         }
+ 
+-        // Process decoded PDUs, in order behind any H.264 frame still being decoded outside
++        // Process decoded PDUs, in order behind any H.264 frame still being decoded outside, checking what waits as
++        // it grows (a payload holds up to 256 MiB of PDUs)
++        let mut responses = Vec::new();
+         for pdu in pdus {
+             self.enqueue(pdu)?;
++            responses.extend(self.process_queue()?);
++            self.check_held()?;
+         }
+-        self.process_queue()
++        Ok(responses)
+     }
+ }
+ 
+@@ -2708,4 +2782,62 @@ mod tests {
+                 .unwrap();
+         });
+     }
++
++    /// Frame ids wrap around; the pending frames are those handed out last, whatever their ids.
++    #[test]
++    fn pending_h264_frames_are_told_apart_across_the_id_wrap() {
++        let wire = |pdu: GfxPdu| zgfx::wrap_uncompressed(&ironrdp_core::encode_vec(&pdu).unwrap());
++        let whole = ExclusiveRectangle {
++            left: 0,
++            top: 0,
++            right: 2,
++            bottom: 2,
++        };
++        let frame = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
++            surface_id: 1,
++            codec_id: Codec1Type::Avc420,
++            pixel_format: PixelFormat::XRgb,
++            destination_rectangle: whole.clone(),
++            bitmap_data: crate::pdu::encode_avc420_bitmap_stream(
++                &[crate::pdu::Avc420Region::full_frame(2, 2, 22)],
++                &[0, 0, 0, 1, 0x65, 0x88],
++            ),
++        });
++        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None).with_external_h264();
++        client.next_h264_id = u32::MAX;
++        for pdu in [
++            GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
++                surface_id: 1,
++                width: 2,
++                height: 2,
++                pixel_format: PixelFormat::XRgb,
++            }),
++            GfxPdu::StartFrame(crate::pdu::StartFramePdu {
++                timestamp: crate::pdu::Timestamp {
++                    milliseconds: 0,
++                    seconds: 0,
++                    minutes: 0,
++                    hours: 0,
++                },
++                frame_id: 1,
++            }),
++            frame.clone(),
++            frame,
++            GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 1 }),
++        ] {
++            client.process(0, &wire(pdu)).unwrap();
++        }
++        let ids: Vec<u32> = client.take_h264_frames().iter().map(|frame| frame.id).collect();
++        assert_eq!(ids, [u32::MAX, 0]);
++        assert_eq!(client.pending_h264_frames(), 2);
++
++        // Not handed out yet.
++        assert!(client.complete_h264_frame(1, None).unwrap().is_empty());
++        let pixels = || Some(vec![0xff; rgba_len(&whole)]);
++        // The second frame waits for the first, and the acknowledgement for both.
++        assert!(client.complete_h264_frame(0, pixels()).unwrap().is_empty());
++        assert_eq!(client.complete_h264_frame(u32::MAX, pixels()).unwrap().len(), 1);
++        assert_eq!(client.pending_h264_frames(), 0);
++        assert_eq!(client.held_bytes, 0, "nothing waits");
++    }
+ }
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+index b19610fe..2a7ef301 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+@@ -7,8 +7,8 @@ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+ use ironrdp_egfx::pdu::{
+     Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CapabilitiesConfirmPdu, CapabilitiesV8Flags,
+     CapabilitiesV81Flags, CapabilitiesV107Flags, CapabilitySet, CapabilityVersion, Codec1Type, Color, CreateSurfacePdu,
+-    Encoding, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
+-    Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
++    Encoding, EndFramePdu, EvictCacheEntryPdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu,
++    SolidFillPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+ };
+ use ironrdp_graphics::zgfx::wrap_uncompressed;
+ use ironrdp_pdu::geometry::ExclusiveRectangle;
+@@ -612,3 +612,92 @@ fn a_surface_created_behind_a_waiting_frame_bounds_its_own_frames() {
+     assert_eq!(frames.len(), 2);
+     assert_eq!(frames[1].regions, [rect(0, 0, 32, 4)]);
+ }
++
++/// One payload carrying `count` copies of `pdu`.
++fn payload(pdu: &GfxPdu, count: usize) -> Vec<u8> {
++    let encoded = encode_vec(pdu).expect("encode");
++    wrap_uncompressed(&encoded.repeat(count))
++}
++
++#[test]
++fn too_many_commands_waiting_for_the_decoder_are_an_error() {
++    let evict = GfxPdu::EvictCacheEntry(EvictCacheEntryPdu { cache_slot: 1 });
++    let full = [Avc420Region::full_frame(16, 8, 22)];
++
++    // 65,536 commands may wait behind a frame the decoder has not finished.
++    let mut waiting = client();
++    process_all(&mut waiting, &[start(1), avc420(&full, IDR_ACCESS_UNIT)]);
++    assert!(waiting.process(0, &payload(&evict, 65_535)).is_ok());
++    assert_eq!(waiting.pending_h264_frames(), 1);
++    // One more is more than any server makes wait.
++    assert!(waiting.process(0, &payload(&evict, 1)).is_err());
++
++    // Processed as they come, as many fit in one payload.
++    let mut not_waiting = client();
++    assert!(not_waiting.process(0, &payload(&evict, 65_537)).is_ok());
++}
++
++#[test]
++fn what_waits_is_bounded_while_a_payload_is_processed() {
++    let mut client = client();
++    // One payload with more frames than may wait (nothing completes them): refused once there are too many, not
++    // after all of them were handed out.
++    let frame = avc420(&[Avc420Region::full_frame(16, 8, 22)], IDR_ACCESS_UNIT);
++    assert!(client.process(0, &payload(&frame, 100_000)).is_err());
++    assert!(client.pending_h264_frames() <= 65_537);
++    assert!(client.take_h264_frames().len() <= 65_537);
++}
++
++#[test]
++fn pixels_decoded_ahead_of_their_turn_are_bounded() {
++    let mut client = client();
++    // An 8K surface: 127 MiB of RGBA a picture.
++    let surface = GfxPdu::CreateSurface(CreateSurfacePdu {
++        surface_id: 2,
++        width: 7680,
++        height: 4320,
++        pixel_format: PixelFormat::XRgb,
++    });
++    let picture = avc420_to(2, rect(0, 0, 7680, 4320), &[Avc420Region::full_frame(7680, 4320, 22)]);
++    let mut pdus = vec![
++        surface,
++        start(1),
++        avc420(&[Avc420Region::full_frame(16, 8, 22)], IDR_ACCESS_UNIT),
++    ];
++    pdus.extend(core::iter::repeat_n(picture, 5));
++    process_all(&mut client, &pdus);
++    let frames = client.take_h264_frames();
++    assert_eq!(frames.len(), 6);
++
++    // The first frame is not in yet: four whole 8K pictures may wait behind it, but not a fifth. (Zeroed buffers
++    // take no memory until written.)
++    let picture = || Some(vec![0u8; 7680 * 4320 * 4]);
++    for frame in &frames[1..5] {
++        assert!(client.complete_h264_frame(frame.id, picture()).is_ok());
++    }
++    assert!(client.complete_h264_frame(frames[5].id, picture()).is_err());
++}
++
++#[test]
++fn completions_for_frames_not_pending_are_ignored() {
++    let mut client = client();
++    let full = [Avc420Region::full_frame(16, 8, 22)];
++    process_all(&mut client, &[start(1), avc420(&full, IDR_ACCESS_UNIT), end(1)]);
++    let frame = client.take_h264_frames().remove(0);
++    // Not handed out (yet).
++    assert!(
++        client
++            .complete_h264_frame(frame.id + 1, None)
++            .expect("ignored")
++            .is_empty()
++    );
++    assert_eq!(client.pending_h264_frames(), 1);
++
++    let sent = client
++        .complete_h264_frame(frame.id, Some(solid(1, rect(0, 0, 16, 8))))
++        .expect("complete");
++    assert_eq!(acks(&sent), [(1, 0)]);
++    assert_eq!(client.pending_h264_frames(), 0);
++    // Applied already.
++    assert!(client.complete_h264_frame(frame.id, None).expect("ignored").is_empty());
++}

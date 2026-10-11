@@ -9,7 +9,7 @@ const representative = ['visual-macos-ubuntu2404', 'visual-windows-windows11', '
 const campaign = (test, all = false) => ({ test, ai: true, mutations: (all ? mutations : mutations.filter(m => m.id === 'crop')).map(m => ({ id: m.id, value: m.values[0] })) })
 export const profiles = {
     smoke: { name: 'Native settings smoke', steps: ['macos', 'windows', 'linux'].map(c => normal(`visual-${c}-host`)) },
-    matrix: { name: 'All 18 visual environments', steps: catalog.filter(c => c.client).map(c => normal(c.id)) },
+    matrix: { name: 'All native-client / desktop environments', steps: catalog.filter(c => c.client).map(c => normal(c.id)) },
     nightly: { name: 'Representative RDP and mutation checks', steps: [...representative.map(normal), campaign(representative[0]), normal(representative[0])] },
     weekly: { name: 'Expanded mutations on three native clients', steps: representative.flatMap(test => [normal(test), campaign(test, true), normal(test)]) },
 }

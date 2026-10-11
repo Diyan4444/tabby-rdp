@@ -1,6 +1,6 @@
 # Visual QA operations (Phases 1–5)
 
-The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD and Xfce/xrdp desktops through IronRDP**, plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
+The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD, Xfce/xrdp and KDE/KRDP desktops through IronRDP** (KDE uses the documented private encoder fix and fixed monitor), plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
 
 ## Start and use
 
@@ -114,7 +114,8 @@ to the existing Tabby. Only this browser acceptance script needs Chromium/Chrome
 Use dedicated guests/accounts; these tests open a fullscreen fixture, resize the session and reconnect it. Do not
 point them at a desktop someone is using. Provision Ubuntu with `testbed/linux/libvirt.sh` and `provision.sh`; the
 libvirt script now selects amd64/arm64, verifies the downloaded image against Canonical's SHA256 manifest, accepts
-`UBUNTU_IMAGE_BUILD=20260926` for a dated image and `TEST_SSH_KEY=/absolute/key` for provisioning. The GUI fixture
+`UBUNTU_IMAGE=/absolute/reviewed-image` and `UBUNTU_IMAGE_SHA256` for reviewed local media, plus
+`TEST_SSH_KEY=/absolute/key` for provisioning. The GUI fixture
 requires GTK 3, Python GI/Cairo and DejaVu Sans, installed by `provision.sh`. Keep networkd as the explicit cloud
 image renderer; defer package-triggered service restarts until reboot so provisioning does not lose SSH.
 
@@ -211,7 +212,7 @@ spatial damage measurement and repaint/resize/reconnect recovery controls; prese
 ## Native client and desktop matrix
 
 The fixed catalog now separates the **native Tabby client** (macOS, Windows, Linux) from the **remote RDP desktop**:
-Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian **13.7** / GNOME 48, Rocky Linux 9 / Xfce / xrdp, and Windows 11. Each client also has a local
+Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian **13.7** / GNOME 48, Rocky Linux 9 / Xfce / xrdp, Windows 11, and Fedora 44 / KDE Plasma / KRDP with the private QA encoder fix. Each client also has a local
 settings test. macOS is a Tabby client target; this does not promise a native macOS RDP server. Windows → Windows needs
 a separate Windows server from the client VM for independent coverage. The original three Phase 1/2 IDs remain available.
 
@@ -286,7 +287,9 @@ TRD_QA_BROWSER=/path/to/chrome node scripts/qa/acceptance.mjs visual-linux-fedor
 
 ### Additional Linux guests
 
-Run on an isolated libvirt host with the existing public test key:
+Run on an isolated libvirt host with the existing public test key. For each command, set `TEST_IMAGE` and
+`TEST_IMAGE_SHA256` to that distro's reviewed local cloud image and digest; follow the
+[media verification instructions](../testbed/README.md#linux-desktop-host) first:
 
 ```sh
 TEST_DISTRO=ubuntu2404 testbed/linux/libvirt.sh qa-ubuntu /path/test-key.pub
@@ -294,10 +297,10 @@ TEST_DISTRO=debian13 testbed/linux/libvirt.sh qa-debian /path/test-key.pub
 TEST_DISTRO=fedora44 testbed/linux/libvirt.sh qa-fedora /path/test-key.pub
 ```
 
-The provisioner selects distro-specific cloud images/packages/users (`ubuntu`, `debian`, `fedora`), verifies the exact image
-against its vendor's HTTPS checksum manifest, and refuses existing VM names. Debian defaults to the current trixie image;
-`DEBIAN_IMAGE_BUILD` and `UBUNTU_IMAGE_BUILD` can pin dated images. The runtime matrix requires Debian 13.7 exactly and will
-reject a later point release until deliberately updated. Fedora pins image 44-1.7. Provisioning suppresses welcome tours,
+The provisioner selects distro-specific packages/users (`ubuntu`, `debian`, `fedora`), verifies the selected local image
+against its reviewed SHA-256, and refuses existing VM names. Verify the publisher checksum before recording that digest;
+there is no automatic latest-image download. The runtime matrix requires Debian 13.7 exactly and will
+reject a later point release until deliberately updated. The qualified Fedora guest used image 44-1.7. Provisioning suppresses welcome tours,
 notification banners and animations only for the dedicated test user. The fixture dismisses GNOME's startup overview through
 real RDP Escape input. A failed assertion retains raw, visible and final-window evidence before cleanup.
 
@@ -327,7 +330,8 @@ TEST_DISTRO=rocky9 TEST_XRDP_PASSWORD_FILE=/private/rocky-password \
 
 The private password file contains one password and a newline. Provisioning sends it over SSH stdin, installs
 Xfce/xrdp/xorgxrdp from Rocky/EPEL with CRB enabled, and creates `tabbyxrdp` with the supplied SSH keys.
-The Rocky image is pinned to `9.8-20260525.0` (`ROCKY_IMAGE_BUILD` can override it); its vendor SHA256 manifest is checked.
+The qualified Rocky image was `9.8-20260525.0`. Supply that reviewed local image and its digest through
+`TEST_IMAGE` and `TEST_IMAGE_SHA256`; authenticate its publisher checksum first.
 Sources: [Rocky Xfce setup](https://docs.rockylinux.org/9/guides/desktop/xfce_installation/),
 [Rocky cloud images](https://download.rockylinux.org/pub/rocky/9/images/aarch64/),
 [EPEL xrdp package](https://packages.fedoraproject.org/pkgs/xrdp/xrdp/epel-9.html).
@@ -554,7 +558,7 @@ mutations weekly. `everyMinutes` is a fixed UTC interval (no local daylight-savi
 changing a schedule's ID establishes a new first occurrence. Pause/resume and cancel are available in the dashboard.
 A manual campaign profile is also available; it requires the exact clean current commit.
 
-Profiles reuse existing suites: `smoke` runs all three native settings checks; `matrix` runs all 18 cells; `nightly`
+Profiles reuse existing suites: `smoke` runs all three native settings checks; `matrix` runs all 21 cells (including three KDE cells with the private encoder fix); `nightly`
 runs three representative RDP cells, a macOS/Ubuntu crop campaign with AI and a restored healthy lifecycle; `weekly`
 runs healthy/all-13-mutation/healthy on each of the three representative cells. AI request/budget limits from Phase 4
 remain persistent, with no automatic increase or reset. An exhausted AI limit makes a batch require attention;
@@ -641,3 +645,124 @@ TRD_QA_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
 Omit `TRD_QA_BROWSER` when the Playwright-managed Chromium is installed. The observer does not launch a campaign or
 make AI requests. It preserves real failed results and requires completed investigations for them. Receipts and
 screenshots remain in `.qa/`; see the Phase 5 handoff in `VISUAL-QA-PLAN.md` for exact accepted runs and known limits.
+
+### Fedora 44 / KDE Plasma / KRDP (private encoder and FreeRDP fixes)
+
+Three Fedora KDE cells, `visual-{macos,windows,linux}-fedora44-kde`, bring the matrix to 21. They explicitly select a
+**private KPipeWire encoder fix, KRDP/FreeRDP compatibility fix and a fixed 800×600 remote monitor**. Stock Fedora's software encoder fails color fidelity
+and is not qualified. Tests verify actual client/plugin, Plasma/Wayland, dependencies and both loaded private libraries;
+record actual H.264 frames; and retain pixel probes, raw/visible PNGs, counters, logs and traces. Checkpoints cover
+initial rendering, keyboard/mouse input, tab return, client fitting into a 900×650 pane, reconnect and cleanup.
+**Live remote-resolution changes are unsupported by the tested KRDP monitor path.** Client fitting is reported separately.
+
+The eight-level RGB marker tolerance, zero-different-pixel baseline rule and zero retries are unchanged. Baseline names
+include both patch digests and the FreeRDP version. The test rejects a missing manifest, a different source/patch, an unloaded private
+library or a changed library digest. The brief desktop-name overlay must finish fading naturally before capture;
+it is not hidden with CSS. There is no production Tabby/IronRDP decoder change.
+
+Provision only a dedicated disposable VM, using a fresh private password file (at least 20 characters). Set
+`TEST_IMAGE` and `TEST_IMAGE_SHA256` to the reviewed Fedora cloud image and digest before this command:
+
+```sh
+TEST_DISTRO=fedora44-kde TEST_KRDP_PASSWORD_FILE=/private/kde-password \
+  TEST_SECURE_BOOT=0 testbed/linux/libvirt.sh qa-fedora-kde /path/test-key.pub
+```
+
+This installs SDDM autologin, Plasma/KWin/KRDP, PipeWire and software OpenH264, with a loopback VNC console and virtio
+video. It disables screen locking and masks PowerDevil only in the disposable account: an inactive physical output
+otherwise yields zero decoded frames despite successful RDP authentication. The KRDP user service listens on
+`127.0.0.1:3389`; all clients reach it through authenticated SSH. SELinux remains enforcing. It uses monitor 0,
+quality 100, and a persistent private self-signed certificate under `~/.local/share/krdpserver/` (directory 0700,
+key 0600, 365-day validity). Reconnect preserves the certificate. Rotate it deliberately and review Tabby's changed
+certificate prompt; never silently accept replacements. The existing certificate-bound TLS login consent is exercised.
+
+**Provisioning has a one-time console step.** After reboot, create a wallet named `kdewallet` in the dedicated Plasma
+session with KWalletManager. The isolated unattended test VM uses an empty wallet unlock password; its wallet contains
+only the disposable QA login, protected by account/file permissions, not encryption at rest. Do not apply this setup
+to a personal workstation or store service/OpenAI credentials there. Close the welcome tour. Then install/rotate the QA
+password through stdin, using the copied provisioner (no secret in command arguments):
+
+```sh
+ssh fedora@GUEST sudo sh /tmp/provision.sh fedora credentials < /private/kde-password
+```
+
+If `/tmp/provision.sh` has been removed, copy `testbed/linux/kde.sh` there first. The bounded `kwallet-query` write requires
+an existing accessible wallet; failure requires console review. `SystemUserEnabled=false` and `Users=fedora` select this
+wallet-backed login. The same fresh secret is also the disposable account password. Restart with
+`systemctl --user restart app-org.kde.krdpserver.service` as that account. No WinPR SAM file is needed.
+
+Set the virtual output to **800×600 at scale 1** in Plasma display settings before testing. `kscreen-doctor -o` identifies
+the numeric mode; on the tested virtio output it is `output.Virtual-1.mode.24 output.Virtual-1.scale.1`. Use the session's
+actual `WAYLAND_DISPLAY` from `systemctl --user show-environment`. Mode IDs are not portable. Wake an already inactive
+output with `kscreen-doctor --dpms on`. Confirm the selected mode and autologin after reboot.
+
+The observed stack is Fedora 44, Plasma/KWin/KRDP/KPipeWire **6.7.5**, PipeWire **1.6.9**, FFmpeg-free **8.1.3**,
+OpenH264 **2.6.0**, and FreeRDP/WinPR **3.32.1-1.fc44**. Initial stock KRDP rejected valid login with 3.32.1; the
+first qualification used a temporary 3.24.2 pin. The optional compatibility installer below replaces that pin with
+3.32.1 and an isolated KRDP correction. Initial provisioning still uses 3.24.2 until the two private fixes are installed.
+The current runtime check requires 3.32.1 both installed and actually mapped, plus both reviewed private libraries.
+This remains a patched QA profile, not stock Fedora qualification or a production deployment recommendation.
+
+Each private target supplies normal SSH/client CDP settings plus `TRD_TEST_KRDP_USER=fedora` and
+`TRD_TEST_KRDP_PASSWORD`. Keep them in the ignored private target file. Never include these files, wallets, keys, Codex
+login material or raw private profiles in GitHub artifacts. Baseline creation remains an explicit local command; do not baseline the stock encoder's distortion.
+
+#### Installing the isolated encoder correction
+
+After the wallet/display setup, copy `testbed/linux/kde-encoder.sh` and `testbed/linux/kpipewire-krdp-color.patch`
+into the same directory on the guest. Run `sh kde-encoder.sh` as its dedicated Plasma user (sudo is used only to install
+build dependencies). This is an explicit opt-in, not part of stock Fedora provisioning. It fetches upstream KPipeWire
+6.7.5 at commit `6318082fe449b50e701abc4d91308c2371cf8741`, verifies the revision, applies the reviewed patch and builds
+with two compiler jobs. Existing modified sources must match the exact patch; unexpected source files fail the install.
+Build dependencies can update development/runtime packages; retain the DNF transaction and recheck/reboot the guest.
+
+The source fix builds the filter after `setColorRange`, converts RGB directly to full-range BT.709, and supplies the
+encoder with matching range/matrix/primaries and the desktop's sRGB transfer metadata. It changes only the full-range
+OpenH264 path; upstream's existing limited-range path is retained. This patch derives from KDE's LGPL-licensed
+`libopenh264encoder.cpp`; the fetched source preserves its license notices. This is a local QA correction, not an
+upstream release or a published upstream submission.
+
+Libraries install under `~/.local/share/tabby-qa-kpipewire/<patch-sha>/install/`; Fedora libraries remain intact.
+Only the KRDP user service gets `LD_LIBRARY_PATH` and `KPIPEWIRE_FORCE_ENCODER=libopenh264` through its `encoder.conf`
+override. The installer writes `manifest.json` with upstream revision, patch and binary digests. Tests verify the
+live KRDP process's mapped `libKPipeWireRecord` path and its bytes against this receipt. The manifest contains no secrets.
+
+Rollback by removing `~/.config/systemd/user/app-org.kde.krdpserver.service.d/encoder.conf`, then running
+`systemctl --user daemon-reload` and `systemctl --user restart app-org.kde.krdpserver.service`. The QA identity check will
+then reject stock-library use. Restore the earlier test checkout for an intentional stock-color reproduction; retain
+its Failed result. Do not claim these patched baselines qualify unpatched Fedora or every H.264 server/encoder.
+
+Use the existing explicit baseline command for each native client, review the images, commit, then run
+`scripts/qa/acceptance.mjs visual-CLIENT-fedora44-kde` with the local dashboard. The acceptance receipts and exact limits
+are in `VISUAL-QA-PLAN.md`.
+
+#### Installing the isolated FreeRDP compatibility correction
+
+After installing the encoder correction, copy `testbed/linux/kde-freerdp.sh` and
+`testbed/linux/krdp-freerdp-compat.patch` into the same guest directory and run `sh kde-freerdp.sh` as the dedicated
+Plasma user. It saves the three known-good 3.24.2 RPMs in `~/tabby-qa-freerdp-rollback/`, upgrades and versionlocks
+FreeRDP/WinPR to 3.32.1-1.fc44, installs build dependencies and builds only the KRDP library. Keep its DNF/build log;
+build dependencies can update other guest packages, so reboot and verify the display/service before qualification.
+
+The patch uses upstream KRDP 6.7.5 commit `270dcf01851229134f74fa7d90ac338ec788ec67` and explicitly disables
+extended NLA alongside the existing disabled NLA setting. TLS remains enabled, legacy RDP security remains disabled,
+and the existing wallet credential validation is unchanged. This addresses the negotiation incompatibility described
+in [KDE bug 526514](https://bugs.kde.org/show_bug.cgi?id=526514); the report is not evidence of our acceptance.
+The one-line patch derives from KDE's GPL-2.0-or-later `RdpConnection.cpp`, with upstream notices retained in the clone.
+No client security setting, certificate validation or certificate-bound consent is bypassed.
+
+Only `libKRdp` installs under `~/.local/share/tabby-qa-krdp/<patch-sha>/install/lib64/`; Fedora's server executable
+and KRDP libraries remain intact. The `freerdp.conf` user-service override sorts after `encoder.conf` and sets
+`LD_LIBRARY_PATH` to both private library directories. If changing the encoder installation, rerun this installer
+to refresh that combined path. The manifest records source/patch/binary digests; QA checks both mapped libraries
+against their receipts. This is a local correction, not an upstream release or published submission.
+
+To roll back to the earlier qualified dependency, stop this guest's KRDP service, remove only `freerdp.conf`, delete
+its three FreeRDP versionlocks, and downgrade using the saved RPMs. Newly installed `freerdp-devel`/`libwinpr-devel`
+may require removal or a matching downgrade first; inspect the DNF transaction before accepting removals. Relock the
+three runtime packages, reload the user manager and restart KRDP. Keep `encoder.conf` for the color correction.
+The current QA identity check deliberately rejects that old profile; use its matching earlier checkout and receipts.
+Rollback does not qualify stock 3.32.1. An interrupted installer also requires this recovery or a successful rerun.
+
+The 12 baseline images retain the previously reviewed bytes under names containing the new FreeRDP/patch identity.
+Normal comparison runs must pass without generating new expected pixels; acceptance receipts are in the plan.

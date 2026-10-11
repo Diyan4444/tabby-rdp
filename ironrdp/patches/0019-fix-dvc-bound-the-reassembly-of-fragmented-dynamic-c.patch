@@ -1,0 +1,701 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <meanaverage@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 16:38:29 -0700
+Subject: [PATCH] fix(dvc): bound per-channel and aggregate reassembly
+
+---
+ crates/ironrdp-capture-replay/src/routing.rs  |  28 ++-
+ crates/ironrdp-displaycontrol/src/client.rs   |   8 +
+ crates/ironrdp-dvc/src/client.rs              |  39 +++-
+ crates/ironrdp-dvc/src/complete_data.rs       | 142 ++++++++++----
+ crates/ironrdp-dvc/src/lib.rs                 |  18 ++
+ crates/ironrdp-dvc/src/server.rs              |   8 +-
+ crates/ironrdp-egfx/src/client.rs             |  10 +
+ crates/ironrdp-rdpeai/src/client.rs           |   9 +
+ .../tests/dvc/client.rs                       | 182 +++++++++++++++++-
+ 9 files changed, 398 insertions(+), 46 deletions(-)
+
+diff --git a/crates/ironrdp-capture-replay/src/routing.rs b/crates/ironrdp-capture-replay/src/routing.rs
+index 3efb22bb..533ad807 100644
+--- a/crates/ironrdp-capture-replay/src/routing.rs
++++ b/crates/ironrdp-capture-replay/src/routing.rs
+@@ -925,6 +925,11 @@ impl DvcProcessor for ReplayEgfxChannel {
+         ironrdp_egfx::CHANNEL_NAME
+     }
+ 
++    // The client's own: a capture replays whatever messages the live client took.
++    fn max_message_size(&self) -> usize {
++        self.client.max_message_size()
++    }
++
+     fn start(&mut self, _channel_id: u32) -> ironrdp_pdu::PduResult<Vec<DvcMessage>> {
+         Ok(Vec::new())
+     }
+@@ -1040,7 +1045,7 @@ mod tests {
+     use std::sync::Mutex;
+ 
+     use ironrdp_core::encode_vec;
+-    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
++    use ironrdp_dvc::pdu::{CreateRequestPdu, DataFirstPdu, DataPdu, DrdynvcDataPdu};
+     use ironrdp_egfx::pdu::{
+         Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet as EgfxCapabilitySet, Codec1Type,
+         CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, PixelFormat as EgfxPixelFormat, ResetGraphicsPdu,
+@@ -1450,6 +1455,27 @@ mod tests {
+         assert!(ReplayEgfxChannel::new().start(43).unwrap().is_empty());
+     }
+ 
++    #[test]
++    fn replays_egfx_messages_as_long_as_the_live_client_takes() {
++        let mut router = ReplayRouter::new(activation()).unwrap();
++        let channel_id = 47;
++        // Longer than a dynamic channel takes unless it says otherwise, as the graphics pipeline client does.
++        let length = u32::try_from(ironrdp_dvc::DEFAULT_MAX_MESSAGE_SIZE + 1).unwrap();
++        let first_fragment = DrdynvcDataPdu::DataFirst(DataFirstPdu::new(channel_id, length, vec![0; 1024]));
++        let report = router.route_plaintext(&Plaintext {
++            client: Vec::new(),
++            server: vec![
++                (1, demand_active()),
++                (2, font_map()),
++                (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
++                (4, static_message(1_005, DrdynvcServerPdu::Data(first_fragment))),
++            ],
++        });
++
++        assert_eq!(report.gaps, []);
++        assert!(router.egfx_dynamic_channels.contains(&channel_id));
++    }
++
+     #[test]
+     fn rejected_egfx_reset_clears_pending_replay_extent() {
+         let mut channel = ReplayEgfxChannel::new();
+diff --git a/crates/ironrdp-displaycontrol/src/client.rs b/crates/ironrdp-displaycontrol/src/client.rs
+index bbdd79df..056a9b37 100644
+--- a/crates/ironrdp-displaycontrol/src/client.rs
++++ b/crates/ironrdp-displaycontrol/src/client.rs
+@@ -7,6 +7,10 @@ use tracing::debug;
+ use crate::CHANNEL_NAME;
+ use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
+ 
++/// The longest message taken from the server, once reassembled: 1 MiB, for a server that only sends its capabilities
++/// (the 20-byte DISPLAYCONTROL_CAPS_PDU).
++const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
++
+ /// A client for the Display Control Virtual Channel.
+ pub struct DisplayControlClient {
+     /// A callback that will be called when capabilities are received from the server.
+@@ -71,6 +75,10 @@ impl DvcProcessor for DisplayControlClient {
+         CHANNEL_NAME
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        MAX_MESSAGE_SIZE
++    }
++
+     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+         Ok(Vec::new())
+     }
+diff --git a/crates/ironrdp-dvc/src/client.rs b/crates/ironrdp-dvc/src/client.rs
+index 171edff7..21f0a4d3 100644
+--- a/crates/ironrdp-dvc/src/client.rs
++++ b/crates/ironrdp-dvc/src/client.rs
+@@ -106,9 +106,14 @@ impl DynamicVirtualChannel {
+         Ok(messages)
+     }
+ 
+-    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
++    /// Takes a data PDU for this channel, holding a fragmented message declared at most `max_pending_size` long.
++    fn process(&mut self, pdu: DrdynvcDataPdu, max_pending_size: usize) -> PduResult<Vec<DvcMessage>> {
+         let channel_id = pdu.channel_id();
+-        let complete_data = self.complete_data.process_data(pdu).map_err(|e| decode_err!(e))?;
++        let max_message_size = self.channel_processor.max_message_size();
++        let complete_data = self
++            .complete_data
++            .process_data(pdu, max_message_size, max_pending_size)
++            .map_err(|e| decode_err!(e))?;
+         if let Some(complete_data) = complete_data {
+             self.channel_processor.process(channel_id, &complete_data)
+         } else {
+@@ -372,7 +377,7 @@ impl DrdynvcClient {
+ 
+     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
+         let channel_id = data.channel_id();
+-        let Some(channel) = self.dynamic_channels.get_by_channel_id_mut(channel_id) else {
++        let Some(messages) = self.dynamic_channels.process_data(data) else {
+             // A server can send data on a channel before it sees the client decline it in the
+             // Create Response (GNOME Remote Desktop does this for AUDIO_PLAYBACK_DVC). The data has
+             // nowhere to go; dropping it is enough, ending the session over it is not warranted.
+@@ -382,9 +387,8 @@ impl DrdynvcClient {
+             );
+             return Ok(Vec::new());
+         };
+-        let messages = channel.process(data)?;
+ 
+-        encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))
++        encode_dvc_messages(channel_id, messages?, ChannelFlags::empty()).map_err(|e| encode_err!(e))
+     }
+ 
+     fn process_soft_sync_request(&mut self, request: crate::pdu::SoftSyncRequestPdu) -> PduResult<SvcMessage> {
+@@ -535,6 +539,12 @@ struct DynamicChannelSet {
+     listeners: BTreeMap<DynamicChannelName, ListenerEntry>,
+     active_channels: BTreeMap<DynamicChannelId, DynamicVirtualChannel>,
+     type_id_to_channel_id: BTreeMap<TypeId, DynamicChannelId>,
++    /// INVARIANT: the declared sizes of the messages the active channels are reassembling, together.
++    pending_size: usize,
++    /// How long the messages the active channels are reassembling may be together: as long as one message of the
++    /// channel that takes the longest, of those opened so far. Each channel holds its own message being
++    /// reassembled, and a listener may open a channel for every Create Request the server sends.
++    max_pending_size: usize,
+ }
+ 
+ impl DynamicChannelSet {
+@@ -544,6 +554,8 @@ impl DynamicChannelSet {
+             listeners: BTreeMap::new(),
+             active_channels: BTreeMap::new(),
+             type_id_to_channel_id: BTreeMap::new(),
++            pending_size: 0,
++            max_pending_size: 0,
+         }
+     }
+ 
+@@ -580,6 +592,7 @@ impl DynamicChannelSet {
+ 
+         let mut channel = DynamicVirtualChannel::from_boxed(channel);
+         let _messages = channel.start(channel_id)?;
++        self.max_pending_size = self.max_pending_size.max(channel.channel_processor.max_message_size());
+         self.active_channels.insert(channel_id, channel);
+         Ok(())
+     }
+@@ -597,11 +610,13 @@ impl DynamicChannelSet {
+         }
+ 
+         let dvc = DynamicVirtualChannel::from_boxed(processor);
++        self.max_pending_size = self.max_pending_size.max(dvc.channel_processor.max_message_size());
+         // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
+         // on success, so `Drop` only invokes `close` for channels that were actually opened.
+         let dvc = match self.active_channels.entry(channel_id) {
+             alloc::collections::btree_map::Entry::Occupied(mut e) => {
+-                e.insert(dvc);
++                let replaced = e.insert(dvc);
++                self.pending_size = self.pending_size.saturating_sub(replaced.complete_data.pending_size());
+                 e.into_mut()
+             }
+             alloc::collections::btree_map::Entry::Vacant(e) => e.insert(dvc),
+@@ -609,6 +624,16 @@ impl DynamicChannelSet {
+         Some(dvc)
+     }
+ 
++    /// Hands `data` to its channel; `None` when no channel with its ID is open.
++    fn process_data(&mut self, data: DrdynvcDataPdu) -> Option<PduResult<Vec<DvcMessage>>> {
++        let channel = self.active_channels.get_mut(&data.channel_id())?;
++        // What the other channels hold for their messages leaves this one the rest.
++        let others = self.pending_size.saturating_sub(channel.complete_data.pending_size());
++        let result = channel.process(data, self.max_pending_size.saturating_sub(others));
++        self.pending_size = others.saturating_add(channel.complete_data.pending_size());
++        Some(result)
++    }
++
+     fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
+         self.type_id_to_channel_id
+             .get(&type_id)
+@@ -636,6 +661,8 @@ impl DynamicChannelSet {
+ 
+     fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
+         self.active_channels.remove(&id).inspect(|dvc| {
++            self.pending_size = self.pending_size.saturating_sub(dvc.complete_data.pending_size());
++
+             let type_id = dvc.processor_type_id();
+ 
+             // Only matters for pre-registered channels
+diff --git a/crates/ironrdp-dvc/src/complete_data.rs b/crates/ironrdp-dvc/src/complete_data.rs
+index 9c0cc8d3..b5d8f5e7 100644
+--- a/crates/ironrdp-dvc/src/complete_data.rs
++++ b/crates/ironrdp-dvc/src/complete_data.rs
+@@ -1,7 +1,7 @@
+ use alloc::vec::Vec;
+-use core::cmp;
++use core::mem;
+ 
+-use ironrdp_core::{DecodeResult, cast_length, invalid_field_err};
++use ironrdp_core::{DecodeResult, cast_length, invalid_field_err, other_err};
+ use tracing::error;
+ 
+ use crate::pdu::{DataFirstPdu, DataPdu, DrdynvcDataPdu};
+@@ -20,62 +20,134 @@ impl CompleteData {
+         }
+     }
+ 
+-    pub(crate) fn process_data(&mut self, pdu: DrdynvcDataPdu) -> DecodeResult<Option<Vec<u8>>> {
++    /// The declared size of the message being reassembled; 0 when there is none.
++    pub(crate) fn pending_size(&self) -> usize {
++        self.total_size
++    }
++
++    /// Takes a DVC data PDU: returns a whole message, and holds the parts of a fragmented one until it is complete.
++    ///
++    /// No message longer than `max_message_size` is taken, and no fragmented one declared longer than
++    /// `max_pending_size` is held: either is a decode error, and a fragmented message is refused on its first
++    /// fragment, before any of it is held.
++    pub(crate) fn process_data(
++        &mut self,
++        pdu: DrdynvcDataPdu,
++        max_message_size: usize,
++        max_pending_size: usize,
++    ) -> DecodeResult<Option<Vec<u8>>> {
+         match pdu {
+-            DrdynvcDataPdu::DataFirst(data_first) => self.process_data_first_pdu(data_first),
+-            DrdynvcDataPdu::Data(data) => self.process_data_pdu(data),
++            DrdynvcDataPdu::DataFirst(data_first) => {
++                self.process_data_first_pdu(data_first, max_message_size, max_pending_size)
++            }
++            DrdynvcDataPdu::Data(data) => self.process_data_pdu(data, max_message_size),
+         }
+     }
+ 
+-    fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> DecodeResult<Option<Vec<u8>>> {
++    fn process_data_first_pdu(
++        &mut self,
++        data_first: DataFirstPdu,
++        max_message_size: usize,
++        max_pending_size: usize,
++    ) -> DecodeResult<Option<Vec<u8>>> {
+         let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length());
+         let total_data_size = total_data_size?;
+         if self.total_size != 0 || !self.data.is_empty() {
+             error!("Incomplete DVC message, it will be skipped");
+ 
+-            self.data.clear();
++            self.clear();
++        }
++
++        // The size is the sender's to declare: a message the channel won't take is refused before any of it is held.
++        if total_data_size > max_message_size {
++            return Err(invalid_field_err!(
++                "DataFirstPdu",
++                "length",
++                "DVC message is longer than the channel takes"
++            ));
+         }
+ 
+         if total_data_size == data_first.data().len() {
+-            Ok(Some(data_first.into_data()))
+-        } else {
+-            self.total_size = total_data_size;
+-            self.data = data_first.into_data();
++            return Ok(Some(data_first.into_data()));
++        }
++
++        if total_data_size < data_first.data().len() {
++            error!("DVC message is longer than its declared size, it will be skipped");
++            return Ok(None);
++        }
+ 
+-            Ok(None)
++        if total_data_size > max_pending_size {
++            return Err(invalid_field_err!(
++                "DataFirstPdu",
++                "length",
++                "DVC messages being reassembled would be longer together than the channels may hold"
++            ));
+         }
++
++        self.total_size = total_data_size;
++        self.data = data_first.into_data();
++
++        Ok(None)
+     }
+ 
+-    fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
++    fn process_data_pdu(&mut self, mut data: DataPdu, max_message_size: usize) -> DecodeResult<Option<Vec<u8>>> {
+         if self.total_size == 0 && self.data.is_empty() {
+             // message is not fragmented
++            if data.data().len() > max_message_size {
++                return Err(invalid_field_err!(
++                    "DataPdu",
++                    "data",
++                    "DVC message is longer than the channel takes"
++                ));
++            }
++
+             return Ok(Some(data.into_data()));
+         }
+ 
+         // The message is fragmented and needs to be reassembled.
+-        match self.data.len().checked_add(data.data().len()) {
+-            Some(actual_data_length) => {
+-                match actual_data_length.cmp(&(self.total_size)) {
+-                    cmp::Ordering::Less => {
+-                        // this is one of the fragmented messages, just append it
+-                        self.data.append(data.data_mut());
+-                        Ok(None)
+-                    }
+-                    cmp::Ordering::Equal => {
+-                        // this is the last fragmented message, need to return the whole reassembled message
+-                        self.total_size = 0;
+-                        self.data.append(data.data_mut());
+-                        Ok(Some(self.data.drain(..).collect()))
+-                    }
+-                    cmp::Ordering::Greater => {
+-                        error!("Actual DVC message size is grater than expected total DVC message size");
+-                        self.total_size = 0;
+-                        self.data.clear();
+-                        Ok(None)
+-                    }
+-                }
++        let Some(actual_data_length) = self.data.len().checked_add(data.data().len()) else {
++            return Err(invalid_field_err!("DVC message", "data", "overflow occurred"));
++        };
++        if actual_data_length > self.total_size {
++            error!("Actual DVC message size is greater than expected total DVC message size");
++            self.clear();
++            return Ok(None);
++        }
++
++        // Room for the fragment: by doubling, as `Vec` grows, but not past the declared size; and when there is no
++        // memory for it, an error rather than an abort.
++        if actual_data_length > self.data.capacity() {
++            let capacity = self
++                .data
++                .capacity()
++                .saturating_mul(2)
++                .min(self.total_size)
++                .max(actual_data_length);
++            if self
++                .data
++                .try_reserve_exact(capacity.saturating_sub(self.data.len()))
++                .is_err()
++            {
++                self.clear();
++                return Err(other_err!("DVC message", "out of memory for the DVC message"));
+             }
+-            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred")),
+         }
++
++        self.data.append(data.data_mut());
++
++        if actual_data_length < self.total_size {
++            // this is one of the fragmented messages, just append it
++            return Ok(None);
++        }
++
++        // this is the last fragmented message, need to return the whole reassembled message
++        self.total_size = 0;
++        Ok(Some(mem::take(&mut self.data)))
++    }
++
++    fn clear(&mut self) {
++        // Its memory goes too: the message may have been long.
++        self.total_size = 0;
++        self.data = Vec::new();
+     }
+ }
+diff --git a/crates/ironrdp-dvc/src/lib.rs b/crates/ironrdp-dvc/src/lib.rs
+index 7d52c1ae..06af78ea 100644
+--- a/crates/ironrdp-dvc/src/lib.rs
++++ b/crates/ironrdp-dvc/src/lib.rs
+@@ -38,6 +38,15 @@ pub mod pdu;
+ /// sixty-four times the largest chunk.
+ const MAX_DRDYNVC_MESSAGE_SIZE: usize = 1024 * 1024;
+ 
++/// The largest message a dynamic virtual channel takes, once reassembled from its fragments, unless its processor
++/// says otherwise ([`DvcProcessor::max_message_size`]): 64 MiB.
++///
++/// A fragmented message is as long as its DVC Data First PDU declares, up to 4 GiB, and its fragments are held until
++/// it is complete: nothing but this bounds what a peer can make the receiver hold. Channels whose messages can
++/// legitimately be longer (the graphics pipeline's) declare their own maximum, and so can channels whose protocol
++/// bounds them well below.
++pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
++
+ /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
+ /// This means a message that is ready to be wrapped in [`pdu::DataFirstPdu`] and [`pdu::DataPdu`] PDUs
+ /// (being split into multiple of such PDUs if necessary).
+@@ -114,6 +123,15 @@ pub trait DvcProcessor: AsAny + Send {
+     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>>;
+ 
+     fn close(&mut self, _channel_id: u32) {}
++
++    /// The largest message this channel takes from its peer, once reassembled from its fragments.
++    ///
++    /// A fragmented message declared longer than this is refused when its first fragment arrives, before any of it is
++    /// held, and so is a whole message longer than this: processing the data fails with a decode error. Defaults to
++    /// [`DEFAULT_MAX_MESSAGE_SIZE`].
++    fn max_message_size(&self) -> usize {
++        DEFAULT_MAX_MESSAGE_SIZE
++    }
+ }
+ 
+ assert_obj_safe!(DvcProcessor);
+diff --git a/crates/ironrdp-dvc/src/server.rs b/crates/ironrdp-dvc/src/server.rs
+index 70337f8f..947517d7 100644
+--- a/crates/ironrdp-dvc/src/server.rs
++++ b/crates/ironrdp-dvc/src/server.rs
+@@ -385,7 +385,13 @@ impl DrdynvcServer {
+             return Err(pdu_other_err!("invalid channel state"));
+         }
+         let mut resp = Vec::new();
+-        if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
++        // The server opens its channels itself: each one's own maximum bounds what they hold together.
++        let max_message_size = c.processor.max_message_size();
++        if let Some(complete) = c
++            .complete_data
++            .process_data(data, max_message_size, max_message_size)
++            .map_err(|e| decode_err!(e))?
++        {
+             let msg = c.processor.process(channel_id, &complete)?;
+             resp.extend(encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
+         }
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 3fad6c4d..82b12bc9 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -80,6 +80,12 @@ use crate::pdu::{
+ /// Max capacity to keep for decompressed buffer when cleared.
+ const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
+ 
++/// The longest message taken from the server, once reassembled from its DVC fragments: 256 MiB.
++///
++/// A message is RDPGFX PDUs, ZGFX-compressed, and ZGFX decompresses one to at most 256 MiB: this takes any message it
++/// would, compressed or not, such as a frame of uncompressed pixels for a surface two 8K monitors wide (253 MiB).
++const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
++
+ // ============================================================================
+ // Surface Management
+ // ============================================================================
+@@ -1470,6 +1476,10 @@ impl DvcProcessor for GraphicsPipelineClient {
+         CHANNEL_NAME
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        MAX_MESSAGE_SIZE
++    }
++
+     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+         let caps = if self.h264_decoder.is_some() || self.external_h264 {
+             self.handler.capabilities()
+diff --git a/crates/ironrdp-rdpeai/src/client.rs b/crates/ironrdp-rdpeai/src/client.rs
+index 342ed076..b315420c 100644
+--- a/crates/ironrdp-rdpeai/src/client.rs
++++ b/crates/ironrdp-rdpeai/src/client.rs
+@@ -13,6 +13,11 @@ use tracing::{debug, info, trace, warn};
+ use crate::CHANNEL_NAME;
+ use crate::pdu::{DataPdu, FormatChangePdu, FormatsPdu, OpenPdu, OpenReplyPdu, RdpeaiPdu, VersionPdu};
+ 
++/// The longest message taken from the server, once reassembled: 1 MiB. The server sends its version, the formats it
++/// offers, which one to open and format changes: an AUDIO_FORMAT is 18 bytes and some extra data, and servers offer a
++/// few dozen.
++const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
++
+ /// Callback used to push already-wrapped DRDYNVC SVC messages into the session loop.
+ pub type DvcUplink = Box<dyn FnMut(u32, Vec<SvcMessage>) -> PduResult<()> + Send>;
+ 
+@@ -283,6 +288,10 @@ impl DvcProcessor for RdpeaiClient {
+         CHANNEL_NAME
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        MAX_MESSAGE_SIZE
++    }
++
+     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+         self.channel_id = Some(channel_id);
+         self.state = State::WaitVersion;
+diff --git a/crates/ironrdp-testsuite-core/tests/dvc/client.rs b/crates/ironrdp-testsuite-core/tests/dvc/client.rs
+index 53c7c616..214cd318 100644
+--- a/crates/ironrdp-testsuite-core/tests/dvc/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/dvc/client.rs
+@@ -1,10 +1,15 @@
+ use ironrdp_core::{encode_vec, impl_as_any};
++use ironrdp_displaycontrol::client::DisplayControlClient;
+ use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
+ use ironrdp_dvc::pdu::{
+-    DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
+-    SoftSyncTunnelType,
++    ClosePdu, CreateRequestPdu, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu,
++    SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
+ };
+-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
++use ironrdp_dvc::{
++    DEFAULT_MAX_MESSAGE_SIZE, DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch,
++    DvcProcessor,
++};
++use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+ use ironrdp_svc::SvcMessage;
+ use ironrdp_svc::SvcProcessor as _;
+ 
+@@ -54,6 +59,177 @@ impl DvcProcessor for FailingDvc {
+ 
+ impl DvcClientProcessor for FailingDvc {}
+ 
++/// A channel that takes messages of at most `max_message_size` bytes, and keeps those it is handed.
++struct LimitedDvc {
++    max_message_size: usize,
++    received: Vec<Vec<u8>>,
++}
++
++impl_as_any!(LimitedDvc);
++
++impl DvcProcessor for LimitedDvc {
++    fn channel_name(&self) -> &str {
++        "limited"
++    }
++
++    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
++        Ok(Vec::new())
++    }
++
++    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
++        self.received.push(payload.to_vec());
++        Ok(Vec::new())
++    }
++
++    fn max_message_size(&self) -> usize {
++        self.max_message_size
++    }
++}
++
++impl DvcClientProcessor for LimitedDvc {}
++
++/// Opens a recorded channel for every Create Request, as a listener may.
++struct RecordedListener;
++
++impl DvcChannelListener for RecordedListener {
++    fn channel_name(&self) -> &str {
++        "recorded"
++    }
++
++    fn create(&mut self, _channel_id: u32) -> Option<Box<dyn DvcClientProcessor>> {
++        Some(Box::new(RecordedDvc::default()))
++    }
++}
++
++#[derive(Debug)]
++struct NoGraphics;
++
++impl GraphicsPipelineHandler for NoGraphics {}
++
++fn create_request(channel_id: u32, name: &str) -> Vec<u8> {
++    encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
++        channel_id,
++        name.to_owned(),
++    )))
++    .expect("DVC create request should encode")
++}
++
++fn data_first(channel_id: u32, length: u32, data: &[u8]) -> Vec<u8> {
++    encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
++        channel_id,
++        length,
++        data.to_vec(),
++    ))))
++    .expect("DVC data first should encode")
++}
++
++fn data(channel_id: u32, data: &[u8]) -> Vec<u8> {
++    encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
++        channel_id,
++        data.to_vec(),
++    ))))
++    .expect("DVC data should encode")
++}
++
++fn mib(n: u32) -> u32 {
++    n * 1024 * 1024
++}
++
++#[test]
++fn fragmented_message_declared_longer_than_the_channel_takes_is_refused() {
++    // The Data First PDU declares the message's length, up to 4 GiB; the fragments would be held until it is complete.
++    let mut client = DrdynvcClient::new();
++    client
++        .attach_established_dynamic_channel(7, RecordedDvc::default())
++        .expect("recorded channel should attach");
++
++    assert!(client.process(&data_first(7, u32::MAX, b"first")).is_err());
++}
++
++#[test]
++fn messages_being_reassembled_on_all_channels_are_bounded_together() {
++    // A listener opens a channel for every Create Request: each one's unfinished message must not add up.
++    let mut client = DrdynvcClient::new().with_listener(RecordedListener);
++    for channel_id in 1..=3 {
++        client
++            .process(&create_request(channel_id, "recorded"))
++            .expect("listener should open the channel");
++    }
++
++    assert!(client.process(&data_first(1, mib(40), b"first")).is_ok());
++    assert!(client.process(&data_first(2, mib(40), b"first")).is_err());
++
++    // A message that completes, or a channel that closes, no longer holds anything.
++    let mut client = DrdynvcClient::new().with_listener(RecordedListener);
++    for channel_id in 1..=3 {
++        client
++            .process(&create_request(channel_id, "recorded"))
++            .expect("listener should open the channel");
++    }
++    assert!(client.process(&data_first(1, 8, b"first")).is_ok());
++    assert!(client.process(&data(1, b"...")).is_ok());
++    assert!(client.process(&data_first(2, mib(40), b"first")).is_ok());
++    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(2))).expect("DVC close should encode");
++    assert!(client.process(&close).is_ok());
++    assert!(client.process(&data_first(3, mib(40), b"first")).is_ok());
++}
++
++#[test]
++fn channel_takes_messages_up_to_its_processors_maximum() {
++    let mut client = DrdynvcClient::new();
++    client
++        .attach_established_dynamic_channel(
++            7,
++            LimitedDvc {
++                max_message_size: 16,
++                received: Vec::new(),
++            },
++        )
++        .expect("limited channel should attach");
++    let received = |client: &DrdynvcClient| {
++        client
++            .get_dvc_by_channel_id::<LimitedDvc>(7)
++            .expect("limited channel")
++            .processor()
++            .received
++            .clone()
++    };
++
++    assert!(client.process(&data_first(7, 16, &[1; 10])).is_ok());
++    assert!(client.process(&data(7, &[2; 6])).is_ok());
++    assert_eq!(received(&client), vec![[[1; 10].as_slice(), &[2; 6]].concat()]);
++
++    assert!(client.process(&data_first(7, 17, &[3; 10])).is_err());
++    assert!(client.process(&data(7, &[4; 17])).is_err());
++
++    // The refused messages are gone; the next one is taken.
++    assert!(client.process(&data(7, &[5; 16])).is_ok());
++    assert_eq!(received(&client).last(), Some(&vec![5; 16]));
++}
++
++#[test]
++fn channels_take_messages_as_long_as_their_protocols_need() {
++    let mut client = DrdynvcClient::new()
++        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(NoGraphics), None))
++        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
++    client
++        .process(&create_request(1, ironrdp_egfx::CHANNEL_NAME))
++        .expect("graphics pipeline should open");
++    client
++        .process(&create_request(2, ironrdp_displaycontrol::CHANNEL_NAME))
++        .expect("display control should open");
++
++    // A frame of uncompressed pixels for a surface two 8K monitors wide is 253 MiB.
++    let two_8k_monitors = 15360 * 4320 * 4 + 1024;
++    assert!(two_8k_monitors > DEFAULT_MAX_MESSAGE_SIZE);
++    let two_8k_monitors = u32::try_from(two_8k_monitors).expect("length fits");
++    assert!(client.process(&data_first(1, two_8k_monitors, b"first")).is_ok());
++    assert!(client.process(&data_first(1, mib(256) + 1, b"first")).is_err());
++
++    // The server only sends display control its capabilities.
++    assert!(client.process(&data_first(2, mib(1) + 1, b"first")).is_err());
++}
++
+ #[test]
+ fn data_for_a_channel_that_is_not_open_is_dropped() {
+     // A server can send data on a channel before it sees the client decline it in the Create

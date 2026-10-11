@@ -1,0 +1,597 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 17:27:35 -0700
+Subject: [PATCH 40/51] fix(graphics): decode ClearCodec NSCodec regions
+ straight into the image
+
+An NSCodec region of a ClearCodec stream was decoded on its own before
+it was copied into the image: each of its three or four planes whole
+(raw planes copied, RLE planes expanded), then the region's BGRA pixels
+into an image of their own. A region can be as large as the image, and
+an RLE plane of a single run takes eleven bytes, whatever its size: a
+91-byte stream of an 8192x8192 region made the decoder allocate
+512 MiB, infallibly, on top of its 256 MiB image. In the WebAssembly
+build, the command carrying it grew the instance every session shares
+by 769 MiB, and trapped when the instance was near its 4 GiB.
+
+The decoder now reads the planes a row at a time, decoding their runs
+as it goes, and writes the region's pixels straight into the image: a
+region takes a few rows, under 40 KiB for one 8192 pixels wide, and the
+command grows the instance by the image's 256 MiB, or fails near 4 GiB.
+It refuses what it refused: a plane larger than its raw size, an RLE
+plane without its four bytes of EndData, a run missing its length, and
+runs that fall short of their plane or overrun it.
+---
+ crates/ironrdp-graphics/src/clearcodec/mod.rs |  16 +-
+ .../src/clearcodec/nscodec.rs                 | 380 ++++++++++++++----
+ .../ironrdp-testsuite-core/tests/peak_heap.rs |  40 ++
+ 3 files changed, 344 insertions(+), 92 deletions(-)
+
+diff --git a/crates/ironrdp-graphics/src/clearcodec/mod.rs b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+index 9a23f66c..9be6ed5d 100644
+--- a/crates/ironrdp-graphics/src/clearcodec/mod.rs
++++ b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+@@ -393,15 +393,13 @@ impl ClearCodecDecoder {
+                 }
+             }
+             SubcodecId::NsCodec => {
+-                let pixels = nscodec::decode(sub.bitmap_data, sub.width, sub.height)?;
+-                let w = usize::from(sub.width);
+-                let h = usize::from(sub.height);
+-
+-                for row in 0..h {
+-                    let src_start = row * w * 4;
+-                    let dst_start = ((usize::from(sub.y_start) + row) * sw + usize::from(sub.x_start)) * 4;
+-                    output[dst_start..dst_start + w * 4].copy_from_slice(&pixels[src_start..src_start + w * 4]);
+-                }
++                // Decoded straight into the output, which the region is within: decoding it into
++                // an image of its own took as much memory again, and its planes as much besides.
++                let start = (usize::from(sub.y_start) * sw + usize::from(sub.x_start)) * 4;
++                let region = output
++                    .get_mut(start..)
++                    .ok_or_else(|| invalid_field_err!("subcodec", "region exceeds surface bounds"))?;
++                nscodec::decode(sub.bitmap_data, sub.width, sub.height, region, sw * 4)?;
+             }
+         }
+ 
+diff --git a/crates/ironrdp-graphics/src/clearcodec/nscodec.rs b/crates/ironrdp-graphics/src/clearcodec/nscodec.rs
+index b707cc3a..7f11b0c9 100644
+--- a/crates/ironrdp-graphics/src/clearcodec/nscodec.rs
++++ b/crates/ironrdp-graphics/src/clearcodec/nscodec.rs
+@@ -14,10 +14,14 @@ const HEADER_SIZE: usize = 4 /* LumaPlaneByteCount */
+     + 2 /* Reserved */;
+ const RLE_END_DATA_SIZE: usize = 4;
+ 
+-/// Decode an NSCodec compressed bitmap stream into top-down BGRA pixels.
++/// Decode an NSCodec compressed bitmap stream into top-down BGRA pixels, written to `dst`.
+ ///
+-/// The stream uses AYCoCg planes, optionally with 4:2:0 chroma subsampling.
+-pub(super) fn decode(data: &[u8], width: u16, height: u16) -> DecodeResult<Vec<u8>> {
++/// The stream uses AYCoCg planes, optionally with 4:2:0 chroma subsampling. Row `y` of the
++/// image goes to the `width * 4` bytes of `dst` from `y * dst_stride` on, so that a region is
++/// decoded straight into the image it is part of. The planes are read a row at a time as the
++/// pixels are written, never held whole: an RLE plane of a few bytes can stand for 64 MiB, for
++/// an 8192x8192 region.
++pub(super) fn decode(data: &[u8], width: u16, height: u16, dst: &mut [u8], dst_stride: usize) -> DecodeResult<()> {
+     #![allow(clippy::similar_names, reason = "Co and Cg are protocol-defined plane names")]
+ 
+     if data.len() < HEADER_SIZE {
+@@ -96,96 +100,230 @@ pub(super) fn decode(data: &[u8], width: u16, height: u16) -> DecodeResult<Vec<u
+     let luma_end = HEADER_SIZE + luma_len;
+     let co_end = luma_end + co_len;
+     let cg_end = co_end + cg_len;
+-    let luma = decode_plane(&data[HEADER_SIZE..luma_end], luma_size, "lumaPlaneByteCount")?;
+-    let co = decode_plane(&data[luma_end..co_end], chroma_size, "orangeChromaPlaneByteCount")?;
+-    let cg = decode_plane(&data[co_end..cg_end], chroma_size, "greenChromaPlaneByteCount")?;
+-    let alpha = if alpha_len == 0 {
++    let mut luma_plane = PlaneReader::new(&data[HEADER_SIZE..luma_end], luma_size, "lumaPlaneByteCount")?;
++    let mut co_plane = PlaneReader::new(&data[luma_end..co_end], chroma_size, "orangeChromaPlaneByteCount")?;
++    let mut cg_plane = PlaneReader::new(&data[co_end..cg_end], chroma_size, "greenChromaPlaneByteCount")?;
++    let mut alpha_plane = if alpha_len == 0 {
+         None
+     } else {
+-        Some(decode_plane(&data[cg_end..], pixel_count, "alphaPlaneByteCount")?)
++        Some(PlaneReader::new(&data[cg_end..], pixel_count, "alphaPlaneByteCount")?)
+     };
+ 
+-    let mut pixels = Vec::with_capacity(pixel_count * 4);
++    // A row of each plane: luma, padded to a multiple of eight pixels when the chroma is
++    // subsampled; chroma, spread over the row when it is subsampled; and alpha, opaque without
++    // an alpha plane. Each takes at most a few kilobytes.
++    let mut luma_row = vec![0; luma_width];
++    let mut co_row = vec![0; w];
++    let mut cg_row = vec![0; w];
++    let mut subsampled_row = vec![0; if chroma_subsampling == 0 { 0 } else { chroma_width }];
++    let mut alpha_row = vec![0xFF; w];
++
+     for y in 0..h {
+-        for x in 0..w {
+-            let luma_index = y * luma_width + x;
+-            let chroma_index = if chroma_subsampling == 0 {
+-                y * chroma_width + x
+-            } else {
+-                (y / 2) * chroma_width + x / 2
+-            };
+-            let (red, green, blue) =
+-                ycocg_to_rgb(color_loss_level, luma[luma_index], co[chroma_index], cg[chroma_index]);
+-
+-            pixels.extend_from_slice(&[blue, green, red, alpha.as_ref().map_or(0xFF, |plane| plane[y * w + x])]);
++        luma_plane.read(&mut luma_row)?;
++        if chroma_subsampling == 0 {
++            co_plane.read(&mut co_row)?;
++            cg_plane.read(&mut cg_row)?;
++        } else if y % 2 == 0 {
++            // A subsampled chroma row covers two rows of pixels, and each of its values two pixels.
++            co_plane.read(&mut subsampled_row)?;
++            spread_subsampled_row(&subsampled_row, &mut co_row);
++            cg_plane.read(&mut subsampled_row)?;
++            spread_subsampled_row(&subsampled_row, &mut cg_row);
++        }
++        if let Some(alpha_plane) = &mut alpha_plane {
++            alpha_plane.read(&mut alpha_row)?;
++        }
++
++        let dst_row = y
++            .checked_mul(dst_stride)
++            .and_then(|start| dst.get_mut(start..))
++            .and_then(|rest| rest.get_mut(..w * 4))
++            .ok_or_else(|| invalid_field_err!("dimensions", "image does not fit its destination"))?;
++        let pixels = dst_row
++            .chunks_exact_mut(4)
++            .zip(&luma_row)
++            .zip(&co_row)
++            .zip(&cg_row)
++            .zip(&alpha_row);
++        for ((((pixel, &luma), &co), &cg), &alpha) in pixels {
++            let (red, green, blue) = ycocg_to_rgb(color_loss_level, luma, co, cg);
++            pixel.copy_from_slice(&[blue, green, red, alpha]);
+         }
+     }
+ 
+-    Ok(pixels)
++    // The rows add up to the planes, so this only guards that they do.
++    luma_plane.finish()?;
++    co_plane.finish()?;
++    cg_plane.finish()?;
++    if let Some(alpha_plane) = alpha_plane {
++        alpha_plane.finish()?;
++    }
++
++    Ok(())
+ }
+ 
+-fn decode_plane(data: &[u8], expected_len: usize, field: &'static str) -> DecodeResult<Vec<u8>> {
+-    if data.len() > expected_len {
+-        return Err(invalid_field_err!(
+-            field,
+-            "compressed plane is larger than its raw size"
+-        ));
++/// Spreads a row of subsampled chroma over a row of pixels, each of its values over two of them.
++fn spread_subsampled_row(subsampled: &[u8], row: &mut [u8]) {
++    for (pair, &value) in row.chunks_mut(2).zip(subsampled) {
++        pair.fill(value);
+     }
+-    if data.len() == expected_len {
+-        return Ok(data.to_vec());
+-    }
+-    if data.len() < RLE_END_DATA_SIZE {
+-        return Err(invalid_field_err!(field, "RLE plane is missing its four-byte EndData"));
++}
++
++/// Reads a plane's bytes in order, decoding its run-length encoding as they are read, so that
++/// the plane is never held whole.
++struct PlaneReader<'a> {
++    field: &'static str,
++    plane: Plane<'a>,
++}
++
++enum Plane<'a> {
++    /// A plane stored raw: its bytes not yet read.
++    Raw(&'a [u8]),
++    /// A run-length encoded plane.
++    Rle {
++        /// The segments not yet read.
++        segments: &'a [u8],
++        /// The value of the run being read, and how many of its bytes are left.
++        run: (u8, usize),
++        /// Bytes of the plane that no segment has claimed yet: at first, all but its EndData.
++        unclaimed: usize,
++        /// The plane's last four bytes, stored raw after its segments: the ones not yet read.
++        end_data: &'a [u8],
++    },
++}
++
++impl<'a> PlaneReader<'a> {
++    /// Prepares to read a plane of `len` bytes from `data`: raw if it is that long, and
++    /// run-length encoded if it is shorter.
++    fn new(data: &'a [u8], len: usize, field: &'static str) -> DecodeResult<Self> {
++        if data.len() > len {
++            return Err(invalid_field_err!(
++                field,
++                "compressed plane is larger than its raw size"
++            ));
++        }
++        if data.len() == len {
++            return Ok(Self {
++                field,
++                plane: Plane::Raw(data),
++            });
++        }
++        let Some(segments_len) = data.len().checked_sub(RLE_END_DATA_SIZE) else {
++            return Err(invalid_field_err!(field, "RLE plane is missing its four-byte EndData"));
++        };
++
++        let (segments, end_data) = data.split_at(segments_len);
++        Ok(Self {
++            field,
++            plane: Plane::Rle {
++                segments,
++                run: (0, 0),
++                // len > data.len() >= RLE_END_DATA_SIZE.
++                unclaimed: len - RLE_END_DATA_SIZE,
++                end_data,
++            },
++        })
+     }
+ 
+-    let segments_end = data.len() - RLE_END_DATA_SIZE;
+-    let mut decoded = Vec::with_capacity(expected_len);
+-    let mut offset = 0;
+-    while offset < segments_end {
+-        let value = data[offset];
+-        offset += 1;
+-
+-        let run_len = if offset < segments_end && data[offset] == value {
+-            offset += 1;
+-            if offset == segments_end {
+-                return Err(invalid_field_err!(field, "RLE run is missing its length factor"));
++    /// Fills `dst` with the plane's next bytes.
++    fn read(&mut self, dst: &mut [u8]) -> DecodeResult<()> {
++        let field = self.field;
++        match &mut self.plane {
++            Plane::Raw(rest) => {
++                let (bytes, tail) = rest
++                    .split_at_checked(dst.len())
++                    .ok_or_else(|| invalid_field_err!(field, "plane is shorter than the image"))?;
++                dst.copy_from_slice(bytes);
++                *rest = tail;
+             }
+-
+-            let factor = data[offset];
+-            offset += 1;
+-            if factor == u8::MAX {
+-                if segments_end - offset < 4 {
+-                    return Err(invalid_field_err!(field, "long RLE run is missing its length factor"));
++            Plane::Rle {
++                segments,
++                run,
++                unclaimed,
++                end_data,
++            } => {
++                let mut dst = dst;
++                while !dst.is_empty() {
++                    if run.1 == 0 {
++                        if segments.is_empty() {
++                            // The segments are all read: what is left of the plane is its EndData.
++                            if *unclaimed != 0 {
++                                return Err(invalid_field_err!(field, "RLE output does not fill plane size"));
++                            }
++                            let (bytes, tail) = end_data
++                                .split_at_checked(dst.len())
++                                .ok_or_else(|| invalid_field_err!(field, "plane is shorter than the image"))?;
++                            dst.copy_from_slice(bytes);
++                            *end_data = tail;
++                            return Ok(());
++                        }
++
++                        let (value, length) = decode_run(segments, field)?;
++                        *unclaimed = unclaimed
++                            .checked_sub(length)
++                            .ok_or_else(|| invalid_field_err!(field, "RLE output exceeds plane size"))?;
++                        *run = (value, length);
++                        continue;
++                    }
++
++                    let count = run.1.min(dst.len());
++                    let (bytes, tail) = core::mem::take(&mut dst).split_at_mut(count);
++                    bytes.fill(run.0);
++                    run.1 -= count;
++                    dst = tail;
+                 }
+-                let length = usize::try_from(u32::from_le_bytes(
+-                    data[offset..offset + 4].try_into().expect("4-byte slice"),
+-                ))
+-                .map_err(|_| invalid_field_err!(field, "long RLE run length does not fit in usize"))?;
+-                offset += 4;
+-                length
+-            } else {
+-                usize::from(factor) + 2
+             }
+-        } else {
+-            1
+-        };
+-
+-        let new_len = decoded
+-            .len()
+-            .checked_add(run_len)
+-            .ok_or_else(|| invalid_field_err!(field, "RLE output length overflow"))?;
+-        if new_len > expected_len {
+-            return Err(invalid_field_err!(field, "RLE output exceeds plane size"));
+         }
+-        decoded.resize(new_len, value);
++
++        Ok(())
+     }
+ 
+-    decoded.extend_from_slice(&data[segments_end..]);
+-    if decoded.len() != expected_len {
+-        return Err(invalid_field_err!(field, "RLE output does not fill plane size"));
++    /// Checks that the plane has been read to its end.
++    fn finish(self) -> DecodeResult<()> {
++        let read_whole = match self.plane {
++            Plane::Raw(rest) => rest.is_empty(),
++            Plane::Rle {
++                segments,
++                run,
++                unclaimed,
++                end_data,
++            } => segments.is_empty() && run.1 == 0 && unclaimed == 0 && end_data.is_empty(),
++        };
++        if read_whole {
++            Ok(())
++        } else {
++            Err(invalid_field_err!(self.field, "plane is longer than the image"))
++        }
+     }
++}
++
++/// Decodes the run at the start of `segments`, and moves past it.
++///
++/// A value repeated is followed by a length factor: the run length less two, or 0xFF and a
++/// 32-bit run length. Any other value is a run of one.
++fn decode_run(segments: &mut &[u8], field: &'static str) -> DecodeResult<(u8, usize)> {
++    let Some((&value, rest)) = segments.split_first() else {
++        return Err(invalid_field_err!(field, "RLE plane is missing a run"));
++    };
++
++    let (length, rest) = match rest {
++        [repeated, rest @ ..] if *repeated == value => match rest {
++            [] => return Err(invalid_field_err!(field, "RLE run is missing its length factor")),
++            [u8::MAX, rest @ ..] => {
++                let Some((length, rest)) = rest.split_first_chunk::<4>() else {
++                    return Err(invalid_field_err!(field, "long RLE run is missing its length factor"));
++                };
++                let length = usize::try_from(u32::from_le_bytes(*length))
++                    .map_err(|_| invalid_field_err!(field, "long RLE run length does not fit in usize"))?;
++                (length, rest)
++            }
++            [factor, rest @ ..] => (usize::from(*factor) + 2, rest),
++        },
++        _ => (1, rest),
++    };
+ 
+-    Ok(decoded)
++    *segments = rest;
++    Ok((value, length))
+ }
+ 
+ fn ycocg_to_rgb(color_loss_level: u8, luma: u8, co: u8, cg: u8) -> (u8, u8, u8) {
+@@ -209,6 +347,30 @@ fn clamp_u8(value: i16) -> u8 {
+ mod tests {
+     use super::*;
+ 
++    /// Decodes a `width` x `height` image on its own.
++    fn decode_pixels(data: &[u8], width: u16, height: u16) -> DecodeResult<Vec<u8>> {
++        let row_len = usize::from(width) * 4;
++        let mut pixels = vec![0; row_len * usize::from(height)];
++        decode(data, width, height, &mut pixels, row_len)?;
++        Ok(pixels)
++    }
++
++    /// Reads a whole plane of `len` bytes, in rows of `row_len`.
++    fn read_plane_in_rows(data: &[u8], len: usize, row_len: usize) -> DecodeResult<Vec<u8>> {
++        let mut plane = PlaneReader::new(data, len, "test")?;
++        let mut bytes = vec![0; len];
++        for row in bytes.chunks_mut(row_len) {
++            plane.read(row)?;
++        }
++        plane.finish()?;
++        Ok(bytes)
++    }
++
++    /// Reads a whole plane of `len` bytes.
++    fn read_plane(data: &[u8], len: usize) -> DecodeResult<Vec<u8>> {
++        read_plane_in_rows(data, len, len)
++    }
++
+     fn stream(luma: &[u8], co: &[u8], cg: &[u8], alpha: &[u8], color_loss_level: u8, subsampled: bool) -> Vec<u8> {
+         let mut data = Vec::with_capacity(HEADER_SIZE + luma.len() + co.len() + cg.len() + alpha.len());
+         for plane in [luma, co, cg, alpha] {
+@@ -229,19 +391,19 @@ mod tests {
+     #[test]
+     fn decodes_raw_opaque_black_pixel() {
+         let data = stream(&[0], &[0], &[0], &[0xFF], 3, false);
+-        assert_eq!(decode(&data, 1, 1).unwrap(), [0, 0, 0, 0xFF]);
++        assert_eq!(decode_pixels(&data, 1, 1).unwrap(), [0, 0, 0, 0xFF]);
+     }
+ 
+     #[test]
+     fn decodes_rle_plane_with_raw_end_data() {
+-        let plane = decode_plane(&[0x33, 0x33, 0x02, 1, 2, 3, 4], 8, "test").unwrap();
++        let plane = read_plane(&[0x33, 0x33, 0x02, 1, 2, 3, 4], 8).unwrap();
+         assert_eq!(plane, [0x33, 0x33, 0x33, 0x33, 1, 2, 3, 4]);
+     }
+ 
+     #[test]
+     fn decodes_rle_luma_plane() {
+         let data = stream(&[0x33, 0x33, 0x02, 1, 2, 3, 4], &[0; 8], &[0; 8], &[], 1, false);
+-        let pixels = decode(&data, 4, 2).unwrap();
++        let pixels = decode_pixels(&data, 4, 2).unwrap();
+         let luma = [0x33, 0x33, 0x33, 0x33, 1, 2, 3, 4];
+ 
+         for (pixel, luma) in pixels.chunks_exact(4).zip(luma) {
+@@ -254,32 +416,32 @@ mod tests {
+         let mut compressed = vec![0x55, 0x55, 0xFF];
+         compressed.extend_from_slice(&296u32.to_le_bytes());
+         compressed.extend_from_slice(&[1, 2, 3, 4]);
+-        let plane = decode_plane(&compressed, 300, "test").unwrap();
++        let plane = read_plane(&compressed, 300).unwrap();
+         assert_eq!(&plane[..296], &[0x55; 296]);
+         assert_eq!(&plane[296..], &[1, 2, 3, 4]);
+     }
+ 
+     #[test]
+     fn rejects_rle_overrun() {
+-        assert!(decode_plane(&[0x33, 0x33, 0x04, 1, 2, 3, 4], 9, "test").is_err());
++        assert!(read_plane(&[0x33, 0x33, 0x04, 1, 2, 3, 4], 9).is_err());
+     }
+ 
+     #[test]
+     fn rejects_invalid_header() {
+-        assert!(decode(&[], 1, 1).is_err());
++        assert!(decode_pixels(&[], 1, 1).is_err());
+     }
+ 
+     #[test]
+     fn rejects_invalid_color_loss_level() {
+         let data = stream(&[0], &[0], &[0], &[], 0, false);
+-        assert!(decode(&data, 1, 1).is_err());
++        assert!(decode_pixels(&data, 1, 1).is_err());
+     }
+ 
+     #[test]
+     fn rejects_truncated_payload() {
+         let mut data = stream(&[0], &[0], &[0], &[], 1, false);
+         data.pop();
+-        assert!(decode(&data, 1, 1).is_err());
++        assert!(decode_pixels(&data, 1, 1).is_err());
+     }
+ 
+     #[test]
+@@ -287,7 +449,7 @@ mod tests {
+         // A 3x3 image with padded 8x3 luma and 4x2 chroma planes. The decoder
+         // must address only the original 3x3 image area.
+         let data = stream(&[100; 24], &[0; 8], &[0; 8], &[0xFF; 9], 3, true);
+-        let pixels = decode(&data, 3, 3).unwrap();
++        let pixels = decode_pixels(&data, 3, 3).unwrap();
+         assert_eq!(pixels.len(), 3 * 3 * 4);
+         assert!(pixels.chunks_exact(4).all(|pixel| pixel == [100, 100, 100, 0xFF]));
+     }
+@@ -295,12 +457,64 @@ mod tests {
+     #[test]
+     fn decodes_no_alpha_bgra_without_channel_swap() {
+         let data = stream(&[100], &[10], &[0], &[], 1, false);
+-        assert_eq!(decode(&data, 1, 1).unwrap(), [90, 100, 110, 0xFF]);
++        assert_eq!(decode_pixels(&data, 1, 1).unwrap(), [90, 100, 110, 0xFF]);
+     }
+ 
+     #[test]
+     fn restores_chroma_in_a_wrapping_signed_byte() {
+         let data = stream(&[93], &[40], &[63], &[], 3, false);
+-        assert_eq!(decode(&data, 1, 1).unwrap(), [193, 89, 1, 0xFF]);
++        assert_eq!(decode_pixels(&data, 1, 1).unwrap(), [193, 89, 1, 0xFF]);
++    }
++
++    #[test]
++    fn reads_rle_plane_in_rows_across_runs() {
++        // Runs of three 0x33, one 0x44 and five 0x55, then EndData.
++        let data = [0x33, 0x33, 0x01, 0x44, 0x55, 0x55, 0x03, 1, 2, 3, 4];
++        let plane = [0x33, 0x33, 0x33, 0x44, 0x55, 0x55, 0x55, 0x55, 0x55, 1, 2, 3, 4];
++
++        for row_len in 1..=plane.len() {
++            assert_eq!(
++                read_plane_in_rows(&data, plane.len(), row_len).unwrap(),
++                plane,
++                "{row_len}"
++            );
++        }
++    }
++
++    #[test]
++    fn rejects_rle_plane_whose_runs_fall_short() {
++        // Runs of four bytes, and EndData, for a plane of nine.
++        assert!(read_plane(&[0x33, 0x33, 0x02, 1, 2, 3, 4], 9).is_err());
++        // Nothing but EndData, for a plane of five.
++        assert!(read_plane(&[1, 2, 3, 4], 5).is_err());
++    }
++
++    #[test]
++    fn rejects_rle_runs_missing_their_length() {
++        assert!(read_plane(&[0x33, 0x33, 1, 2, 3, 4], 8).is_err());
++        assert!(read_plane(&[0x33, 0x33, 0xFF, 0x10, 0x00, 1, 2, 3, 4], 20).is_err());
++    }
++
++    #[test]
++    fn decodes_into_a_region_of_a_larger_image() {
++        // A 2x2 region at (1, 1) of a 4x3 image.
++        let data = stream(&[10, 20, 30, 40], &[0; 4], &[0; 4], &[], 1, false);
++        let mut image = vec![0xEE; 4 * 3 * 4];
++
++        decode(&data, 2, 2, &mut image[(4 + 1) * 4..], 4 * 4).unwrap();
++
++        let mut expected = vec![0xEE; 4 * 3 * 4];
++        for (index, luma) in [(5, 10), (6, 20), (9, 30), (10, 40)] {
++            expected[index * 4..index * 4 + 4].copy_from_slice(&[luma, luma, luma, 0xFF]);
++        }
++        assert_eq!(image, expected);
++    }
++
++    #[test]
++    fn rejects_a_destination_too_small_for_the_image() {
++        let data = stream(&[10, 20, 30, 40], &[0; 4], &[0; 4], &[], 1, false);
++        let mut image = vec![0; 2 * 2 * 4 - 1];
++
++        assert!(decode(&data, 2, 2, &mut image, 2 * 4).is_err());
+     }
+ }
+diff --git a/crates/ironrdp-testsuite-core/tests/peak_heap.rs b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+index 34ba9947..8580a49b 100644
+--- a/crates/ironrdp-testsuite-core/tests/peak_heap.rs
++++ b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+@@ -306,6 +306,46 @@ fn clearcodec_rlex_segments_take_no_memory() {
+     );
+ }
+ 
++#[test]
++fn clearcodec_nscodec_planes_take_no_memory() {
++    // A 91-byte stream of an 8192x8192 NSCodec region: four planes of 64 MiB, each a single run
++    // and the four bytes of its EndData. Decoded into planes, then into an image of their own,
++    // the region took 512 MiB on top of the 256 MiB image.
++    let plane_len = 8192 * 8192;
++    let mut plane = vec![0x10, 0x10, 0xFF];
++    plane.extend_from_slice(&u32::try_from(plane_len - 4).unwrap().to_le_bytes());
++    plane.extend_from_slice(&[0x20, 0x20, 0x20, 0x20]);
++    let mut nscodec = Vec::new();
++    for _ in 0..4 {
++        nscodec.extend_from_slice(&u32::try_from(plane.len()).unwrap().to_le_bytes());
++    }
++    nscodec.extend_from_slice(&[1, 0, 0, 0]); // colorLossLevel, chromaSubsamplingLevel, reserved
++    for _ in 0..4 {
++        nscodec.extend_from_slice(&plane);
++    }
++    let mut subcodec_data = Vec::new();
++    for value in [0u16, 0, 8192, 8192] {
++        subcodec_data.extend_from_slice(&value.to_le_bytes()); // x, y, width, height
++    }
++    subcodec_data.extend_from_slice(&u32::try_from(nscodec.len()).unwrap().to_le_bytes());
++    subcodec_data.push(0x01); // NSCodec
++    subcodec_data.extend_from_slice(&nscodec);
++    let stream = clearcodec_stream(&[], &[], &subcodec_data);
++    assert_eq!(stream.len(), 91);
++    let mut decoder = ClearCodecDecoder::new();
++
++    let (pixels, peak) = peak_heap(|| decoder.decode(&stream, 8192, 8192));
++
++    // Y, Co and Cg of 0x10 make (R, G, B) = (0x10, 0x20, 0), and of 0x20 (0x20, 0x40, 0).
++    let pixels = pixels.unwrap();
++    assert_eq!(pixels[..4], [0x00, 0x20, 0x10, 0x10]);
++    assert_eq!(pixels[pixels.len() - 4..], [0x00, 0x40, 0x20, 0x20]);
++    assert!(
++        peak < 256 * 1024 * 1024 + 1024 * 1024,
++        "decoding the region took {peak} bytes"
++    );
++}
++
+ #[test]
+ fn clearcodec_image_is_held_once() {
+     // A 41-byte command: a ClearCodec stream without layers (flags, seq and three zero layer sizes)

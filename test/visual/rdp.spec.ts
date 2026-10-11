@@ -10,6 +10,7 @@ import { windowsGuest } from '../lib/windows.js'
 const kind = process.env.TRD_QA_TEST === 'visual-windows' ? 'windows' : 'linux'
 const fixtureLifetime = process.env.TRD_QA_MUTATIONS ? 1200 : 300
 const xrdp = kind === 'linux' && process.env.TRD_TEST_EXPECT_STACK === 'xrdp'
+const krdp = kind === 'linux' && process.env.TRD_TEST_EXPECT_STACK === 'krdp'
 const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/visual')
 interface FixtureState { version: number, sequence: number, input: string, platform: string, width: number, height: number, ready: boolean, scale: number, font: string, captureId?: number }
 
@@ -32,7 +33,7 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
     let guestCapture: (name: string, verify?: boolean) => Promise<void> = async () => {}
     let cleanupFixture: () => Promise<unknown> = async () => {}
     let cleanupSession: () => Promise<unknown> = async () => {}
-    const metadata: Record<string, unknown> = { environment: kind, coverage: 'Real RDP framebuffer through Tabby / IronRDP', fixtureVersion: 1, h264: false, checkpoints: [] }
+    const metadata: Record<string, unknown> = { environment: kind, stack: krdp ? 'krdp' : xrdp ? 'xrdp' : kind === 'linux' ? 'grd' : 'windows', coverage: 'Real RDP framebuffer through Tabby / IronRDP', fixtureVersion: 1, h264: krdp, checkpoints: [] }
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     try {
@@ -41,19 +42,34 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
         metadata.host = await ev('return RD.compat.snapshot()')
         const cdp = await context.newCDPSession(page)
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 850, deviceScaleFactor: 1, mobile: false })
-        await t.settings({ desk: false, resize: 'live', sharpness: 'standard', clipboard: 'off', sound: false, microphone: false, h264: false, connectionStatus: false })
+        await t.settings({ desk: false, resize: krdp ? 'off' : 'live', zoom: 'fit', sharpness: 'standard', clipboard: 'off', sound: false, microphone: false, h264: krdp, connectionStatus: false })
         const win = t.env.windows
         const over = kind === 'windows' ? { host: win.host, user: win.user, name: 'Windows QA' } : { name: 'Linux QA' }
         expect(await ev(`H.pane = await H.openSSH(${JSON.stringify(over)}); return !!H.pane`), 'SSH test transport').toBe(true)
         let remoteKey = kind as string
         if (kind === 'linux') {
             const identity = JSON.parse((await t.remote('H.pane', `python3 - <<'PYID'
-import json, subprocess, pathlib
+import json, subprocess, pathlib, hashlib, os as operating_system
 os = dict(line.split('=', 1) for line in pathlib.Path('/etc/os-release').read_text().splitlines() if '=' in line)
 def value(key): return os.get(key, '').strip('"')
 def command(args): return subprocess.check_output(args, text=True).strip()
 identity = dict(os=value('ID'), version=value('VERSION_ID'), point=pathlib.Path('/etc/debian_version').read_text().strip() if value('ID') == 'debian' else '')
-if value('ID') == 'rocky':
+if ${krdp ? 'True' : 'False'}:
+    identity.update({key: command(['rpm', '-q', '--qf', '%{VERSION}', package]) for key, package in [('plasma', 'plasma-workspace'), ('krdp', 'krdp'), ('pipewire', 'pipewire'), ('kpipewire', 'kpipewire'), ('ffmpeg', 'ffmpeg-free'), ('openh264', 'openh264'), ('freerdp', 'freerdp-libs')]})
+    identity['kwin'] = command(['rpm', '-qf', '--qf', '%{VERSION}', '/usr/bin/kwin_wayland'])
+    identity['session'] = dict(line.split('=', 1) for line in command(['systemctl', '--user', 'show-environment']).splitlines() if '=' in line).get('XDG_SESSION_TYPE', '')
+    pid = command(['pgrep', '-u', str(operating_system.getuid()), '-x', 'krdpserver'])
+    assert pid.isdigit(), 'Expected one dedicated KRDP service'
+    maps = pathlib.Path('/proc/'+pid+'/maps').read_text().splitlines()
+    freerdp = {line.split()[-1] for line in maps if '/libfreerdp3.so.' in line}
+    assert len(freerdp) == 1, 'Expected one loaded FreeRDP library'
+    identity['loadedFreerdp'] = command(['rpm', '-qf', '--qf', '%{VERSION}', next(iter(freerdp))])
+    for key, package, library in [('encoder', 'kpipewire', 'libKPipeWireRecord'), ('server', 'krdp', 'libKRdp')]:
+        manifest = json.loads((pathlib.Path.home()/('.local/share/tabby-qa-'+package+'/manifest.json')).read_text())
+        loaded = {line.split()[-1] for line in maps if '/'+library+'.so.' in line}
+        assert loaded == {manifest['library']}, 'KRDP did not load the declared private '+key
+        identity[key] = dict(sourceCommit=manifest['sourceCommit'], patchSha256=manifest['patchSha256'], librarySha256=manifest['librarySha256'], loadedLibrarySha256=hashlib.sha256(pathlib.Path(manifest['library']).read_bytes()).hexdigest())
+elif value('ID') == 'rocky':
     identity.update({key: command(['rpm', '-q', '--qf', '%{VERSION}', package]) for key, package in [('xfce', 'xfce4-session'), ('xrdp', 'xrdp'), ('xorgxrdp', 'xorgxrdp')]})
 else:
     identity.update(gnome=command(['gnome-shell', '--version']), grd=command(['rpm', '-q', '--qf', '%{VERSION}', 'gnome-remote-desktop'] if value('ID') == 'fedora' else ['dpkg-query', '-W', '-f', '\${Version}', 'gnome-remote-desktop']))
@@ -61,7 +77,8 @@ print(json.dumps(identity))
 PYID`)).trim())
             metadata.remote = identity
             verifyLinuxIdentity(identity)
-            remoteKey = xrdp ? `${identity.os}-${identity.version}-xfce-${identity.xfce}-xrdp-${identity.xrdp}-xorgxrdp-${identity.xorgxrdp}`
+            remoteKey = krdp ? `${identity.os}-${identity.version}-plasma-${identity.plasma}-krdp-${identity.krdp}-kpipewire-qa-${identity.encoder.patchSha256.slice(0,12)}-freerdp-${identity.freerdp}-qa-${identity.server.patchSha256.slice(0,12)}-h264`
+                : xrdp ? `${identity.os}-${identity.version}-xfce-${identity.xfce}-xrdp-${identity.xrdp}-xorgxrdp-${identity.xorgxrdp}`
                 : `${identity.os}-${identity.point || identity.version}-gnome-${identity.gnome.match(/\b(\d+\.[\d.]+)/)?.[1]}-grd-${identity.grd.match(/\b(\d+\.[\d.]+)/)?.[1]}`
         }
         t.onCleanup(() => ev('globalThis.__trdMutationRestore?.(); document.getElementById("trd-visual-size")?.remove()'))
@@ -84,7 +101,12 @@ PYID`)).trim())
         // Persistent native clients remember their last desktop behind an SSH host.
         // Select the host's own GNOME desktop explicitly after a Windows-via-SSH run.
         let desktopId = 'own'
-        if (kind === 'windows') {
+        if (krdp) {
+            // Existing generic external RDP transport uses the legacy 'windows' kind. Guest identity above
+            // establishes KDE/KRDP independently; no GNOME auto-setup or xrdp downgrade is used.
+            desktopId = '127.0.0.1:3389'
+            await ev(`H.inZone(() => { H.config.store.remoteDesktop.desktops=[{name:'Fedora KDE / KRDP QA',via:${JSON.stringify(t.env.host)},host:'127.0.0.1',port:3389,kind:'windows',username:${JSON.stringify(process.env.TRD_TEST_KRDP_USER)}}]; H.config.save() })`)
+        } else if (kind === 'windows') {
             const host = win.address.replace(/:\d+$/, '')
             const port = Number(/:(\d+)$/.exec(win.address)?.[1] || 3389)
             desktopId = `${host}:${port}`
@@ -92,21 +114,25 @@ PYID`)).trim())
         }
         const connect = async () => {
             await ev(`await H.inZone(() => RD.desktop.showDesktop(H.pane, ${JSON.stringify(desktopId)}))`)
-            if (kind === 'windows' || xrdp) {
+            if (kind === 'windows' || xrdp || krdp) {
                 if (xrdp) {
                     expect(t.env.user, 'SSH and fixture desktop use the dedicated xrdp account').toBe(t.env.xrdp.user)
                 }
                 await t.waitFor('return RD.desktop.isConnected(H.pane) || !!H.overlay(H.pane)?.querySelector(".trd-signin form")', 30)
                 if (xrdp) expect(await ev('return RD.desktop.desktopOf(H.pane)?.kind'), 'Detected real xrdp desktop').toBe('xrdp')
                 // Credentials use raw CDP, never Playwright arguments; initial sign-in precedes tracing.
-                await ev(`const f=H.overlay(H.pane)?.querySelector('.trd-signin form'); if(f){f.querySelector('[name=remember]').checked=true; f.querySelector('[name=password]').value=${JSON.stringify(xrdp ? t.env.xrdp.password : win.password)};f.requestSubmit()}`)
-                if (xrdp) {
+                await ev(`const f=H.overlay(H.pane)?.querySelector('.trd-signin form'); if(f){f.querySelector('[name=remember]').checked=true; f.querySelector('[name=password]').value=${JSON.stringify(krdp ? process.env.TRD_TEST_KRDP_PASSWORD : xrdp ? t.env.xrdp.password : win.password)};f.requestSubmit()}`)
+                if (xrdp || krdp) {
                     await t.waitFor('return RD.desktop.isConnected(H.pane) || /Network Level Authentication/.test(H.status(H.pane)?.text || "")', 30)
-                    // Exercise the existing certificate-bound consent for the dedicated xrdp server.
+                    // Exercise existing certificate-bound consent for this dedicated TLS-authenticated server.
                     await ev('if (/Network Level Authentication/.test(H.status(H.pane)?.text || "")) H.inZone(() => H.clickStatus(H.pane, "Send the password anyway"))')
                 }
             }
             expect(await t.waitFor('return RD.desktop.isConnected(H.pane) && (H.canvas(H.pane)?.colors ?? 0)>10', 60), 'Real RDP connection and decoded desktop frame').toBeTruthy()
+            if (krdp) {
+                await expect.poll(() => ev('return H.session(H.pane)?.h264?.stats.frames ?? 0'), { message: 'KRDP actually delivered decoded H.264 frames' }).toBeGreaterThan(0)
+                metadata.codec = await ev('const d=H.session(H.pane).h264; return {name:"H.264",...d.stats,failed:d.failed,graphics:RD.desktop.logOf(H.pane).findLast(l=>/^graphics: /.test(l))}')
+            }
         }
         await connect()
         // Sign-in/consent can cause Tabby to lay out the tab again. Establish the fixed
@@ -161,7 +187,7 @@ with open('${directory}/fixture.log', 'w') as log:
 pathlib.Path('${directory}/pid').write_text(str(child.pid))
 PYFIXTURE`)
             } else {
-                await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland setsid python3 ${directory}/fixture.py ${directory} ${fixtureLifetime} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
+                await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland TRD_VISUAL_DESKTOP=${krdp ? 'kde' : 'gnome'} setsid python3 ${directory}/fixture.py ${directory} ${fixtureLifetime} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
             }
             fixtureLog = () => t.remote('H.pane', `cat ${directory}/fixture.log 2>/dev/null || true`)
             readState = async () => { try { return JSON.parse(await t.remote('H.pane', `cat ${directory}/state.json 2>/dev/null || true`)) } catch { return null } }
@@ -233,16 +259,19 @@ PYFIXTURE`)
         }
         const checkpoint = async (name: string, baseline = true) => {
             await guestCapture(name)
+            // The external-desktop label fades naturally. Never baseline its transient overlay or hide it with CSS.
+            if (krdp) await expect.poll(() => ev('const label=H.overlay(H.pane)?.querySelector(".trd-osd"); return !label || getComputedStyle(label).opacity === "0"'), { message: 'Transient desktop label finished fading' }).toBe(true)
             if (name === 'actual') info.annotations.splice(info.annotations.findIndex(a => a.type === 'infrastructure'), 1)
             const state = (await readState())!
             const frame = await ev<CanvasInfo>('return H.canvas(H.pane)')
             ;(metadata.checkpoints as unknown[]).push({ name, state, frame })
+            if (krdp) await info.attach(`${name}-pixel-probes`, { body: JSON.stringify(await samples()), contentType: 'application/json' })
             await info.attach(`${name}-raw-canvas`, { body: Buffer.from((await ev<string>('return H.canvasElement(H.pane).toDataURL("image/png")')).split(',')[1], 'base64'), contentType: 'image/png' })
             await info.attach(name, { body: await canvas.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' }), contentType: 'image/png' })
             await assertFrame(state.sequence)
             if (baseline) {
                 expect([state.width, state.height], 'Remote checkpoint uses the requested resolution').toEqual(
-                    name === 'resized' || name === 'reconnected' ? [900, 650] : [800, 600])
+                    !krdp && (name === 'resized' || name === 'reconnected') ? [900, 650] : [800, 600])
                 const snapshot = snapshotName(name)
                 if (fs.existsSync(info.snapshotPath(snapshot))) await info.attach(`${name}-expected`, { path: info.snapshotPath(snapshot), contentType: 'image/png' })
                 await expect(canvas).toHaveScreenshot(snapshot, { maxDiffPixels: 0 })
@@ -279,7 +308,7 @@ PYFIXTURE`)
             await expect.poll(async () => (await readState())?.width).toBe(800)
             await checkpoint('tab-return')
         })
-        await test.step('Live remote resolution change with bounded transition evidence', async () => {
+        await test.step(krdp ? 'Fixed KRDP monitor: client fit with bounded transition evidence (remote resize unsupported)' : 'Live remote resolution change with bounded transition evidence', async () => {
             const timeline: { elapsedMs: number, valid: boolean, frame: unknown, remote: unknown, captureMs: number }[] = []
             await checkpoint('before-resize', false)
             const started = performance.now()
@@ -288,10 +317,14 @@ PYFIXTURE`)
             for (let index = 0; index < 12; index++) {
                 const captured = performance.now()
                 const remote = await readState()
-                const frame = { ...await samples(), geometry: await ev('return {...H.canvas(H.pane), devicePixelRatio}') }
+                const frame = { ...await samples(), geometry: await ev<CanvasInfo>('return {...H.canvas(H.pane), devicePixelRatio}') }
                 const observed = performance.now()-started
                 const expected = [[220,40,60],[30,200,80],[40,80,220],[240,200,40],[30,100,200]]
-                const valid = remote?.width === 900 && remote?.height === 650 && frame.width === 900 && frame.height === 650 && frame.points.every((rgb,i) => rgb[3] === 255 && rgb.slice(0,3).every((v,j) => Math.abs(v-expected[i][j]) <= 8))
+                const [width, height] = krdp ? [800, 600] : [900, 650]
+                const geometry = frame.geometry
+                // KRDP shares a fixed compositor output; explicitly exercise client fit, not remote resize.
+                const fitted = !krdp || (Math.abs(geometry.cssW-866.667)<=1 && Math.abs(geometry.cssH-650)<=1 && geometry.paneW===900 && geometry.paneH===650)
+                const valid = fitted && remote?.width === width && remote?.height === height && frame.width === width && frame.height === height && frame.points.every((rgb,i) => rgb[3] === 255 && rgb.slice(0,3).every((v,j) => Math.abs(v-expected[i][j]) <= 8))
                 await info.attach(`resize-${index}-raw`, { body: Buffer.from((await ev<string>('return H.canvasElement(H.pane).toDataURL("image/png")')).split(',')[1], 'base64'), contentType: 'image/png' })
                 await info.attach(`resize-${index}-visible`, { body: await canvas.screenshot(), contentType: 'image/png' })
                 if (kind === 'windows' && index === 5) await guestCapture('resize-5', false)
@@ -299,7 +332,7 @@ PYFIXTURE`)
                 await t.sleep(Math.max(0, 500-(performance.now()-captured)))
             }
             const firstCorrect = timeline.findIndex(s => s.valid)
-            const summary = { samples: timeline, firstCorrectMs: timeline[firstCorrect]?.elapsedMs ?? null,
+            const summary = { mode: krdp ? 'Fixed 800x600 remote monitor; client fit into 900x650 pane; remote resize unsupported' : 'Live remote resolution', samples: timeline, firstCorrectMs: timeline[firstCorrect]?.elapsedMs ?? null,
                 sampledRegions: 'Four 1px edge-marker centers and 1px sequence-tile center; does not estimate whole-screen damage area',
                 classification: firstCorrect < 0 ? 'Persistent sampled-region/geometry failure' : timeline.slice(firstCorrect).every(s => s.valid) ? (firstCorrect ? 'Transient settling then sustained presentation' : 'Sustained presentation') : 'Presentation became invalid after a correct sample',
                 clocks: 'Client monotonic elapsed time. Remote state is requested serially; no cross-host clock equivalence assumed.' }
@@ -317,6 +350,7 @@ PYFIXTURE`)
         })
         expect(errors, 'Renderer exceptions').toEqual([])
     } finally {
+        if (krdp) metadata.finalCodec = await ev('const d=H.session(H.pane)?.h264; return {connected:RD.desktop.isConnected(H.pane),frame:H.canvas(H.pane),decoder:d?{...d.stats,failed:d.failed}:null}').catch(() => null)
         await ev('globalThis.__trdMutationRestore?.()').catch(() => {})
         await info.attach('final-window', { body: await page.screenshot({ timeout: 5000 }), contentType: 'image/png' }).catch(() => {})
         await info.attach('fixture-log', { body: (await fixtureLog().catch(() => 'Fixture log unavailable')).slice(-16000), contentType: 'text/plain' })

@@ -112,6 +112,17 @@ The first connection to a machine takes a few seconds while it prepares GNOME Re
 ones take well under a second. The same shortcut switches between the desktop and the console, and the desktop keeps
 running in the background until you disconnect or close the tab.
 
+GNOME's generated password and TLS key belong to each SSH user and machine. They are kept under
+`~/.local/share/tabby-rdp/hosts/<machine-id>/`, with private directory/file permissions. Linux needs a valid,
+initialized `/etc/machine-id`; cloned machines must have distinct IDs. On the first connection after this change,
+each machine gets new credentials and GNOME Remote Desktop restarts, disconnecting any existing RDP clients.
+Reconnect to **every** machine using a shared home to rotate all active credentials. Old home-wide credential files
+are preserved for machines still using an earlier version, but this version never imports them.
+
+Separate credentials prevent accidental reuse across machines; they do not isolate machines that let the same
+account read or write the shared home. That account can still read every machine's stored secrets and GNOME's own
+shared configuration. Use separate accounts or host-local homes when those machines need independent trust.
+
 A machine without GNOME but with [xrdp](https://github.com/neutrinolabs/xrdp) running (the usual RDP server for KDE,
 XFCE, MATE and the rest) gets xrdp's desktop instead: sign in with your Linux password, which the plugin can remember
 in the system keychain. xrdp takes the password without Network Level Authentication, and that the machine's desktop

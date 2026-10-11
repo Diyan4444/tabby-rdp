@@ -3,7 +3,7 @@
 # doesn't clash with GNOME Remote Desktop on 3389, and a test account that signs in to it with a password. Run as
 # root, or with sudo:
 #
-#     sudo TEST_PASSWORD='<a password for the xrdp account>' sh testbed/linux/xrdp.sh [xrdp-user] [ssh-user]
+#     TEST_PASSWORD_FILE=/private/password sh testbed/linux/xrdp.sh [xrdp-user] [ssh-user]
 # Prefer TEST_PASSWORD_FILE=/private/password (or '-' to read one line from stdin).
 # Supports Debian/Ubuntu and Rocky 9; Rocky uses EPEL/CRB, Xorg and a loopback-only RDP listener.
 #
@@ -13,19 +13,23 @@
 # suites the host stays one with GNOME only.
 set -eu
 
-if [ "$(id -u)" != 0 ]; then
-    exec sudo TEST_PASSWORD="${TEST_PASSWORD:-}" TEST_PASSWORD_FILE="${TEST_PASSWORD_FILE:-}" sh "$0" "$@"
-fi
+# Read a private file/stdin before sudo, then forward only stdin across the privilege boundary.
 case "${TEST_PASSWORD_FILE:-}" in
     -) IFS= read -r TEST_PASSWORD ;;
     '') ;;
     *) TEST_PASSWORD=$(cat "$TEST_PASSWORD_FILE") ;;
 esac
+if [ "$(id -u)" != 0 ]; then
+    sudo -v
+    printf '%s\n' "${TEST_PASSWORD:-}" | sudo -n env -u TEST_PASSWORD -u TEST_PASSWORD_FILE sh "$0" "$@"
+    exit $?
+fi
+if [ -z "${TEST_PASSWORD:-}" ]; then IFS= read -r TEST_PASSWORD; fi
 XRDP_USER="${1:-tabbyxrdp}"
 SSH_USER="${2:-${SUDO_USER:-}}"
 PORT=3390
 if [ -z "${TEST_PASSWORD:-}" ] || [ -z "$SSH_USER" ] || ! id "$SSH_USER" >/dev/null 2>&1; then
-    echo "usage: sudo TEST_PASSWORD=<password> sh $0 [xrdp-user] <ssh-user>" >&2
+    echo "usage: TEST_PASSWORD=<password> sh $0 [xrdp-user] <ssh-user> (or supply the password on stdin as root)" >&2
     exit 2
 fi
 

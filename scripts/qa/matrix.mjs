@@ -9,6 +9,7 @@ export const desktops = [
     { id: 'fedora44', name: 'Fedora 44 / GNOME 50', os: 'fedora', version: '44', gnome: '50' },
     { id: 'debian13', name: 'Debian 13.7 / GNOME 48', os: 'debian', version: '13', point: '13.7', gnome: '48' },
     { id: 'rocky9', name: 'Rocky Linux 9 / Xfce / xrdp', os: 'rocky', version: '9.8', stack: 'xrdp' },
+    { id: 'fedora44-kde', name: 'Fedora 44 / KDE Plasma / KRDP (QA encoder + FreeRDP fixes)', os: 'fedora', version: '44', stack: 'krdp' },
     { id: 'windows11', name: 'Windows 11 26H2', os: 'windows', version: '26H2', build: '26300' },
 ]
 export const linuxRequired = ['TRD_TEST_HOST']
@@ -16,8 +17,8 @@ export const windowsRequired = ['TRD_TEST_WIN_SSH_HOST', 'TRD_TEST_WIN_ADDRESS',
 export const matrix = clients.flatMap(client => [
     { id: `visual-${client.id}-host`, name: `${client.name} Tabby settings`, environment: `${client.name} client → local UI`, client: client.platform, suite: 'visual-host', required: [], coverage: 'Actual native Tabby settings UI' },
     ...desktops.map(desktop => ({ id: `visual-${client.id}-${desktop.id}`, name: `${client.name} → ${desktop.name}`, environment: `${client.name} client → ${desktop.name}`, client: client.platform, desktop,
-        suite: desktop.os === 'windows' ? 'visual-windows' : 'visual-linux', required: desktop.os === 'windows' ? windowsRequired : [...linuxRequired, ...(desktop.stack === 'xrdp' ? ['TRD_TEST_XRDP_USER', 'TRD_TEST_XRDP_PASSWORD'] : [])],
-        coverage: 'Real RDP framebuffer, geometry, input, resize, tab return and reconnect' })),
+        suite: desktop.os === 'windows' ? 'visual-windows' : 'visual-linux', required: desktop.os === 'windows' ? windowsRequired : [...linuxRequired, ...(desktop.stack === 'xrdp' ? ['TRD_TEST_XRDP_USER', 'TRD_TEST_XRDP_PASSWORD'] : []), ...(desktop.stack === 'krdp' ? ['TRD_TEST_KRDP_USER', 'TRD_TEST_KRDP_PASSWORD'] : [])],
+        coverage: desktop.stack === 'krdp' ? 'H.264 with private encoder and FreeRDP compatibility fixes: framebuffer, input, tab return, client fit and reconnect; fixed monitor, remote resize unsupported' : 'Real RDP framebuffer, geometry, input, resize, tab return and reconnect' })),
 ])
 export function validateTargets (value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected QA target object')

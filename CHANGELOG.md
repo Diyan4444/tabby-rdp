@@ -4,9 +4,56 @@
 
 Local release candidate; not published on npm or as a GitHub release.
 
+**Changed**
+- **Standard dialogs use Tabby's own window drag region**, available in Tabby 1.0.238
+  ([upstream #11766](https://github.com/Eugeny/tabby/pull/11766)). The plugin no longer adds a fallback to host dialogs.
+  Older Tabby versions still work, but need updating to move the window while a standard dialog is open.
+  The plugin's custom settings overlays retain their own drag strips.
+
 **Security** (the rest of the review of 0.5.3-rc.1; all of these were in 0.5.2 too)
 - **The RD Gateway's NTLM sign-in is always bound to its TLS connection.** A challenge without the target information
   or the time that the binding goes with is refused, rather than answered without the binding and the integrity code.
+- **A server can no longer fill Tabby's memory with clipboard answers it doesn't read.** The local proxy stopped
+  reading the client when the server fell behind, so answers piled up uncounted in the window until it crashed. It
+  now goes on reading, counts what waits for the server against the room file transfers already keep within, and
+  ends the connection once 104 MB waits.
+- **H.264 decoders are held to 16 per desktop**, including decoders still finishing frames after their surfaces end.
+  A surface gets one only with a key frame. IronRDP owns admission, accounting and cleanup through its public decoder
+  configuration; the earlier wrapper that evicted surfaces by editing private decoder state is removed.
+  Exceeding the cap fails H.264 and takes the existing reconnect-without-H.264 path.
+- **A shared folder's listing gives the server at most 10,000 names**, read a few at a time, rather than the whole
+  folder for each listing the server asks for. A name past those is still there to open by its path, though not to
+  find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
+  bounded yet, so this slows what a server can have the desktop keep rather than ends it.
+
+**Additional RC security hardening** (#77–87)
+
+- **CredSSP requires version 5 or later** before authentication continues. Servers offering only versions 2–4
+  must be updated; accepting their TLS certificate does not enable the legacy authentication binding.
+- **Graphics decoding and caches have dimension, allocation and retained-state limits.** Static and dynamic
+  virtual-channel reassembly also has per-message limits and an aggregate incomplete-dynamic-message budget.
+  These limits are per session, not a total memory ceiling for Tabby's window.
+- **Clipboard format lists are bounded and supported formats are selected in one pass.** Shared-drive work is
+  limited to 1,024 queued or in-flight requests and 64 MiB of encoded request data, with a resource error when full.
+- **Generated GNOME credentials are stored per machine identifier.** Each host rotates to fresh credentials when
+  next set up; this does not isolate hosts from someone who can read or modify their shared home directory.
+- **Runtime dependencies are pinned and shipped with an npm shrinkwrap.** Testbed images require verified hashes,
+  WinRM dependencies and the Electron CI tree are locked, and testbed credential media is privately staged and cleaned.
+  The internal-name CI check receives its secret only on protected branch pushes; it is inactive on an unprotected RC.
+
+**EGFX/H.264 integration** (#88)
+
+- **Graphics work waiting behind asynchronous decoding is bounded by count and bytes.** PDUs are processed
+  incrementally, AVC regions and frames per message are limited, and completions no longer scan the command queue.
+- **Browser decoder input, creation rate, picture readbacks and decoded-pixel events have separate budgets.**
+  Surface deletion/reset closes ended streams even without a later H.264 frame. Failure and close release retained
+  pictures and suppress late readback callbacks. These budgets are per session and add together; they are not one
+  total renderer memory ceiling.
+- **The combined patch series is rebuilt into the shipped JavaScript/WASM**, including the public decoder-cap
+  integration and bounded key-frame admission tests.
+
+The aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
+This batch is not a stable-release sign-off.
 
 ## 0.5.3
 

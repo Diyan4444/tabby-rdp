@@ -97,6 +97,18 @@ const READ_LIMIT = 4 * 1024 * 1024
 export const MAX_OPEN_FILES = 1024
 
 /**
+ * Names one folder's listing gives the server at most (security review, finding 4). IronRDP keeps a listing whole with
+ * each folder handle the server opens, and the server decides how many it opens and which folder each lists: a shared
+ * folder with a great many names, listed again and again, would have the desktop's memory fill with copies of it. A
+ * folder anyone browses has far fewer; past this many, the rest aren't listed, and the log says so. What is left out is
+ * still there to open by its path (an open is a lookup of its own), though not to find by a query of the folder: IronRDP
+ * answers a query for one name, a pattern or all of them from this listing (patch 0015), so a name left out isn't
+ * found that way. This caps what one handle holds, not how many handles the server may hold, which stays IronRDP's to
+ * bound: the server can still have the desktop keep as many listings as it opens handles.
+ */
+export const MAX_LISTED = 10000
+
+/**
  * Files all the desktops in a window may have open at once. The window's descriptors are one process's, so a limit per
  * desktop alone would let several desktops together hold that many times more. The window may have 8192 open on
  * Windows (the C runtime's most); on macOS, Node raises its soft limit to the hard one as it starts, which
@@ -370,8 +382,31 @@ export class SharedDrives {
 
     async list (deviceId: number, remote: string): Promise<string[]> {
         const { local } = await this.locate(deviceId, remote, true)
-        return fsp.readdir(local)
+        // Read a few names at a time, up to MAX_LISTED: not the whole folder first (readdir), only to cut it short. Which
+        // names those are is the file system's order to read them in, not one the user could tell (the remote shows
+        // them sorted).
+        const names: string[] = []
+        const dir = await fsp.opendir(local)
+        try {
+            for await (const entry of dir) {
+                if (names.length === MAX_LISTED) {
+                    if (!this.listCut) {
+                        this.listCut = true
+                        this.log(`drives: a folder of more than ${MAX_LISTED} names was listed: the remote gets ${MAX_LISTED} of them, in no particular order (the rest are still there to open by path)`)
+                    }
+                    break
+                }
+                names.push(entry.name)
+            }
+        } finally {
+            // Closed by the loop as it ends, but for a read that throws.
+            await dir.close().catch(() => null)
+        }
+        return names
     }
+
+    /** A listing was cut short (see MAX_LISTED): said once. */
+    private listCut = false
 
     async open (deviceId: number, remote: string, mode: DriveOpenMode): Promise<number> {
         if (this.disposed) {

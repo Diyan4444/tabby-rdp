@@ -28,7 +28,7 @@ test('exact clean source, cancellation and changed checkout never silently execu
  a.start('smoke',{});await a.promise;assert.equal(count,0);assert.equal(a.state.jobs.at(-1).status,'blocked')
  dirty=false;a.start('smoke',{},'b'.repeat(40));await a.promise;assert.equal(count,0)
  a.start('smoke',{},hash);await a.promise;assert.equal(count,1);assert.equal(a.state.jobs.at(-1).steps[1].status,'not-executed')
- assert.equal(profiles.matrix.steps.length,18)
+ assert.equal(profiles.matrix.steps.length,21)
  assert.throws(()=>validateAutomation({schedules:[{id:'bad',profile:'shell',everyMinutes:1,firstAt:'2026-10-11'}]}))
  assert.throws(()=>validateAutomation({retention:{passDays:90,failureDays:1}}))
 })

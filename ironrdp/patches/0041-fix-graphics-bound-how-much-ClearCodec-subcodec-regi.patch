@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 18:39:43 -0700
+Subject: [PATCH 41/51] fix(graphics): bound how much ClearCodec subcodec
+ regions paint
+
+An RLEX or NSCodec subcodec region paints its whole area, up to the
+8192x8192 pixels the ClearCodec decoder takes, from a few bytes: 24 for
+an RLEX region of one palette entry and one run, 77 for an NSCodec
+region of four single-run planes. A bitmap's subcodec layer could hold
+as many of them as its size allows, each over the whole destination, so
+what a layer cost was the number of its regions times the destination,
+not its size. For an 8192x8192 destination, 16 RLEX regions (a 398-byte
+stream) took 1.0 s to decode and 16 NSCodec regions (1,246 bytes) 7.0 s,
+on the renderer's thread, which every desktop shares; a 64 KiB message
+of such regions would hold it for minutes.
+
+The RLEX and NSCodec regions of a bitmap may now paint at most twice its
+destination's area. An encoder lays its regions out side by side, which
+paints the destination once at most: twice leaves room for overlap, and
+bounds what the layer paints by the destination, as the residual layer's
+is. The region past that fails the bitmap with a decode error before it
+is painted (EGFX reports a ClearCodec decode error, which ends the
+session). Raw regions are not counted: they carry three bytes for each
+pixel they paint. The two streams above are now refused after 0.12 s
+and 0.88 s, the time of their first two regions (measured natively,
+opt-level 1).
+
+This bounds a bitmap by its destination, not a message. A message can
+still carry many bitmaps, each with a destination of its own, as it can
+carry many SolidFill rectangles: the same 16 NSCodec regions sent as 16
+bitmaps of one region each, in one message of 99 bytes once
+ZGFX-compressed, still take 7 s, and the 560 such bitmaps a 64 KiB
+message holds would take about 4 minutes. Bounding what one message
+paints in all is left to the EGFX client.
+---
+ crates/ironrdp-graphics/src/clearcodec/mod.rs |  27 +++-
+ .../tests/graphics/clearcodec.rs              | 122 ++++++++++++++++++
+ 2 files changed, 148 insertions(+), 1 deletion(-)
+
+diff --git a/crates/ironrdp-graphics/src/clearcodec/mod.rs b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+index 9be6ed5d..9f10d619 100644
+--- a/crates/ironrdp-graphics/src/clearcodec/mod.rs
++++ b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+@@ -14,6 +14,19 @@ pub use self::vbar_cache::{FullVBar, ShortVBar, VBarCache};
+ /// Glyph cache size as u16 for index arithmetic. GLYPH_CACHE_SIZE=4000 fits in u16.
+ const GLYPH_CACHE_WRAP: u16 = 4_000;
+ 
++/// How many times over the RLEX and NSCodec regions of a bitmap's subcodec layer may paint its
++/// destination.
++///
++/// Such a region paints its whole area, up to the 8192x8192 pixels the decoder takes, from a few
++/// bytes: 24 for an RLEX region of one palette entry and one run, 77 for an NSCodec region of four
++/// single-run planes. What a layer of them cost was their number times that area, not the layer's
++/// size: 16 NSCodec regions over an 8192x8192 destination, 1,246 bytes, took 7 s to decode, and a
++/// 64 KiB layer would have taken minutes. Regions laid out without overlapping, as an encoder lays
++/// them out, paint the destination once at most; twice leaves room for overlap, and bounds what the
++/// layer paints by its destination, as the residual layer's is. Raw regions are not counted: they
++/// carry their pixels.
++const MAX_SUBCODEC_COVERAGE: usize = 2;
++
+ use ironrdp_core::{DecodeResult, ReadCursor, function, invalid_field_err, other_err_with_source};
+ use ironrdp_pdu::codecs::clearcodec::{
+     ClearCodecBitmapStream, CompositePayload, FLAG_GLYPH_INDEX, RgbRunSegment, SubcodecId, VBar,
+@@ -226,8 +239,9 @@ impl ClearCodecDecoder {
+         // Each region is painted as it is read, rather than the layer collected first: a region's
+         // header takes 13 bytes on the wire, and up to 32 decoded.
+         if !composite.subcodec_data.is_empty() {
++            let mut unpainted = (output.len() / 4).saturating_mul(MAX_SUBCODEC_COVERAGE);
+             for sub in decode_subcodec_layer_regions(composite.subcodec_data) {
+-                Self::decode_subcodec_region(&sub?, output, width)?;
++                Self::decode_subcodec_region(&sub?, output, width, &mut unpainted)?;
+             }
+         }
+ 
+@@ -288,10 +302,13 @@ impl ClearCodecDecoder {
+         }
+     }
+ 
++    /// Paints a subcodec region. An RLEX or NSCodec region is charged its area against
++    /// `unpainted`, the pixels such regions may still paint (see [`MAX_SUBCODEC_COVERAGE`]).
+     fn decode_subcodec_region(
+         sub: &ironrdp_pdu::codecs::clearcodec::Subcodec<'_>,
+         output: &mut [u8],
+         surface_width: u16,
++        unpainted: &mut usize,
+     ) -> DecodeResult<()> {
+         let sw = usize::from(surface_width);
+         let sh = output.len() / (sw * 4).max(1);
+@@ -301,6 +318,14 @@ impl ClearCodecDecoder {
+         if x_end > sw || y_end > sh {
+             return Err(invalid_field_err!("subcodec", "region exceeds surface bounds"));
+         }
++        // A raw region carries three bytes for each pixel it paints; the others paint their whole
++        // area from as little as a palette entry and one run.
++        if sub.codec_id != SubcodecId::Raw {
++            let area = usize::from(sub.width) * usize::from(sub.height);
++            *unpainted = unpainted
++                .checked_sub(area)
++                .ok_or_else(|| invalid_field_err!("subcodec", "regions paint more than twice the destination"))?;
++        }
+         let max_bitmap_data_len = usize::from(sub.width)
+             .checked_mul(usize::from(sub.height))
+             .and_then(|len| len.checked_mul(3))
+diff --git a/crates/ironrdp-testsuite-core/tests/graphics/clearcodec.rs b/crates/ironrdp-testsuite-core/tests/graphics/clearcodec.rs
+index e74cfd78..436cc8bc 100644
+--- a/crates/ironrdp-testsuite-core/tests/graphics/clearcodec.rs
++++ b/crates/ironrdp-testsuite-core/tests/graphics/clearcodec.rs
+@@ -611,3 +611,125 @@ fn large_but_reasonable_dimensions_accepted() {
+     // Spot-check first pixel
+     assert_eq!(&result[..4], &[0x42, 0x42, 0x42, 0xFF]);
+ }
++
++// ============================================================================
++// Subcodec Layer: how much its regions may paint
++// ============================================================================
++
++/// A subcodec region header, then its data.
++fn subcodec_region(x: u16, y: u16, width: u16, height: u16, codec_id: u8, data: &[u8]) -> Vec<u8> {
++    let mut region = Vec::new();
++    for value in [x, y, width, height] {
++        region.extend_from_slice(&value.to_le_bytes());
++    }
++    region.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes()); // bitmapDataByteCount
++    region.push(codec_id);
++    region.extend_from_slice(data);
++    region
++}
++
++/// An RLEX region painted one color: a palette of one entry, a run of every pixel but the last,
++/// and the suite of that entry for the last. 24 bytes, whatever its size.
++fn rlex_fill(x: u16, y: u16, width: u16, height: u16, bgr: [u8; 3]) -> Vec<u8> {
++    let pixels = u32::from(width) * u32::from(height);
++    let mut rlex = vec![1, bgr[0], bgr[1], bgr[2], 0xFF, 0xFF, 0xFF];
++    rlex.extend_from_slice(&(pixels - 1).to_le_bytes());
++    subcodec_region(x, y, width, height, 0x02, &rlex)
++}
++
++/// An NSCodec region of four planes (luma, orange and green chroma, alpha), each one value: a run,
++/// then the four bytes of its EndData. 77 bytes, whatever its size.
++fn nscodec_fill(x: u16, y: u16, width: u16, height: u16, value: u8) -> Vec<u8> {
++    let plane_len = u32::from(width) * u32::from(height);
++    let mut plane = vec![value, value, 0xFF];
++    plane.extend_from_slice(&(plane_len - 4).to_le_bytes());
++    plane.extend_from_slice(&[value; 4]);
++    let mut nscodec = Vec::new();
++    for _ in 0..4 {
++        nscodec.extend_from_slice(&u32::try_from(plane.len()).unwrap().to_le_bytes());
++    }
++    nscodec.extend_from_slice(&[1, 0, 0, 0]); // colorLossLevel, chromaSubsamplingLevel, reserved
++    for _ in 0..4 {
++        nscodec.extend_from_slice(&plane);
++    }
++    subcodec_region(x, y, width, height, 0x01, &nscodec)
++}
++
++/// A ClearCodec stream of a subcodec layer alone.
++fn subcodec_stream(regions: &[Vec<u8>]) -> Vec<u8> {
++    let subcodec_data = regions.concat();
++    let mut stream = vec![0x00, 0x00]; // flags, seq
++    stream.extend_from_slice(&0u32.to_le_bytes()); // residualByteCount
++    stream.extend_from_slice(&0u32.to_le_bytes()); // bandsByteCount
++    stream.extend_from_slice(&u32::try_from(subcodec_data.len()).unwrap().to_le_bytes());
++    stream.extend_from_slice(&subcodec_data);
++    stream
++}
++
++#[test]
++fn subcodec_regions_may_paint_the_destination_twice() {
++    // The whole 64x32 destination blue, then its left half and its right half red: twice in all.
++    let blue = [0xFF, 0x00, 0x00];
++    let red = [0x00, 0x00, 0xFF];
++    let stream = subcodec_stream(&[
++        rlex_fill(0, 0, 64, 32, blue),
++        rlex_fill(0, 0, 32, 32, red),
++        rlex_fill(32, 0, 32, 32, red),
++    ]);
++
++    let pixels = ClearCodecDecoder::new().decode(&stream, 64, 32).unwrap();
++
++    assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0x00, 0x00, 0xFF, 0xFF]));
++}
++
++#[test]
++fn subcodec_regions_painting_the_destination_more_than_twice_are_refused() {
++    // Each region is 24 bytes, and paints all of the destination: a layer of them used to cost the
++    // number of regions times the destination, whatever its size.
++    let fill = rlex_fill(0, 0, 64, 32, [0x10, 0x20, 0x30]);
++    let mut decoder = ClearCodecDecoder::new();
++    assert!(
++        decoder
++            .decode(&subcodec_stream(&[fill.clone(), fill.clone()]), 64, 32)
++            .is_ok()
++    );
++
++    for third in [fill.clone(), rlex_fill(10, 10, 2, 2, [0x10, 0x20, 0x30])] {
++        let error = decoder
++            .decode(&subcodec_stream(&[fill.clone(), fill.clone(), third]), 64, 32)
++            .unwrap_err();
++        assert!(error.to_string().contains("more than twice"), "{error}");
++    }
++
++    // Sixteen at once, as the measured stream had.
++    assert!(decoder.decode(&subcodec_stream(&vec![fill; 16]), 64, 32).is_err());
++}
++
++#[test]
++fn nscodec_subcodec_regions_count_with_rlex_ones() {
++    let mut decoder = ClearCodecDecoder::new();
++    let stream = subcodec_stream(&[nscodec_fill(0, 0, 64, 32, 0x10), rlex_fill(0, 0, 64, 32, [1, 2, 3])]);
++    assert!(decoder.decode(&stream, 64, 32).is_ok());
++
++    let stream = subcodec_stream(&[
++        nscodec_fill(0, 0, 64, 32, 0x10),
++        nscodec_fill(0, 0, 64, 32, 0x20),
++        nscodec_fill(0, 0, 8, 8, 0x30),
++    ]);
++    let error = decoder.decode(&stream, 64, 32).unwrap_err();
++    assert!(error.to_string().contains("more than twice"), "{error}");
++}
++
++#[test]
++fn raw_subcodec_regions_do_not_count_against_what_regions_may_paint() {
++    // A raw region carries its pixels: three of them over the destination, after two RLEX regions
++    // that paint it twice, are taken.
++    let raw: Vec<u8> = [0x01, 0x02, 0x03].repeat(4 * 4);
++    let fill = rlex_fill(0, 0, 4, 4, [0x10, 0x20, 0x30]);
++    let raw_region = subcodec_region(0, 0, 4, 4, 0x00, &raw);
++    let stream = subcodec_stream(&[fill.clone(), fill, raw_region.clone(), raw_region.clone(), raw_region]);
++
++    let pixels = ClearCodecDecoder::new().decode(&stream, 4, 4).unwrap();
++
++    assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0x01, 0x02, 0x03, 0xFF]));
++}

@@ -29,6 +29,7 @@
     "!dist/**/*.map",
     "vendor",
     "remote",
+    "npm-shrinkwrap.json",
     "LICENSE",
     "CHANGELOG.md",
     "TROUBLESHOOTING.md",
@@ -53,8 +54,8 @@
     "qa:baseline": "node scripts/qa/baseline.mjs"
   },
   "dependencies": {
-    "semver": "^7.8.5",
-    "ws": "^8.21.1"
+    "semver": "7.8.5",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@angular/core": "15.2.10",

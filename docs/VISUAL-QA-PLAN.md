@@ -581,7 +581,7 @@ Update it after each completed phase.
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
 | 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
-| 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
+| 2b. Fedora KDE Plasma / KRDP | Complete | `b677ce2` + `289fa55` + `a04bd40` | Three native-client dashboard lifecycles pass with verified private encoder/KRDP fixes, FreeRDP 3.32.1 and fixed 800×600 monitor. Stock encoder is unqualified; live remote resize is unsupported. |
 | 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
 | 4. AI Visual Intelligence | Complete | `c9b87f9` | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
 | 5. Full Automation | Complete | `8dabba3` through `789e37d` | Timer-driven real RDP/mutation/AI campaign, recurring native checks across restart, automatic failure investigation, GitHub-triggered private checks and three hosted native jobs demonstrated. Known Windows guest failure remains visible. |
@@ -960,13 +960,13 @@ The document must serve as a durable handoff between independent Codex sessions.
 ### Planned third Linux stack — Fedora KDE Plasma / KRDP
 
 Requested 2026-10-11 as the third **desktop/RDP stack**, alongside GNOME/GRD and Xfce/xrdp. This is a separate
-Fedora KDE guest, not the Fedora GNOME 50 guest with a different label. Status: **Pending; not executed or qualified**.
+Fedora KDE guest, not the Fedora GNOME 50 guest with a different label. Status: **Complete for the private encoder fix / fixed-monitor profile**. Stock encoding and live remote resize remain unqualified; see the execution handoffs below.
 
 | Stack | Environments | Native Tabby clients |
 |---|---|---|
 | GNOME / GNOME Remote Desktop | Ubuntu 24.04 (GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48) | macOS, Windows, Linux |
 | Xfce / Xorg / xrdp | Rocky Linux 9 | macOS, Windows, Linux |
-| KDE Plasma / Wayland / KRDP | Separate Fedora KDE Plasma guest | macOS, Windows, Linux; planned |
+| KDE Plasma / Wayland / KRDP | Separate Fedora KDE Plasma guest | macOS, Windows, Linux; qualified with private encoder fix and fixed monitor |
 
 Before execution, pin and record Fedora, Plasma, KWin, KRDP, PipeWire and encoder versions; provision a dedicated
 session with documented start/restart, login, credential storage and certificate lifecycle. Verify the installed
@@ -980,7 +980,7 @@ resize with temporal evidence, reconnect and cleanup, with verified guest identi
 raw and visible frames, guest evidence where available, reports and traces. Measure the codec's rendering stability
 before selecting comparison tolerances; do not copy the current non-H.264 baselines or relax them to admit KRDP.
 Report unsupported operations and infrastructure failures explicitly. This planned coverage does not resolve the
-other thread's H.264 resize failure. No KDE VM or passing KRDP cell is claimed by this plan entry.
+other thread's H.264 resize failure. The initial Phase 2b handoff records the stock encoder failures; the later color-correction handoff records passing patched-encoder cells and their limits.
 
 ### Phase 3 — completed 2026-10-11
 
@@ -1265,7 +1265,7 @@ Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI
 - The private Windows RDP guest's activation watermark remains a known environmental failure. Do not update a
   baseline or mask it to make health appear green; arrange legitimate guest activation separately. AI crop sensitivity
   remains limited, confidence is uncalibrated, and AI findings do not block deterministic acceptance.
-- Phase **2b KDE/KRDP remains pending**. H.264, broader RDP scenarios and x86_64 **RDP** coverage remain unqualified;
+- At the Phase 5 handoff, **2b KDE/KRDP remained pending**; see its later execution handoff. H.264, broader RDP scenarios and x86_64 **RDP** coverage remain unqualified;
   hosted x64 native smoke does not close those gaps. Direct paid API transport remains contract-tested only.
 - Source/history/retention use the existing private checkout and `.qa` store. Back up that ignored evidence privately;
   the LaunchAgent does not deploy new commits or provision VMs. Before editing or updating this checkout, pause
@@ -1273,6 +1273,299 @@ Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI
 - Phase 5 implementation is committed through **`789e37d`** on `feat/visual-qa-platform-matrix`; hosted workflow
   integration was pushed for actual execution. No merge/release, new self-hosted runner, or other thread's VM change.
   Stop here; future environment qualification is separate work.
+
+### Phase 2b — initial KDE/KRDP execution handoff (2026-10-11; blocked at that point)
+
+**Delivered:** three experimental Fedora KDE cells (21 matrix cells total), actual Plasma/Wayland and dependency
+identity checks, explicit H.264 frame/counter evidence, failure pixel probes, an isolated Fedora KDE provisioner,
+and operator instructions in [visual-qa.md](visual-qa.md#fedora-44--kde-plasma--krdp-private-encoder-fix).
+Production RDP/decoder code and existing baselines are unchanged. No KDE PNG baseline was accepted.
+
+**Isolated infrastructure:** guest on the isolated QA hypervisor `tabby-visual-qa-fedora44-kde`, ARM64, 4 GB RAM, two vCPUs, 20 GB disk;
+Fedora Cloud 44-1.7 image verified against its vendor checksum. This is a fresh separate disk, not a clone of the
+other thread's running desktop. The other thread’s work was untouched. Dedicated SDDM Wayland autologin and software
+rendering use virtio video; the VM console and KRDP are loopback-only. SELinux remains enforcing. The QA account,
+SSH access, password, wallet and certificate are isolated. Private local targets supply all three clients; no OpenAI
+login material was read, copied, committed or sent to this VM or GitHub.
+
+**Observed versions:** Fedora 44; Plasma/KWin/KRDP/KPipeWire 6.7.5; PipeWire 1.6.9; FFmpeg-free 8.1.3;
+OpenH264 2.6.0; experimental pinned FreeRDP/WinPR 3.24.2-1.fc44. Initial Fedora updates' 3.32.1 failed authentication
+with both Tabby and a standard FreeRDP control; the older base packages restored the supported certificate-bound
+TLS login. This isolates a compatibility issue but does not prove its root cause. The pin is limited to this guest.
+KWallet stores only the disposable QA login, with an empty unlock password for unattended use and restrictive file
+permissions; it is not encrypted at rest. No SAM file remains. Provisioning explicitly requires one-time console
+wallet setup and a separate bounded stdin credential write; it does not claim an unattended ready-to-test install.
+
+**Actual execution:** native macOS, Windows and Linux ARM64 Tabby 1.0.236 / Electron 43.7.0 each authenticated,
+negotiated the H.264 graphics pipeline and decoded the 800×600 fixture. All three failed the unchanged initial
+color oracle. Direct diagnostics are retained in `.qa/kde-{macos,windows,linux}-final/`, including raw/visible PNGs,
+client/guest identity, decoder counters, reports and traces. The macOS run decoded 11 frames, Windows 10, Linux 11;
+no decoder error was reported. Guest-console pixels independently matched the fixture's intended RGB values.
+
+| Marker | Guest console / intended RGB | macOS decoded RGB | Windows / Linux decoded RGB |
+|---|---|---|---|
+| Top left | 220,40,60 | 236,59,59 | 209,49,67 |
+| Top right | 30,200,80 | 17,176,78 | 39,189,84 |
+| Bottom left | 40,80,220 | 34,84,225 | 49,85,206 |
+| Bottom right | 240,200,40 | 245,194,33 | 223,187,48 |
+
+Earlier zero-frame runs were traced to the VM's physical virtual output sleeping: its console displayed “Display
+output is not active.” Waking it and masking this disposable user's PowerDevil restored frames. Autologin, KRDP
+startup, masked PowerDevil, Wayland, 800×600 and scale 1 were verified after reboot. Normal failed-run cleanup
+removed fixture directories. Two exploratory runs overlapped while this issue was diagnosed; those runs are not
+acceptance evidence. The three final diagnostic runs above were serial.
+
+**Acceptance still outstanding:** color fidelity and codec stability, all input/tab-return/resize/reconnect
+checkpoints, reviewed baselines and three passing dashboard workflows. Failure stops at the first color oracle;
+subsequent checkpoints have not passed and are not silently skipped. KRDP 6.7.5 monitor streaming has no identified
+DisplayControl implementation in its release source, so live remote-resolution support also needs an explicit
+capability decision backed by execution. Do not relabel client-side fitting as remote resizing. Do not increase
+pixel tolerances or capture distorted baselines to obtain green results. The other thread's H.264 resize issue is
+not resolved by this work.
+
+**Validation:** TypeScript production/test typechecks, all 28 QA service/automation tests, all three visual identity
+tests, shell syntax and whitespace checks pass. The final provisioner and its credential mode are validated against
+only the owned guest. Clean-commit dashboard failure receipts and final service state are recorded below after execution.
+
+**Next investigation:** compare guest capture → KRDP/KPipeWire encoding color metadata → the existing WebCodecs
+configuration/readback on each OS. The vendored decoder explicitly configures BT.709/full-range; that is a lead,
+not an established cause. Coordinate any production H.264 change with the other thread. Keep the three cells visibly
+failing until corrected, then measure repeatability and qualify the full lifecycle. Existing GNOME/Xfce and settings
+baselines remain usable; the automation matrix now includes these experimental failures.
+
+#### Phase 2b clean-commit dashboard receipts
+
+All runs below used clean commit **`3e8e040`**, actual native ARM64 clients and the unchanged production plugin.
+The three KDE workflows verified **Failed**, the specific color assertion, visible evidence, the HTML report and
+locally hosted trace viewer, plus mobile layout. These are failure-demonstration receipts, not passing acceptance.
+The regular passing-workflow helper remains unchanged. Automatic local investigations completed for all three;
+AI findings remain advisory and did not alter any result.
+
+| Cell | Run ID | Result |
+|---|---|---|
+| macOS → KDE/KRDP | `2026-10-11T15-22-39.295Z-5b9ba815` | Failed: initial decoded fixture colors |
+| Windows → KDE/KRDP | `2026-10-11T15-24-05.660Z-95876b2c` | Failed: initial decoded fixture colors |
+| Linux → KDE/KRDP | `2026-10-11T15-24-40.783Z-43d02e43` | Failed: initial decoded fixture colors |
+| macOS → Ubuntu 24.04 / GNOME 46 regression check | `2026-10-11T15-25-37.440Z-3db960ba` | Passed: complete existing lifecycle and browser/report/trace workflow |
+
+Reboot and the final provisioner/credential mode were validated on the owned KDE guest. Failed test fixtures were
+removed; KRDP remains active, PowerDevil masked, and no diagnostic SAM file remains. Existing native clients and
+SSH tunnels remain available for scheduled QA. The local QA service was restarted with the 21-cell catalog; scheduling
+was paused during edits and restored after the final handoff commit. The new KDE cells remain explicitly experimental
+and failing in the matrix. No production decoder changes, baseline changes, new hosted workflow or OpenAI credential
+exports were made. The credential scan covered 334 tracked/unignored files and 272 KDE artifact/archive entries,
+with zero actual QA password/private-key matches; the OpenAI auth store was not read.
+
+### Phase 2b — color correction and fixed-monitor qualification (complete, 2026-10-11)
+
+**Root cause established by captured pixels and source:** the stock OpenH264 path in KPipeWire 6.7.5 builds its
+conversion filter in the constructor, while KRDP's full-range preference arrives later in `setupEncoder`. RGB is
+therefore converted using default limited-range BT.601, and the encoder supplies no VUI color description. Captured
+primary-color YUV values were red `(81,90,240)`, green `(145,54,34)`, blue `(41,240,110)`, matching that conversion.
+Replaying the same captured stream reproduced the previous Windows/Linux colors through Chromium software decoding
+and macOS colors through hardware decoding. The first suspected client-range override was not sufficient evidence of
+a decoder bug: hardware output can legitimately use a different range than the encoded stream. No production Tabby,
+IronRDP, vendored decoder or protocol code was changed.
+
+Relevant primary sources: [KPipeWire 6.7.5 encoder](https://invent.kde.org/plasma/kpipewire/-/blob/v6.7.5/src/libopenh264encoder.cpp),
+[encoder setup order](https://invent.kde.org/plasma/kpipewire/-/blob/v6.7.5/src/pipewireproduce.cpp),
+[RDP color conversion](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/954d7546-6873-4466-95c8-20a7569c43e5),
+and [FFmpeg's OpenH264 metadata mapping](https://github.com/FFmpeg/FFmpeg/blob/n8.0/libavcodec/libopenh264enc.c).
+The upstream KDE issue reference is [526795](https://bugs.kde.org/show_bug.cgi?id=526795); its page was unavailable to
+the browser, so the diagnosis above relies on captured output and inspected release source, not that issue's status.
+
+**Explicit scope decision:** qualify Fedora KDE with a private encoder correction and fixed monitor. Stock Fedora's
+encoder remains a known failing variant; its historical Failed runs remain intact. `testbed/linux/kde-encoder.sh`
+is an opt-in, pinned-source build; `kpipewire-krdp-color.patch` delays filter construction until after the range is
+set, converts RGB directly with full-range BT.709, and signals matching matrix/range/primaries plus sRGB transfer.
+Upstream's limited-range branch is retained. No system library is replaced: only the owned KRDP user service loads
+the private libraries. Removing its `encoder.conf` and restarting restores the distribution's behavior.
+
+The installer was actually built and executed in the dedicated guest on the isolated QA hypervisor, using upstream commit
+`6318082fe449b50e701abc4d91308c2371cf8741` and patch SHA-256
+`ee1843bac11da65127721077c902d6b8eec24a3e09f620523dc143483ed7fa14`.
+Build-dependency installation updated supporting guest packages; this is not an unchanged-stock-image claim.
+The service's loaded library path and SHA-256 must match the manifest on every test. Missing, stale or changed
+source/patch/library identity fails preparation. Baseline keys include the patch digest, and the catalog names the
+QA encoder fix. No test passwords, keys or OpenAI auth are part of the build, manifest or commit.
+
+**Wire/pixel validation:** a fresh capture from the patched guest reports H.264/YUV420, `color_range=pc`, BT.709
+matrix/primaries and `color_transfer=iec61966-2-1`. The actual decoded macOS marker colors are `(220,41,59)`,
+`(29,200,79)`, `(38,80,219)`, `(240,200,38)` and `(29,100,200)`: maximum channel error two, within the unchanged eight-level
+oracle. Old/new encoded stream captures and replay diagnostics are retained privately in `.qa/kde-*-capture*`,
+`.qa/kde-replay-*` and `.qa/kde-*-captured.h264`. Temporary capture hooks were removed from the tracked test.
+
+**Remote-size limitation measured:** the live-resize diagnostic `.qa/kde-fixed-encoder/` preserved all twelve
+samples while the pane changed to 900×650; the actual guest and decoded frame stayed 800×600. The client eventually
+stretched that frame in live mode. This is not qualified remote resizing. The KDE profile now explicitly uses the
+existing fixed-resolution/fit setting. Its independent guest state remains 800×600, while the displayed canvas
+settles to 867×650 inside a 900×650 pane, preserving aspect ratio. Every filmstrip sample retains raw/visible images,
+geometry, colors and timing; the final four samples must be valid with no later invalid sample after settling.
+The step and metadata call this **client fitting**, and explicitly report live remote resize unsupported.
+
+**Baseline review:** the first candidate macOS screenshot contained the temporary desktop-name overlay. It was
+rejected on visual inspection. Checkpoints now wait for the overlay's actual opacity to reach zero naturally; no
+CSS hiding, expanded tolerance or retry-to-green was introduced. Four new images per native client are keyed by
+the encoder patch. Baseline generation remains explicit/local. Initial rendering, mouse/keyboard input, tab return,
+client fit, reconnect and fixture cleanup execute through the existing real RDP lifecycle. Final clean-commit
+receipts and repeatability results follow after execution.
+
+**Validation so far:** production/test typechecks, 28 QA service tests, 582 unit tests (three existing skips), shell
+syntax and whitespace checks pass. No new dependency was added to Tabby. Earlier stock failure evidence and current
+known Windows activation/AI-sensitivity limitations remain unchanged.
+
+#### Final Phase 2b acceptance and handoff
+
+Implementation **`b677ce2`**, with test-only correction **`289fa55`**, has four reviewed H.264 baselines per client
+(twelve total). All three native ARM64 clients completed the browser workflow on clean **`289fa55`**: sign in → run →
+Passed → loaded screenshot → HTML report → local trace viewer, with desktop/mobile evidence, no horizontal overflow
+and no browser errors. Baseline updates were disabled and test retries remained zero.
+
+| Native client / target | Run ID | Lifecycle duration | Outcome |
+|---|---|---|---|
+| macOS → patched KDE | `2026-10-11T16-07-00.901Z-4eb6ef44` | 28.8 s | Passed, seven checkpoints |
+| Windows → patched KDE | `2026-10-11T16-04-44.557Z-d9d7f05a` | 30.7 s | Passed, seven checkpoints |
+| Linux → patched KDE | `2026-10-11T16-05-49.540Z-92220bc1` | 29.1 s | Passed, seven checkpoints |
+| macOS → Ubuntu 24.04 / GNOME 46 regression control | `2026-10-11T16-08-01.520Z-c9990f6e` | See retained run | Passed, existing full lifecycle |
+
+macOS additionally passed clean **`b677ce2`** in `2026-10-11T16-03-08.388Z-c64db93f`. That commit and `289fa55` have
+identical production/plugin/visual-test bytes; the latter replaces the catalog test's dummy password `private` with
+a distinctive sentinel, because the new legitimate description “private encoder fix” triggered its substring check.
+The final 28 QA tests pass; no credential was leaked by that false positive. Full unit validation is **582 passed,
+three pre-existing skips, zero failures**; production/test typechecks, shell syntax and whitespace checks also pass.
+
+Each clean KDE run verified seven real checkpoints and four existing reviewed snapshots. The maximum channel error
+in the reviewed initial marker samples is **2 on macOS, 1 on Windows, 1 on Linux**, without relaxing the original RGB
+oracle. The client-fit filmstrip's final four samples pass on each OS; first valid observations were approximately
+**542 ms / 176 ms / 552 ms**, respectively, including sampling/transport overhead. These are observed test timings,
+not a performance guarantee. Repeatability covers the explicit baseline runs, subsequent comparisons and the second
+macOS comparison; it does not establish all encoders, resolutions, architectures or long-duration behavior.
+
+The guest was rebooted after installation. Autologin, scale 1, 800×600, masked PowerDevil, KRDP startup and the mapped
+private library persisted. All accepted runs loaded SHA-256
+`db0bdcef0538fb5620c74a379e31c0750d2721b9fc36d2bfa944152f702dfb7e` for `libKPipeWireRecord.so.6.7.5`.
+Fixture cleanup left no owned `/tmp/tabby-visual-qa-*` directories; KRDP remains active and listens only on guest
+loopback. The other thread's VM/work and production decoder were not modified.
+
+Credential scanning covered **348 tracked/unignored files** and **6,543 artifact/archive entries** across 28 retained
+KDE diagnostic/run directories, including the real QA passwords, private-key markers and dashboard token where
+applicable: **zero matches**. The OpenAI authentication store was never read or copied. Runtime streams, profiles,
+private targets and build outputs stay ignored/local; the public commit contains only source, documentation and
+reviewed fixture PNGs. No upstream issue/PR was sent, merge/release performed or new hosted workflow installed.
+
+**Current qualification:** complete for the explicitly named private OpenH264 encoder fix and fixed-monitor profile.
+**Still excluded:** unpatched Fedora/KPipeWire OpenH264, current FreeRDP 3.32.1 interoperability, live remote monitor
+resize, the other thread's H.264 resize issue, other encoders, x86_64 RDP and broader scenarios previously deferred.
+Use the documented rollback to reproduce stock behavior; never imply these patched passes certify the stock package.
+The local service uses the updated catalog. Scheduling is restored after this documentation commit; authenticated
+manual runs and existing native clients/tunnels remain available. Source changes are committed; ignored evidence
+still needs a private backup. Stop here.
+
+### Phase 2b follow-up — current FreeRDP compatibility (2026-10-11)
+
+**Scope:** replace the temporary 3.24.2 dependency pin in the isolated KDE profile with FreeRDP 3.32.1.
+The other thread's work, production Tabby/IronRDP and live remote resize remain outside this follow-up.
+Automation is paused while the owned guest is changed and qualified. No OpenAI authentication store is read or copied.
+
+The matching [upstream negotiation report](https://bugs.kde.org/show_bug.cgi?id=526514) identifies extended NLA
+remaining advertised even when NLA is disabled. Our release-source correction adds the explicit matching setting
+in KRDP 6.7.5, retaining its existing TLS and wallet-authentication path. `kde-freerdp.sh` builds the reviewed library
+at `270dcf01851229134f74fa7d90ac338ec788ec67`; patch SHA-256 is
+`b2ea12530a46d2553ff9c2646abbaf4b0e67a585e978e88ca4c0567e9d8071e0`. The initial installer exposed a library-output
+path assumption (`build/src` versus actual `build/bin`); corrected and rerun successfully. Its repeat execution
+verified the exact existing source patch. Build dependencies updated supporting packages; the guest was rebooted.
+The original FreeRDP RPMs are retained for rollback. See the operational guide for install/rollback details.
+
+Tests now require the installed and mapped FreeRDP version, mapped private KRDP/encoder paths and source/patch/binary
+receipts. Missing or mismatched receipts fail before framebuffer qualification. The existing 12 reviewed PNG bytes
+are preserved under names including FreeRDP 3.32.1 and the compatibility patch digest; no new pixels are accepted.
+
+**Initial validation passed:** actual macOS (`2026-10-11T16-30-30.062Z-69f9112c`, 28.1 s), Windows
+(`2026-10-11T16-31-37.306Z-d2ea0069`, 30.8 s) and Linux (`2026-10-11T16-32-20.157Z-87c0bc21`) dashboard
+lifecycles. These development receipts correctly record a dirty checkout based on `6fe5e0a`; clean-commit receipts
+follow after the implementation commit. Each compared all four unchanged reviewed snapshots, completed seven
+checkpoints and opened the HTML report/local trace viewer. The initial macOS desktop image was also inspected:
+normal Plasma desktop, no crash dialog. No stock-3.32.1 reproduction or password-bypass experiment was needed.
+
+Production and test typechecks, shell syntax, whitespace, **582 unit tests (three existing skips)** and **28 QA tests**
+pass. Identity controls reject missing/stale mapped FreeRDP and missing/wrong private KRDP receipts. The final installer
+was rerun successfully after making library replacement atomic, preserving any existing process mapping until restart.
+The accepted private KRDP binary digest is `c67fb380e1994697388a1af097ce3f0f2f6c2548132a98f6b00ca87ee3e4e016`;
+the encoder digest remains `db0bdcef0538fb5620c74a379e31c0750d2721b9fc36d2bfa944152f702dfb7e`.
+
+This supersedes the earlier FreeRDP 3.32.1 exclusion **only for the explicitly patched profile**. Stock KRDP/encoder,
+live remote resize, other encoders, x86_64 RDP and broader scenarios remain unqualified. No upstream publication or
+production release is part of this work. The runtime evidence still requires private backup.
+
+#### Clean FreeRDP follow-up acceptance and handoff
+
+All three browser workflows passed on clean **`a04bd40`**, with baseline updates disabled:
+
+| Native client / target | Run ID | Duration | Result |
+|---|---|---|---|
+| macos → patched KDE | `2026-10-11T16-34-04.252Z-11507167` | 28.3 s | Passed, seven checkpoints |
+| windows → patched KDE | `2026-10-11T16-34-51.505Z-dca05bd1` | 30.5 s | Passed, seven checkpoints |
+| linux → patched KDE | `2026-10-11T16-35-27.464Z-fe855c6e` | 29.1 s | Passed, seven checkpoints |
+
+Each opened the screenshot evidence, HTML report and self-hosted trace viewer, with no browser errors or mobile
+horizontal overflow. The original 12 baseline images are exact 100% Git renames: unchanged expected pixels.
+The three client identities remain ARM64 Tabby 1.0.236 / Electron 43.7.0, with matching production plugin bytes.
+Repeated runs verified the same private library digests and actual mapped FreeRDP 3.32.1. Windows/Linux initial
+desktop screenshots were inspected as well: normal Plasma, no crash dialog. Fixture cleanup removed all owned
+temporary directories. The guest service is active and binds only 127.0.0.1:3389; SELinux remains enforcing.
+
+The final scan found **zero credential matches** in 350 tracked/unignored files and **9,375
+artifact/archive entries across 34 KDE runs/diagnostic directories**, including actual disposable QA secrets,
+private-key markers and dashboard-token checks for artifacts. The OpenAI authentication store was never read.
+Private build logs, receipts, profiles, passwords and source/build outputs remain ignored/local. No new hosted
+workflow, upstream message, PR, push or release was performed. Other-thread VMs/code were untouched.
+
+**Complete for this scoped follow-up.** The implementation and this handoff are committed. Scheduling is restored
+after the documentation commit, and native clients/tunnels remain available. Remaining gaps are the stock encoder
+and stock KRDP/current-FreeRDP combination, live remote monitor resize, other encoders/architectures and broader
+scenarios; this work does not qualify them. Keep the local evidence backed up privately. Stop here.
+
+### Release-branch integration — 2026-10-11
+
+The user authorized sanitization, publication and merge into `release/0.5.4-rc.1`. The release branch had advanced
+26 commits beyond the QA branch's common ancestor. Integration retains the release branch's production code,
+IronRDP/vendor artifacts, runtime shrinkwrap, CI secret scoping and testbed credential/media protections.
+Five testbed conflicts were resolved without reverting those protections:
+
+- Every libvirt distro now requires explicitly reviewed local media and its SHA-256 (`TEST_IMAGE` /
+  `TEST_IMAGE_SHA256`), retaining the Ubuntu variable aliases. There is no automatic latest-image download.
+- xrdp accepts private-file/stdin input and crosses sudo using stdin, never password arguments.
+- Ubuntu retains hash-pinned, binary-only WinRM dependencies. Other Linux desktop profiles do not install an
+  Ubuntu-specific Python wheel lock; Windows checks continue through the Ubuntu gateway.
+- Windows setup retains the release branch's UTF-8 password-file handling and conflicting-input rejection.
+- Documentation describes the final provisioning contract. Local regression controls exercise all five image
+  profiles and each xrdp password source without creating a VM or invoking real privilege escalation.
+
+The outgoing QA history scan examined 269 blobs/commits, plus all final tracked files, for actual private QA
+credentials, private-key material and common provider-token formats: no findings. No OpenAI auth store was read.
+Private `.qa` configurations, raw evidence, login material and build outputs remain excluded. Hosted native jobs
+use no OpenAI/private-RDP credentials and upload only their own temporary public GUI evidence.
+
+Validation: dependency installation and production/test typechecks passed; 28 QA tests and six Python testbed tests
+passed. The first full-unit attempts used stale pre-merge compiled plugin files; their failures are not acceptance.
+The plugin was rebuilt before rerunning under CI's Node 22. Native Windows/Linux client bundles were refreshed from
+the merged build and their dedicated renderers reloaded. Final unit, live dashboard and GitHub receipts follow
+before merge completion. Existing server VMs and the other thread's environment were not reprovisioned.
+
+
+**Local integration acceptance:** 598 unit tests passed with three existing skips under Node 22.23.3, plus 28 QA tests,
+six Python testbed tests, build/typechecks and package-content checks. Clean native KDE browser workflows passed
+on the local integration commit `8ee76ba`: Windows `2026-10-11T19-59-47.006Z-0543e133`, Linux
+`2026-10-11T20-00-23.022Z-848ec658`, macOS `2026-10-11T20-00-56.820Z-15832fe4`. The package includes no QA/private
+runtime artifacts. No new screenshot pixels were accepted.
+
+The first push was rejected by the repository privacy hook before publication. Internal machine labels in new notes
+were replaced with generic descriptions. Eight inherited patch author headers now use the maintainer's public noreply
+address; patch bodies and vendor binaries are byte-for-byte unchanged, with only their source-manifest digests updated.
+Two test fixtures also use a generic fork name. The unpublished KDE/integration commits are consolidated for publication
+onto the already-public QA and release parents, preserving the original commits only in a local private backup ref.
+Historical receipt hashes above identify those retained local test snapshots, not promised public GitHub commits.
+No forced push or rewriting of previously published history is needed. Final hosted checks/merge receipts follow.
 
 ## 17. Execution Instructions for Codex / Astra High
 

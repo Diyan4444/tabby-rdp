@@ -18,6 +18,13 @@ if [ -z "$TEST_USER" ] || ! id "$TEST_USER" >/dev/null 2>&1; then
     exit 2
 fi
 . /etc/os-release
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reviewed WinRM wheel lock is for Ubuntu 24.04's Python 3.12 only.
+# Other distro profiles are Linux desktop targets; use the Ubuntu SSH gateway for Windows checks.
+if [ "${ID:-}:${VERSION_ID:-}" = ubuntu:24.04 ]; then
+    [ -f "$HERE/winrm-requirements.txt" ] || { echo 'copy winrm-requirements.txt next to provision.sh' >&2; exit 2; }
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=l
 case "${ID:-}:${VERSION_ID:-}" in
@@ -38,9 +45,12 @@ case "${ID:-}:${VERSION_ID:-}" in
     *) echo "Unsupported testbed: ${PRETTY_NAME:-unknown}" >&2; exit 2 ;;
 esac
 # pywinrm lets this host run the Windows suite's checks inside a Windows test machine. Ubuntu's python3-winrm can't
-# sign in with NTLM (it needs MD4, which OpenSSL 3 turns off); the current one from PyPI can.
-python3 -m venv /opt/tabby-rdp-test/winrm
-/opt/tabby-rdp-test/winrm/bin/pip install --quiet --disable-pip-version-check pywinrm
+# sign in with NTLM (it needs MD4, which OpenSSL 3 turns off); this reviewed PyPI version can.
+if [ "$ID:$VERSION_ID" = ubuntu:24.04 ]; then
+    python3 -m venv /opt/tabby-rdp-test/winrm
+    /opt/tabby-rdp-test/winrm/bin/pip --isolated install --quiet --disable-pip-version-check \
+        --require-hashes --only-binary=:all: --force-reinstall -r "$HERE/winrm-requirements.txt"
+fi
 
 # No graphical login screen needed: the plugin starts its own headless GNOME Shell per user.
 systemctl set-default multi-user.target

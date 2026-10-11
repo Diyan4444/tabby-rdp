@@ -58,7 +58,12 @@ Each suite prints `HOST` from the plugin's shared compatibility snapshot: host n
 versions, xterm dependency declared by the host, and observed capabilities. Unknown or unobserved values are `null`.
 `--expect-xterm` fails on a different or missing declaration. A version number alone does not establish xterm 6
 coverage: a tagged release can precede the xterm upgrade. Run both the shipping release and a build containing the
-upgrade. The suites accept host-provided modal drag regions and the plugin's fallback on older hosts.
+upgrade. Native dialog dragging is delegated to Tabby: the fix shipped in 1.0.238, and the plugin no longer adds
+fallback strips to host dialogs. The suites require a hit-testable native strip on hosts identifying as Tabby
+1.0.238 or later. Older or unrecognized hosts may omit it; controls must remain usable, and any native strip they
+do provide is hit-tested. Every host must have zero plugin-injected native-modal strips. The minimum supported
+Tabby remains 1.0.236; its dialogs may prevent moving the window until closed. The plugin's custom overlays retain
+their own drag strips because Tabby's `.modal` styling does not cover them.
 
 `smoke-host` exercises both terminal frontend choices (`xterm` and `xterm-webgl`), actual local PTY input,
 Alt+arrow word-jump sequences, output through session middleware, resize, font changes, scroll position, background
@@ -68,7 +73,7 @@ modal stays open and the stored profile stays unchanged, then correct the fields
 Blank type/group defaults are also checked through the host's real ConfigProxy cleanup, including explicit port 3390
 and group defaults inheriting port 3390. An unrelated gateway edit preserves both the effective port and whether it
 follows later global-default changes. These checks need no remote connection.
-It also checks the compatibility snapshot against the real terminal inputs and modal behavior.
+It also checks the compatibility snapshot against the real terminal inputs, and modal dragging directly in the DOM.
 Gateway-account checks use dummy credentials without a remote connection: real group-default resolution in the
 inventory and removal confirmation, then separate gateway prompts after removal, including cancellation.
 `smoke-rdp` covers a real decoded RDP frame, repeated console/RDP switching, keyboard focus and covered-console
