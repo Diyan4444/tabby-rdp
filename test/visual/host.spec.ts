@@ -20,11 +20,13 @@ test('Remote Desktop settings in real Tabby', async ({}, info) => {
         const cdp = await context.newCDPSession(page)
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false })
         await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
-        await page.evaluate(() => (window as any).__remoteDesktop.help.open('settings'))
+        // Open the ordinary settings page. Help-topic navigation schedules smooth scrolling.
+        await page.evaluate(() => (window as any).__remoteDesktop.help.openSettings('remote-desktop'))
         const settings = page.locator('.trd-settings')
         await expect(settings).toBeVisible()
         await settings.locator('[data-tab=settings]').click()
         await expect(settings.locator('[data-setting=resize]')).toBeVisible()
+        await expect(settings.locator('h3')).toBeInViewport({ ratio: 1 })
         await page.evaluate(() => document.fonts.ready)
         // Baselines are specific to OS/architecture and the actual host runtime; never cross-compare hosts.
         const key = `${process.platform}-${process.arch}-tabby-${host.version}-electron-${host.electron}`.replace(/[^a-zA-Z0-9.-]/g, '_')

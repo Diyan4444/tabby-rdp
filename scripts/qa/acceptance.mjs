@@ -20,7 +20,9 @@ try {
     await page.getByRole('button', { name: 'Run visual test', exact: true }).click()
     const run = await (await creation).json()
     await expect(page.locator('#detail')).toHaveAttribute('data-run-id', run.id)
-    await expect(page.locator('#detail h2')).toHaveText('Passed', { timeout: 180_000 })
+    // Stop promptly on a terminal failure rather than waiting for a failure to turn into a pass.
+    await expect(page.locator('#detail h2')).not.toHaveText('Running', { timeout: 180_000 })
+    await expect(page.locator('#detail h2')).toHaveText('Passed')
     await expect(page.locator('#detail img').first()).toBeVisible()
     expect(await page.locator('#detail img').first().evaluate(img => img.naturalWidth)).toBeGreaterThan(0)
     await page.screenshot({ path: path.join(data, 'dashboard-acceptance.png'), fullPage: true })
