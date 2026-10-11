@@ -74,7 +74,10 @@ await suite('smoke-host', async t => {
         const small = await ev<{ cols: number, rows: number }>('return H.smokeSize()')
         await ev('H.smokeResize(760, 450)')
         check(`${frontend}: resize fits a larger pane`, !!await waitFor(`const s = H.smokeSize(); return s.cols > ${small.cols} && s.rows > ${small.rows}`, 5), small)
-        await ev(`H.local.session.emitOutput(Buffer.from(Array.from({ length: 80 }, (_, i) => 'SMOKE_SCROLL_' + i + '\\r\\n').join('')))`)
+        const scrollCommand = t.platform === 'win32'
+            ? 'for /l %i in (0,1,79) do @echo SMOKE_SCROLL_%i\r'
+            : 'for i in {0..79}; do echo SMOKE_SCROLL_$i; done\r'
+        await ev(`H.local.sendInput(${JSON.stringify(scrollCommand)})`)
         check(`${frontend}: output drains through the session middleware`, !!await waitFor('return H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
         await ev('H.local.frontend.scrollToTop()')
         const font = await ev<{ size: number, rows: number }>('return { size: H.local.frontend.xterm.options.fontSize, rows: H.local.frontend.xterm.rows }')

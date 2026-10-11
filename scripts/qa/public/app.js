@@ -238,9 +238,9 @@ function showAutomation(data) {
     const hosted=$('hosted-jobs');hosted.replaceChildren()
     if(data.github?.hosted){hosted.append(node('h3','GitHub-hosted native checks'),node('p',data.github.hosted.coverage,'muted'))
         for(const run of data.github.hosted.runs){hosted.append(link(`Hosted run ${run.id}: ${run.conclusion || run.status} ↗`,run.url));for(const job of run.jobs)hosted.append(node('p',`${job.name}: ${job.conclusion || job.status}`),link('Job log and evidence ↗',job.url))}}
-    const jobs=$('automation-jobs');jobs.replaceChildren()
+    const jobs=$('automation-jobs'), opened=new Set([...jobs.querySelectorAll('details[open]')].map(d=>d.dataset.jobId));jobs.replaceChildren()
     for(const job of [...a.jobs].reverse().slice(0,10)) {
-        const d=node('details');d.append(node('summary',`${job.profile} · ${job.status} · ${job.trigger.kind} · ${new Date(job.startedAt).toLocaleString()}`))
+        const d=node('details');d.dataset.jobId=job.id;d.open=opened.has(job.id);d.append(node('summary',`${job.profile} · ${job.status} · ${job.trigger.kind} · ${new Date(job.startedAt).toLocaleString()}`))
         if(job.reason)d.append(node('p',job.reason,'reason'))
         for(const step of job.steps) {const p=node('p',`${step.test}${step.mutations?' · mutation campaign':''}: ${step.status}${step.aiStatus?' · AI '+step.aiStatus:''}`);if(step.runId){const b=node('button','View run','secondary');b.onclick=()=>{selected=step.runId;lastDetail='';refresh().catch(message)};p.append(document.createTextNode(' '),b)};d.append(p)}
         jobs.append(d)

@@ -230,6 +230,7 @@ async function execute (run) {
         } catch { run.automaticAIStatus = 'infrastructure-failed'; aiActive = null }
         save(run)
         active = null
+        maintenance()
     }
 }
 function stopActive () {
