@@ -233,9 +233,11 @@ const PAGE_HELPERS = (config: TestEnv): string => `(() => {
             for (let i = 0; i < 160; i++) {
                 const accept = [...document.querySelectorAll('ngb-modal-window button')].find(b => /Accept and remember/.test(b.innerText))
                 if (accept) inZone(() => accept.click())
-                const pane = panes().find(t => !before.has(t) && t.sshSession?.open)
+                // Own new tabs before authentication succeeds, so failed connections are cleaned up too.
+                const created = panes().filter(t => !before.has(t))
+                for (const tab of created) if (!this.opened.includes(tab)) this.opened.push(tab)
+                const pane = created.find(t => t.sshSession?.open)
                 if (pane) {
-                    this.opened.push(pane)
                     inZone(() => RD.app.selectTab(this.topOf(pane)))
                     return pane
                 }
