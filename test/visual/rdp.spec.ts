@@ -57,7 +57,9 @@ PYID`)).trim())
             await ev(`const el=H.pane.element.nativeElement; Object.assign(el.style,{flex:'none',minWidth:'0',minHeight:'0',width:'${width}px',height:'${height}px'})`)
         }
         await setSize(800, 600)
-        let desktopId: string | undefined
+        // Persistent native clients remember their last desktop behind an SSH host.
+        // Select the host's own GNOME desktop explicitly after a Windows-via-SSH run.
+        let desktopId = 'own'
         if (kind === 'windows') {
             const host = win.address.replace(/:\d+$/, '')
             const port = Number(/:(\d+)$/.exec(win.address)?.[1] || 3389)
@@ -65,7 +67,7 @@ PYID`)).trim())
             await ev(`H.inZone(() => { H.config.store.remoteDesktop.desktops=[{name:'Windows QA',via:${JSON.stringify(win.host)},host:${JSON.stringify(host)},port:${port},kind:'windows',username:${JSON.stringify(win.account)}}]; H.config.save() })`)
         }
         const connect = async () => {
-            await ev(`await H.inZone(() => RD.desktop.showDesktop(H.pane${desktopId ? ', '+JSON.stringify(desktopId) : ''}))`)
+            await ev(`await H.inZone(() => RD.desktop.showDesktop(H.pane, ${JSON.stringify(desktopId)}))`)
             if (kind === 'windows') {
                 await t.waitFor('return RD.desktop.isConnected(H.pane) || !!H.overlay(H.pane)?.querySelector(".trd-signin form")', 30)
                 // Credentials use raw CDP, never Playwright arguments; initial sign-in precedes tracing.
