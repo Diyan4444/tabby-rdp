@@ -31,6 +31,11 @@ test(hostedSmoke ? 'Native Tabby settings smoke (no baseline qualification)' : '
         await expect(settings.locator('[data-setting=resize]')).toBeVisible()
         await expect(settings.locator('h3')).toBeInViewport({ ratio: 1 })
         await page.evaluate(() => document.fonts.ready)
+        // Persistent clients retain settings scroll after other tests use the page.
+        // Establish the top-of-page precondition without changing styles or the reviewed baseline.
+        const content = page.locator('settings-tab .tab-content')
+        await content.evaluate(el => el.scrollTo({ top: 0, left: 0, behavior: 'instant' }))
+        await expect.poll(() => content.evaluate(el => el.scrollTop)).toBe(0)
         // Baselines are specific to OS/architecture and the actual host runtime; never cross-compare hosts.
         const key = `${client.platform}-${client.arch}-tabby-${host.version}-electron-${host.electron}`.replace(/[^a-zA-Z0-9.-]/g, '_')
         const name = `${key}/settings-viewport.png`
