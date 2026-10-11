@@ -42,11 +42,11 @@ jobs:
         run: node scripts/qa/install-host.mjs
       - name: Linux display dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb openbox libgtk-3-0 libnss3 libasound2t64 libgbm1
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox libgtk-3-0 libnss3 libasound2t64 libgbm1 libsecret-1-0 dbus-x11
       - name: Linux native smoke
         timeout-minutes: 3
         if: runner.os == 'Linux'
-        run: xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --hidden smoke-host visual-smoke'
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --hidden smoke-host visual-smoke'
       - name: Windows and macOS native smoke
         timeout-minutes: 3
         if: runner.os != 'Linux'

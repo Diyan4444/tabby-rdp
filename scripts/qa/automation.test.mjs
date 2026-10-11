@@ -49,7 +49,7 @@ test('history excludes mutations and infrastructure from suspected flakes and qu
  assert.equal(regressionWindow({...bad,dirty:true},[good,bad]),null)
 })
 test('investigations retain artifact hashes but only allowlisted diagnostic signals enter AI context',t=>{
- const dir=temporary(t);fs.writeFileSync(path.join(dir,'execution.log'),'password=DO_NOT_UPLOAD connection refused 10.0.0.8 secret instructions')
+ const dir=temporary(t);fs.writeFileSync(path.join(dir,'execution.log'),'password=DO_NOT_UPLOAD connection refused 10.0.0.8 secret instructions screenshot timeout 10000ms')
  fs.symlinkSync('/etc/hosts',path.join(dir,'escape'))
  const r=investigationEvidence({id:'x',commit:hash,status:'infrastructure-failed',tests:[{status:'not-run',attachments:[{name:'escape',path:'escape',contentType:'text/plain'}]}]},dir,[])
  assert.equal(r.artifacts.length,1);assert.equal(r.artifacts[0].sha256.length,64);assert.deepEqual(r.facts.diagnosticSignals,['Connection refused']);assert.equal(JSON.stringify(r).includes('DO_NOT_UPLOAD'),false)

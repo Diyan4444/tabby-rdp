@@ -8,7 +8,7 @@ import { regressionWindow } from './history.mjs'
 // Summarize allowlisted diagnostic signals, never upload arbitrary log text, addresses or credentials.
 const signals = {
     'Screenshot comparison mismatch': /toHaveScreenshot|toMatchSnapshot|pixels.*different/i,
-    'Timeout observed': /timed? ?out|TimeoutError|exceeded.{0,30}time limit/i,
+    'Timeout observed': /\btimed out\b|\bTimeoutError\b|exceeded.{0,30}time limit/i,
     'Connection refused': /ECONNREFUSED|connection refused/i,
     'Connection closed': /connection (?:closed|reset)|ECONNRESET/i,
     'Authentication failure': /authentication failed|permission denied/i,

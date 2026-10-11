@@ -207,6 +207,27 @@ if (selected.some(s => s !== 'trd-pty') && !port) {
         process.exit(1)
     }
     launched = true
+    if (selected.includes('visual-smoke') && process.env.TRD_QA_RUN_DIR) {
+        // Preserve startup diagnostics when the host loads but the real plugin cannot initialize.
+        const { chromium } = await import('@playwright/test')
+        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15000 })
+        try {
+            const context = browser.contexts()[0]
+            const page = context.pages().find(p => p.url().includes('index.html'))!
+            const session = await context.newCDPSession(page)
+            const messages: string[] = []
+            session.on('Runtime.consoleAPICalled', event => {
+                if (messages.length < 100 && ['error', 'warning'].includes(event.type)) messages.push(event.args.map((arg: { value?: unknown, description?: string }) => arg.value ?? arg.description ?? '').join(' ').slice(0, 3000))
+            })
+            await session.send('Runtime.enable')
+            try { await page.waitForFunction(() => !!(window as any).__remoteDesktop, { }, { timeout: 30000 }) }
+            catch (error) {
+                fs.writeFileSync(path.join(process.env.TRD_QA_RUN_DIR, 'startup-diagnostics.json'), JSON.stringify({ messages, body: (await page.locator('body').innerText()).slice(0, 20000) }, null, 2))
+                await page.screenshot({ path: path.join(process.env.TRD_QA_RUN_DIR, 'startup.png') })
+                throw error
+            }
+        } finally { await browser.close() }
+    }
     console.log(`Test Tabby: DevTools on ${port}, profile ${sandbox}${flag('--packed') ? ' (plugin installed from npm pack)' : ''}`)
 }
 
