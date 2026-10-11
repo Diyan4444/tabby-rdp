@@ -134,6 +134,9 @@ async function execute (run) {
                 // Interrupted/failed infrastructure cannot contribute to effectiveness metrics.
                 if (['cancelled','infrastructure-failed'].includes(run.status)) run.experiments = run.experiments.map(t=>({...t, complete:false, classification:'incomplete'}))
             } catch { run.experiments = [] }
+            for (const mutation of run.mutations) {
+                if (!run.experiments.some(t=>t.id===mutation.id)) run.experiments.push({...mutation, control:false, complete:false, restored:false, detectors:[], classification:'not-executed'})
+            }
             run.effectiveness = effectiveness(run.experiments)
             if (run.status === 'passed' && (run.effectiveness.manifested !== run.mutations.length || run.effectiveness.controls !== 2)) {
                 run.status = 'infrastructure-failed'; run.reason = 'Campaign evidence incomplete'

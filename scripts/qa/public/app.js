@@ -53,7 +53,7 @@ function showRun (run) {
     detail.append(links)
     if (run.mutations) {
         detail.append(node('h3', 'Mutation detection results'))
-        const repeat=node('button','Reproduce campaign','secondary'); repeat.disabled=!!document.querySelector('#cancel:not([hidden])');
+        const repeat=node('button','Reproduce campaign','secondary'); repeat.id='reproduce-campaign'; repeat.disabled=!!document.querySelector('#cancel:not([hidden])');
         repeat.onclick=async()=>{try{const next=await api('/api/campaigns',{test:run.test,mutations:run.mutations.map(m=>({id:m.id,value:m.value}))});selected=next.id;await refresh()}catch(error){message(error)}}
         detail.append(repeat)
         detail.append(node('p', 'Parameters: '+run.mutations.map(m=>`${m.id} ${m.parameter}=${m.value} (${m.layer})`).join('; '),'muted'))
@@ -134,6 +134,7 @@ async function refresh () {
     }
     const run = data.runs.find(r => r.id === selected)
     if (run) showRun(run)
+    if ($('reproduce-campaign')) $('reproduce-campaign').disabled=!!data.active
 }
 refresh().catch(message)
 setInterval(() => { if (!$('workspace').hidden) refresh().catch(message) }, 2000)

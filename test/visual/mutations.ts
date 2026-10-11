@@ -2,6 +2,7 @@ import { expect, type TestInfo } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { preserveColorProfile } from './png.js'
 
 // Reuse the PNG codec already pinned with Playwright; no second image dependency.
 const require = createRequire(import.meta.url)
@@ -122,7 +123,7 @@ export async function campaign(options: {
                             png.data.copy(png.data,target,source,source+4)
                         }
                     }
-                    actual=PNG.sync.write(png)
+                    actual=preserveColorProfile(actual, PNG.sync.write({ ...png, gamma: 0 }))
                 }
                 await attach(`${prefix}-actual`, actual)
                 const delta = difference(before, actual)

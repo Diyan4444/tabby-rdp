@@ -15,6 +15,7 @@ interface FixtureState { version: number, sequence: number, input: string, platf
 
 // Each selected environment is one serial lifecycle, with named checkpoints and its own report/trace.
 test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
+    if (process.env.TRD_QA_MUTATIONS && process.env.TRD_QA_UPDATE_BASELINES === '1') throw new Error('Mutation campaigns cannot update baselines')
     info.annotations.push({ type: 'infrastructure', description: 'Preparing dedicated remote environment' })
     const required = kind === 'linux' ? ['TRD_TEST_HOST'] : ['TRD_TEST_WIN_SSH_HOST', 'TRD_TEST_WIN_ADDRESS', 'TRD_TEST_WIN_USER', 'TRD_TEST_WIN_PASSWORD', 'TRD_TEST_WIN_WINRM']
     for (const key of required) expect(process.env[key], `Configure ${key} for this environment`).toBeTruthy()
