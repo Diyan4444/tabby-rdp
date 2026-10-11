@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:28:56 -0700
+Subject: [PATCH 36/51] fix(graphics): limit the tiles one Progressive bitmap
+ decodes or redraws
+
+Each REGION block of a Progressive bitmap redraws every tile of the
+frame that its rectangles cover, whether that block decoded it or an
+earlier one did, and decode_bitmap returned a 16 KiB RGBA copy of each,
+each time. A server could follow a REGION block of 1024 tiles with
+REGION blocks that carry no tiles, only a rectangle covering the
+surface: on 64-bit, a 239 KB bitmap with 64 of them returned 1.18 GB of
+tiles, and the REGION clipping work limit let one bitmap return about a
+million tiles (16 GiB).
+
+decode_bitmap now fails with ProgressiveDecodeError::TileLimitExceeded
+once a bitmap has decoded or redrawn MAX_TILES_PER_BITMAP tiles, 16384:
+every tile of the 256 MiB of 32 bpp surfaces the EGFX compositor
+displays at most (64 Mi pixels, two 8K monitors), so a bitmap holds at
+most 256 MiB of tiles.
+---
+ crates/ironrdp-graphics/src/progressive.rs | 103 +++++++++++++++++++++
+ 1 file changed, 103 insertions(+)
+
+diff --git a/crates/ironrdp-graphics/src/progressive.rs b/crates/ironrdp-graphics/src/progressive.rs
+index e25b9637..9dea7ccd 100644
+--- a/crates/ironrdp-graphics/src/progressive.rs
++++ b/crates/ironrdp-graphics/src/progressive.rs
+@@ -1185,6 +1185,13 @@ const MAX_REGION_CLIPPING_WORK: usize = 1 << 20;
+ /// surfaces the EGFX compositor displays at most, which is two 8K monitors.
+ pub const MAX_PROGRESSIVE_BYTES: usize = 1 << 30;
+ 
++/// Most tiles one [`ProgressiveDecoder::decode_bitmap`] call may decode or redraw.
++///
++/// 16384 tiles are every tile of 64 Mi pixels of surface: the 256 MiB of 32 bpp surfaces the EGFX
++/// compositor displays at most, which is two 8K monitors. Each tile holds 16 KiB of RGBA until
++/// the call returns it or drops it, so a call holds at most 256 MiB of them.
++pub const MAX_TILES_PER_BITMAP: usize = 16384;
++
+ /// Error type for progressive decoding operations.
+ #[derive(Debug)]
+ pub enum ProgressiveDecodeError {
+@@ -1207,6 +1214,8 @@ pub enum ProgressiveDecodeError {
+     /// Keeping the state the stream asks for would take the decoder past its memory limit,
+     /// [`MAX_PROGRESSIVE_BYTES`].
+     MemoryLimitExceeded { limit: usize },
++    /// A bitmap decodes or redraws more tiles than [`MAX_TILES_PER_BITMAP`].
++    TileLimitExceeded { limit: usize },
+ }
+ 
+ impl core::fmt::Display for ProgressiveDecodeError {
+@@ -1235,6 +1244,9 @@ impl core::fmt::Display for ProgressiveDecodeError {
+             Self::MemoryLimitExceeded { limit } => {
+                 write!(f, "progressive decoder state would exceed its {limit}-byte limit")
+             }
++            Self::TileLimitExceeded { limit } => {
++                write!(f, "progressive bitmap decodes or redraws more than {limit} tiles")
++            }
+         }
+     }
+ }
+@@ -1270,6 +1282,17 @@ fn charge_region_clipping_work(used: &mut usize, units: usize) -> Result<(), Pro
+     }
+ }
+ 
++/// Adds `tiles` to the tiles a bitmap decoded or redrew so far, failing past `limit`.
++fn count_bitmap_tiles(count: &mut usize, tiles: usize, limit: usize) -> Result<(), ProgressiveDecodeError> {
++    match count.checked_add(tiles) {
++        Some(total) if total <= limit => {
++            *count = total;
++            Ok(())
++        }
++        _ => Err(ProgressiveDecodeError::TileLimitExceeded { limit }),
++    }
++}
++
+ /// Memory a [`ProgressiveDecoder`] holds for its codec contexts, tiles and sub-band references,
+ /// counted against a limit.
+ #[derive(Debug)]
+@@ -1379,6 +1402,8 @@ pub struct ProgressiveDecoder {
+     /// Bytes held by `contexts` (their tile grids and tiles) and `references`, against
+     /// [`MAX_PROGRESSIVE_BYTES`].
+     memory: MemoryBudget,
++    /// [`MAX_TILES_PER_BITMAP`], or less in tests.
++    max_tiles_per_bitmap: usize,
+ }
+ 
+ impl ProgressiveDecoder {
+@@ -1394,6 +1419,7 @@ impl ProgressiveDecoder {
+                 used: 0,
+                 limit: MAX_PROGRESSIVE_BYTES,
+             },
++            max_tiles_per_bitmap: MAX_TILES_PER_BITMAP,
+         }
+     }
+ 
+@@ -1509,6 +1535,11 @@ impl ProgressiveDecoder {
+ 
+         let mut decoded_tiles = Vec::new();
+         let mut region_clipping_work = 0;
++        // Each tile decoded or redrawn holds its pixels until it is returned or dropped. A REGION
++        // block redraws every tile of the frame its rectangles cover, so a stream of REGION
++        // blocks with no tiles could otherwise return the same tiles over and over.
++        let mut bitmap_tiles = 0;
++        let max_tiles_per_bitmap = self.max_tiles_per_bitmap;
+ 
+         // Process REGION blocks only inside the first FRAME_BEGIN/FRAME_END
+         // pair in this bitmap stream. Codec state persists across RDPGFX
+@@ -1541,6 +1572,7 @@ impl ProgressiveDecoder {
+                     region,
+                     use_reduce_extrapolate,
+                 )?;
++                count_bitmap_tiles(&mut bitmap_tiles, tiles.len(), max_tiles_per_bitmap)?;
+                 for tile in tiles {
+                     let key = (tile.x_idx, tile.y_idx);
+                     frame_tiles.insert(key);
+@@ -1607,6 +1639,7 @@ impl ProgressiveDecoder {
+                     let Some(tile_state) = context.surface.get(x_idx, y_idx) else {
+                         continue;
+                     };
++                    count_bitmap_tiles(&mut bitmap_tiles, 1, max_tiles_per_bitmap)?;
+                     let mut pixels = vec![0u8; usize::from(TILE_DIM) * usize::from(TILE_DIM) * TILE_BYTES_PER_PIXEL];
+                     tile_state.reconstruct_to_rgba(&mut pixels);
+                     DecodedTile {
+@@ -4307,4 +4340,74 @@ mod tests {
+         decoder.delete_surface(2);
+         assert_eq!(decoder.memory.used, 0);
+     }
++
++    #[test]
++    fn decoder_refuses_bitmaps_that_decode_or_redraw_too_many_tiles() {
++        use ironrdp_pdu::codecs::rfx::progressive::{
++            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
++            ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
++        };
++
++        let component_data = encode_full_quality_component(16);
++        let tiles = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(x_idx, y_idx)| {
++            ProgressiveTile::Simple(TileSimple {
++                quant_idx_y: 0,
++                quant_idx_cb: 0,
++                quant_idx_cr: 0,
++                x_idx,
++                y_idx,
++                flags: 0,
++                y_data: &component_data,
++                cb_data: &component_data,
++                cr_data: &component_data,
++                tail_data: &[],
++            })
++        });
++        let mut decoder = ProgressiveDecoder::new();
++        decoder.max_tiles_per_bitmap = 8;
++
++        // The four tiles of a 2x2-tile surface, then a REGION block without tiles that redraws them.
++        assert_eq!(
++            decoder.decode_bitmap(1, 0, 128, 128, &stream(&tiles, 1)).unwrap().len(),
++            8
++        );
++        // A second redraw is four tiles too many.
++        assert!(matches!(
++            decoder.decode_bitmap(1, 0, 128, 128, &stream(&tiles, 2)),
++            Err(ProgressiveDecodeError::TileLimitExceeded { limit: 8 })
++        ));
++
++        /// A frame with a REGION block covering a 2x2-tile surface and carrying `tiles`, followed
++        /// by `redraws` such blocks without tiles.
++        fn stream(tiles: &[ProgressiveTile<'_>], redraws: usize) -> Vec<u8> {
++            let mut blocks = vec![
++                ProgressiveBlock::Sync(ProgressiveSyncPdu),
++                ProgressiveBlock::Context(ProgressiveContextPdu {
++                    context_id: 0,
++                    tile_size: 0x0040,
++                    flags: 0,
++                }),
++                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
++                    frame_index: 0,
++                    region_count: 1,
++                }),
++                region(tiles.to_vec()),
++            ];
++            blocks.extend(core::iter::repeat_with(|| region(Vec::new())).take(redraws));
++            blocks.push(ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu));
++
++            return encode_progressive_stream(&blocks).unwrap();
++
++            fn region<'a>(tiles: Vec<ProgressiveTile<'a>>) -> ProgressiveBlock<'a> {
++                ProgressiveBlock::Region(ProgressiveRegion {
++                    tile_size: 0x40,
++                    rects: vec![rect(0, 0, 128, 128)],
++                    quant_vals: vec![ComponentCodecQuant::LOSSLESS],
++                    quant_prog_vals: vec![],
++                    flags: 0,
++                    tiles,
++                })
++            }
++        }
++    }
+ }

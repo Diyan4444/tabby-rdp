@@ -1,0 +1,868 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 16:08:23 -0700
+Subject: [PATCH 37/51] fix(pdu,graphics): read Progressive bitmap streams one
+ block at a time
+
+The Progressive decoder collected a bitmap's whole stream before
+decoding any of it: every block, and every tile block of every REGION
+block, including the REGION blocks it then skipped for being outside the
+stream's first frame. Collected, a tile block takes 60 bytes in the
+WebAssembly build (112 on 64-bit targets) when it can take 22 on the
+wire, and a FRAME_END block 52 (104) for 6, so the limit on the tiles a
+bitmap decodes came too late: a server could make the client hold
+several times a bitmap's size. On 64-bit, eight REGION blocks of 65535
+empty tile blocks (11 MiB) took 56 MiB, and a million FRAME_END blocks
+(6 MB) took 156 MiB. A 256 MiB stream of FRAME_END blocks, the most ZGFX
+lets one PDU decompress to, grew the vector of its blocks to 3.25 GiB in
+the WebAssembly build, out of the 4 GiB the instance every session
+shares can have.
+
+ironrdp-pdu's new decode_progressive_stream_blocks iterates over a
+stream's blocks, decoding one at a time, and hands each REGION block's
+tile blocks to an iterator that decodes one at a time too. decode_bitmap
+reads the stream with it twice: whole first, so that a malformed stream
+still fails before any state changes, and then for the REGION blocks of
+its first frame. It also refuses a first frame of more tile blocks than
+MAX_TILES_PER_BITMAP before decoding any, where it failed only after
+decoding that many. The streams above now take under a kilobyte.
+decode_progressive_stream still collects a stream, but no longer
+reserves room for the tile blocks a REGION block's header claims before
+reading them.
+---
+ crates/ironrdp-graphics/src/progressive.rs    | 189 ++++++--
+ .../ironrdp-pdu/src/codecs/rfx/progressive.rs | 421 +++++++++++++++---
+ .../ironrdp-testsuite-core/tests/peak_heap.rs |  88 ++++
+ 3 files changed, 622 insertions(+), 76 deletions(-)
+
+diff --git a/crates/ironrdp-graphics/src/progressive.rs b/crates/ironrdp-graphics/src/progressive.rs
+index 9dea7ccd..fc24b86b 100644
+--- a/crates/ironrdp-graphics/src/progressive.rs
++++ b/crates/ironrdp-graphics/src/progressive.rs
+@@ -1293,6 +1293,77 @@ fn count_bitmap_tiles(count: &mut usize, tiles: usize, limit: usize) -> Result<(
+     }
+ }
+ 
++/// What [`ProgressiveDecoder::decode_bitmap`] learns of a stream reading it whole.
++struct StreamSurvey {
++    /// The band layout of the stream's first CONTEXT block, if it has one.
++    reduce_extrapolate: Option<bool>,
++    /// Number of tile blocks in the REGION blocks of the stream's first frame.
++    first_frame_tiles: usize,
++}
++
++/// Reads a whole progressive bitmap stream, one block and one tile block at a time, failing if any
++/// of it is malformed.
++fn survey_stream(bitmap_data: &[u8]) -> Result<StreamSurvey, ProgressiveDecodeError> {
++    use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveStreamBlock, decode_progressive_stream_blocks};
++
++    let mut survey = StreamSurvey {
++        reduce_extrapolate: None,
++        first_frame_tiles: 0,
++    };
++    let mut first_frame = FirstFrame::default();
++    for block in decode_progressive_stream_blocks(bitmap_data) {
++        let block = block?;
++        let in_first_frame = first_frame.holds(&block);
++        match block {
++            ProgressiveStreamBlock::Context(context) => {
++                if survey.reduce_extrapolate.is_none() {
++                    survey.reduce_extrapolate = Some(context.uses_reduce_extrapolate());
++                }
++            }
++            ProgressiveStreamBlock::Region { header, tiles } => {
++                for tile in tiles {
++                    tile?;
++                }
++                if in_first_frame {
++                    survey.first_frame_tiles = survey.first_frame_tiles.saturating_add(usize::from(header.num_tiles));
++                }
++            }
++            _ => {}
++        }
++    }
++
++    Ok(survey)
++}
++
++/// Follows the blocks of a stream to tell the REGION blocks of its first FRAME_BEGIN/FRAME_END
++/// pair, the only ones [`ProgressiveDecoder::decode_bitmap`] decodes.
++#[derive(Default)]
++struct FirstFrame {
++    inside: bool,
++    ended: bool,
++}
++
++impl FirstFrame {
++    /// Takes the stream's next block, and tells whether it is a REGION block of the first frame.
++    fn holds(&mut self, block: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveStreamBlock<'_>) -> bool {
++        use ironrdp_pdu::codecs::rfx::progressive::ProgressiveStreamBlock;
++
++        match block {
++            ProgressiveStreamBlock::FrameBegin(_) if !self.ended => {
++                self.inside = true;
++                false
++            }
++            ProgressiveStreamBlock::FrameEnd(_) => {
++                self.inside = false;
++                self.ended = true;
++                false
++            }
++            ProgressiveStreamBlock::Region { .. } => self.inside,
++            _ => false,
++        }
++    }
++}
++
+ /// Memory a [`ProgressiveDecoder`] holds for its codec contexts, tiles and sub-band references,
+ /// counted against a limit.
+ #[derive(Debug)]
+@@ -1454,9 +1525,19 @@ impl ProgressiveDecoder {
+         surface_height: u16,
+         bitmap_data: &[u8],
+     ) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
+-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveBlock, decode_progressive_stream};
+-
+-        let blocks = decode_progressive_stream(bitmap_data)?;
++        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveStreamBlock, decode_progressive_stream_blocks};
++
++        // The stream is read one block, and one tile block, at a time: collected, a tile block took
++        // several times the 22 bytes it can take on the wire, and a FRAME_END block several times
++        // its 6. It is read whole first, so that a malformed stream changes no state, as when it
++        // was collected before being decoded, and then for its first frame.
++        let survey = survey_stream(bitmap_data)?;
++        // A first frame of more tile blocks than the limit would fail once that many were decoded.
++        if survey.first_frame_tiles > self.max_tiles_per_bitmap {
++            return Err(ProgressiveDecodeError::TileLimitExceeded {
++                limit: self.max_tiles_per_bitmap,
++            });
++        }
+ 
+         // Extract the band-layout flag from the CONTEXT block when present.
+         // Per MS-RDPEGFX 2.2.4.2 the SYNC + CONTEXT blocks establish a codec
+@@ -1474,10 +1555,7 @@ impl ProgressiveDecoder {
+         // deletes the previous one, and never repeats SYNC + CONTEXT, so a per-context lookup
+         // alone rejects the new context. The retained value is scoped to its surface and
+         // released with it. Only error when no source is available at all.
+-        let signalled = blocks.iter().find_map(|block| match block {
+-            ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
+-            _ => None,
+-        });
++        let signalled = survey.reduce_extrapolate;
+         if let Some(flag) = signalled {
+             self.surface_context_flags.insert(surface_id, flag);
+         }
+@@ -1544,32 +1622,29 @@ impl ProgressiveDecoder {
+         // Process REGION blocks only inside the first FRAME_BEGIN/FRAME_END
+         // pair in this bitmap stream. Codec state persists across RDPGFX
+         // frames, while frame_tiles persists only across payloads in one frame.
+-        let mut in_frame = false;
+-        let mut frame_ended = false;
+-        for block in &blocks {
+-            let region = match block {
+-                ProgressiveBlock::FrameBegin(_) if !frame_ended => {
+-                    in_frame = true;
+-                    continue;
+-                }
+-                ProgressiveBlock::FrameEnd(_) => {
+-                    in_frame = false;
+-                    frame_ended = true;
+-                    continue;
+-                }
+-                ProgressiveBlock::Region(r) if in_frame => r,
+-                _ => continue,
++        let mut first_frame = FirstFrame::default();
++        for block in decode_progressive_stream_blocks(bitmap_data) {
++            let block = block?;
++            if !first_frame.holds(&block) {
++                continue;
++            }
++            let ProgressiveStreamBlock::Region {
++                header: region,
++                tiles: tile_blocks,
++            } = block
++            else {
++                continue;
+             };
+ 
+             let mut region_tiles = BTreeMap::new();
+-            for tile_block in &region.tiles {
++            for tile_block in tile_blocks {
+                 let tiles = decode_tile_block(
+                     surface_id,
+                     &mut context.surface,
+                     references,
+                     memory,
+-                    tile_block,
+-                    region,
++                    &tile_block?,
++                    &region,
+                     use_reduce_extrapolate,
+                 )?;
+                 count_bitmap_tiles(&mut bitmap_tiles, tiles.len(), max_tiles_per_bitmap)?;
+@@ -1751,7 +1826,7 @@ fn decode_tile_block(
+     references: &mut BTreeMap<SubBandDiffingTileKey, Box<DecDwtQ>>,
+     memory: &mut MemoryBudget,
+     tile_block: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
+-    region: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveRegion<'_>,
++    region: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveRegionHeader,
+     use_reduce_extrapolate: bool,
+ ) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
+     use ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile;
+@@ -4410,4 +4485,66 @@ mod tests {
+             }
+         }
+     }
++
++    #[test]
++    fn decoder_refuses_a_frame_of_too_many_tile_blocks_before_decoding_them() {
++        use ironrdp_pdu::codecs::rfx::progressive::{
++            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
++            ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
++        };
++
++        // Nine empty TILE_SIMPLE blocks, which fail to decode.
++        let region = ProgressiveBlock::Region(ProgressiveRegion {
++            tile_size: 0x40,
++            rects: vec![rect(0, 0, 64, 64)],
++            quant_vals: vec![ComponentCodecQuant::LOSSLESS],
++            quant_prog_vals: vec![],
++            flags: 0,
++            tiles: vec![
++                ProgressiveTile::Simple(TileSimple {
++                    quant_idx_y: 0,
++                    quant_idx_cb: 0,
++                    quant_idx_cr: 0,
++                    x_idx: 0,
++                    y_idx: 0,
++                    flags: 0,
++                    y_data: &[],
++                    cb_data: &[],
++                    cr_data: &[],
++                    tail_data: &[],
++                });
++                9
++            ],
++        });
++        let stream = |region_in_frame: bool| {
++            let mut blocks = vec![
++                ProgressiveBlock::Sync(ProgressiveSyncPdu),
++                ProgressiveBlock::Context(ProgressiveContextPdu {
++                    context_id: 0,
++                    tile_size: 0x0040,
++                    flags: 0,
++                }),
++                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
++                    frame_index: 0,
++                    region_count: 1,
++                }),
++                ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
++            ];
++            blocks.insert(if region_in_frame { 3 } else { 4 }, region.clone());
++            encode_progressive_stream(&blocks).unwrap()
++        };
++        let mut decoder = ProgressiveDecoder::new();
++        decoder.max_tiles_per_bitmap = 8;
++
++        assert!(matches!(
++            decoder.decode_bitmap(1, 0, 64, 64, &stream(true)),
++            Err(ProgressiveDecodeError::TileLimitExceeded { limit: 8 })
++        ));
++        // Nothing was decoded or kept.
++        assert!(decoder.contexts.is_empty());
++        assert_eq!(decoder.memory.used, 0);
++
++        // Tile blocks after the frame are read, but neither decoded nor counted.
++        assert!(decoder.decode_bitmap(1, 0, 64, 64, &stream(false)).unwrap().is_empty());
++    }
+ }
+diff --git a/crates/ironrdp-pdu/src/codecs/rfx/progressive.rs b/crates/ironrdp-pdu/src/codecs/rfx/progressive.rs
+index ba809ecb..78d94e99 100644
+--- a/crates/ironrdp-pdu/src/codecs/rfx/progressive.rs
++++ b/crates/ironrdp-pdu/src/codecs/rfx/progressive.rs
+@@ -877,7 +877,57 @@ impl Encode for ProgressiveRegion<'_> {
+ 
+ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
+     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+-        ensure_size!(ctx: Self::NAME, in: src, size: Self::HEADER_SIZE);
++        let header = ProgressiveRegionHeader::decode(src)?;
++
++        // The vector grows with the tile blocks actually read: a header alone can claim 65535.
++        let mut tiles = Vec::new();
++        for _ in 0..header.num_tiles {
++            tiles.push(decode_region_tile(src, header.quant_vals.len())?);
++        }
++
++        Ok(Self::from_parts(header, tiles))
++    }
++}
++
++impl<'a> ProgressiveRegion<'a> {
++    fn from_parts(header: ProgressiveRegionHeader, tiles: Vec<ProgressiveTile<'a>>) -> Self {
++        Self {
++            tile_size: header.tile_size,
++            rects: header.rects,
++            quant_vals: header.quant_vals,
++            quant_prog_vals: header.quant_prog_vals,
++            flags: header.flags,
++            tiles,
++        }
++    }
++}
++
++/// The fields of an RFX_PROGRESSIVE_REGION block that come before its tile blocks.
++///
++/// Decoding it leaves the cursor at the first tile block.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ProgressiveRegionHeader {
++    pub tile_size: u8,
++    pub rects: Vec<RfxRectangle>,
++    pub quant_vals: Vec<ComponentCodecQuant>,
++    pub quant_prog_vals: Vec<ProgressiveCodecQuant>,
++    pub flags: u8,
++    /// Number of tile blocks that follow.
++    pub num_tiles: u16,
++}
++
++impl ProgressiveRegionHeader {
++    const NAME: &'static str = ProgressiveRegion::NAME;
++
++    /// Whether this region uses the reduce-extrapolate DWT variant.
++    pub fn uses_reduce_extrapolate(&self) -> bool {
++        self.flags & FLAG_DWT_REDUCE_EXTRAPOLATE != 0
++    }
++}
++
++impl Decode<'_> for ProgressiveRegionHeader {
++    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
++        ensure_size!(ctx: Self::NAME, in: src, size: ProgressiveRegion::HEADER_SIZE);
+ 
+         let tile_size = src.read_u8();
+         if tile_size != 0x40 {
+@@ -896,7 +946,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
+         if num_quant > 7 {
+             return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7", in: src));
+         }
+-        let num_tiles = usize::from(src.read_u16());
++        let num_tiles = src.read_u16();
+         let _tile_data_size = src.read_u32();
+ 
+         // Rectangles (4 x u16 = 8 bytes each)
+@@ -918,52 +968,78 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
+             .take(num_prog_quant)
+             .collect::<Result<Vec<_>, _>>()?;
+ 
+-        // Tile blocks (each preceded by a block header)
+-        let mut tiles = Vec::with_capacity(num_tiles);
+-        for _ in 0..num_tiles {
+-            let header = ProgressiveBlockHeader::decode(src)?;
+-            let body_len = header
+-                .block_len
+-                .checked_sub(BLOCK_HEADER_SIZE_U32)
+-                .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small", in: src))?;
+-            let body_len: usize = cast_length!("tileBodyLen", body_len, in: src)?;
+-            ensure_size!(ctx: Self::NAME, in: src, size: body_len);
+-            let tile_src = &mut ReadCursor::new(src.read_slice(body_len));
+-
+-            let tile = match header.block_type {
+-                ProgressiveBlockType::TileSimple => ProgressiveTile::Simple(TileSimple::decode(tile_src)?),
+-                ProgressiveBlockType::TileFirst => ProgressiveTile::First(TileFirst::decode(tile_src)?),
+-                ProgressiveBlockType::TileUpgrade => ProgressiveTile::Upgrade(TileUpgrade::decode(tile_src)?),
+-                _ => {
+-                    return Err(invalid_field_err!("blockType", "expected tile block inside region", in: src));
+-                }
+-            };
+-            tiles.push(tile);
+-        }
+-
+-        let quant_count = quant_vals.len();
+-        for tile in &tiles {
+-            let indices = match tile {
+-                ProgressiveTile::Simple(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+-                ProgressiveTile::First(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+-                ProgressiveTile::Upgrade(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+-            };
+-            if indices.iter().any(|&i| usize::from(i) >= quant_count) {
+-                return Err(invalid_field_err!("quantIdx", "tile quant index out of range", in: src));
+-            }
+-        }
+-
+         Ok(Self {
+             tile_size,
+             rects,
+             quant_vals,
+             quant_prog_vals,
+             flags,
+-            tiles,
++            num_tiles,
+         })
+     }
+ }
+ 
++/// Decodes one of a REGION block's tile blocks, each preceded by a block header, checking its
++/// quant indices against the REGION's `quant_count` quants.
++fn decode_region_tile<'a>(src: &mut ReadCursor<'a>, quant_count: usize) -> DecodeResult<ProgressiveTile<'a>> {
++    let header = ProgressiveBlockHeader::decode(src)?;
++    let body_len = header
++        .block_len
++        .checked_sub(BLOCK_HEADER_SIZE_U32)
++        .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small", in: src))?;
++    let body_len: usize = cast_length!("tileBodyLen", body_len, in: src)?;
++    ensure_size!(ctx: ProgressiveRegion::NAME, in: src, size: body_len);
++    let tile_src = &mut ReadCursor::new(src.read_slice(body_len));
++
++    let tile = match header.block_type {
++        ProgressiveBlockType::TileSimple => ProgressiveTile::Simple(TileSimple::decode(tile_src)?),
++        ProgressiveBlockType::TileFirst => ProgressiveTile::First(TileFirst::decode(tile_src)?),
++        ProgressiveBlockType::TileUpgrade => ProgressiveTile::Upgrade(TileUpgrade::decode(tile_src)?),
++        _ => {
++            return Err(invalid_field_err!("blockType", "expected tile block inside region", in: src));
++        }
++    };
++
++    let indices = match &tile {
++        ProgressiveTile::Simple(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
++        ProgressiveTile::First(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
++        ProgressiveTile::Upgrade(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
++    };
++    if indices.iter().any(|&i| usize::from(i) >= quant_count) {
++        return Err(invalid_field_err!("quantIdx", "tile quant index out of range", in: src));
++    }
++
++    Ok(tile)
++}
++
++/// Iterator over the tile blocks of a REGION block, decoding one at a time.
++///
++/// It yields as many tile blocks as the REGION block's header announces, and ends after the
++/// first error: a tile block that does not decode, or names a quant past the REGION's.
++#[derive(Debug, Clone)]
++pub struct ProgressiveRegionTiles<'a> {
++    src: ReadCursor<'a>,
++    /// Tile blocks left to decode: none after an error.
++    remaining: u16,
++    /// Number of quants the REGION block carries.
++    quant_count: usize,
++}
++
++impl<'a> Iterator for ProgressiveRegionTiles<'a> {
++    type Item = DecodeResult<ProgressiveTile<'a>>;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        let remaining = self.remaining.checked_sub(1)?;
++        let tile = decode_region_tile(&mut self.src, self.quant_count);
++        self.remaining = if tile.is_ok() { remaining } else { 0 };
++        Some(tile)
++    }
++
++    fn size_hint(&self) -> (usize, Option<usize>) {
++        (0, Some(usize::from(self.remaining)))
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Top-level block enum + stream parser
+ // ---------------------------------------------------------------------------
+@@ -984,12 +1060,81 @@ pub enum ProgressiveBlock<'a> {
+ /// Returns the sequence of progressive blocks. The stream always starts with
+ /// SYNC + CONTEXT, followed by FRAME_BEGIN, one or more REGION blocks (containing
+ /// tiles), and FRAME_END.
++///
++/// This holds every block, and every tile block of every REGION block, at once: a tile block takes
++/// as few as 22 bytes on the wire and several times that decoded, and a FRAME_END block 6.
++/// [`decode_progressive_stream_blocks`] decodes them one at a time instead.
+ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<ProgressiveBlock<'a>>> {
+-    let mut blocks = Vec::new();
+-    let mut src = ReadCursor::new(data);
++    decode_progressive_stream_blocks(data)
++        .map(|block| {
++            Ok(match block? {
++                ProgressiveStreamBlock::Sync(sync) => ProgressiveBlock::Sync(sync),
++                ProgressiveStreamBlock::FrameBegin(frame_begin) => ProgressiveBlock::FrameBegin(frame_begin),
++                ProgressiveStreamBlock::FrameEnd(frame_end) => ProgressiveBlock::FrameEnd(frame_end),
++                ProgressiveStreamBlock::Context(context) => ProgressiveBlock::Context(context),
++                ProgressiveStreamBlock::Region { header, tiles } => ProgressiveBlock::Region(
++                    ProgressiveRegion::from_parts(header, tiles.collect::<DecodeResult<_>>()?),
++                ),
++            })
++        })
++        .collect()
++}
+ 
+-    while src.len() >= ProgressiveBlockHeader::SIZE {
+-        let header = ProgressiveBlockHeader::decode(&mut src)?;
++/// A block of a progressive bitmap stream, as [`decode_progressive_stream_blocks`] yields it.
++#[derive(Debug, Clone)]
++pub enum ProgressiveStreamBlock<'a> {
++    Sync(ProgressiveSyncPdu),
++    FrameBegin(ProgressiveFrameBeginPdu),
++    FrameEnd(ProgressiveFrameEndPdu),
++    Context(ProgressiveContextPdu),
++    /// A REGION block, its tile blocks left for `tiles` to decode one at a time.
++    Region {
++        header: ProgressiveRegionHeader,
++        tiles: ProgressiveRegionTiles<'a>,
++    },
++}
++
++/// Decodes a progressive bitmap stream one block at a time.
++///
++/// The iterator yields each block in wire order, and ends after the first error. A REGION block
++/// comes with its rectangles and quants decoded, and its tile blocks undecoded: its
++/// [`ProgressiveRegionTiles`] decode them one at a time. Unlike [`decode_progressive_stream`], this
++/// holds one block, and one tile block, at a time, however many the stream has.
++pub fn decode_progressive_stream_blocks(data: &[u8]) -> ProgressiveStreamBlocks<'_> {
++    ProgressiveStreamBlocks {
++        src: ReadCursor::new(data),
++        done: false,
++    }
++}
++
++/// Iterator over the blocks of a progressive bitmap stream, returned by
++/// [`decode_progressive_stream_blocks`].
++#[derive(Debug, Clone)]
++pub struct ProgressiveStreamBlocks<'a> {
++    src: ReadCursor<'a>,
++    done: bool,
++}
++
++impl<'a> Iterator for ProgressiveStreamBlocks<'a> {
++    type Item = DecodeResult<ProgressiveStreamBlock<'a>>;
++
++    fn next(&mut self) -> Option<Self::Item> {
++        // Fewer bytes than a block header are left over.
++        if self.done || self.src.len() < ProgressiveBlockHeader::SIZE {
++            return None;
++        }
++
++        let block = self.decode_next();
++        self.done = block.is_err();
++        Some(block)
++    }
++}
++
++impl<'a> ProgressiveStreamBlocks<'a> {
++    fn decode_next(&mut self) -> DecodeResult<ProgressiveStreamBlock<'a>> {
++        let src = &mut self.src;
++
++        let header = ProgressiveBlockHeader::decode(src)?;
+         let body_len = header
+             .block_len
+             .checked_sub(BLOCK_HEADER_SIZE_U32)
+@@ -1014,22 +1159,31 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
+         let body_src = &mut ReadCursor::new(src.read_slice(body_len));
+ 
+         let block = match header.block_type {
+-            ProgressiveBlockType::Sync => ProgressiveBlock::Sync(ProgressiveSyncPdu::decode(body_src)?),
++            ProgressiveBlockType::Sync => ProgressiveStreamBlock::Sync(ProgressiveSyncPdu::decode(body_src)?),
+             ProgressiveBlockType::FrameBegin => {
+-                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu::decode(body_src)?)
++                ProgressiveStreamBlock::FrameBegin(ProgressiveFrameBeginPdu::decode(body_src)?)
++            }
++            ProgressiveBlockType::FrameEnd => {
++                ProgressiveStreamBlock::FrameEnd(ProgressiveFrameEndPdu::decode(body_src)?)
++            }
++            ProgressiveBlockType::Context => ProgressiveStreamBlock::Context(ProgressiveContextPdu::decode(body_src)?),
++            ProgressiveBlockType::Region => {
++                let header = ProgressiveRegionHeader::decode(body_src)?;
++                let tiles = ProgressiveRegionTiles {
++                    src: ReadCursor::new(body_src.remaining()),
++                    remaining: header.num_tiles,
++                    quant_count: header.quant_vals.len(),
++                };
++                ProgressiveStreamBlock::Region { header, tiles }
+             }
+-            ProgressiveBlockType::FrameEnd => ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu::decode(body_src)?),
+-            ProgressiveBlockType::Context => ProgressiveBlock::Context(ProgressiveContextPdu::decode(body_src)?),
+-            ProgressiveBlockType::Region => ProgressiveBlock::Region(ProgressiveRegion::decode(body_src)?),
+             // Tile blocks should only appear inside regions; skip at top level
+             ProgressiveBlockType::TileSimple | ProgressiveBlockType::TileFirst | ProgressiveBlockType::TileUpgrade => {
+                 return Err(invalid_field_err!("blockType", "tile block outside of region"));
+             }
+         };
+-        blocks.push(block);
+-    }
+ 
+-    Ok(blocks)
++        Ok(block)
++    }
+ }
+ 
+ /// Encode a progressive bitmap stream into bytes.
+@@ -1326,6 +1480,173 @@ mod tests {
+         }
+     }
+ 
++    fn simple_tile(x_idx: u16, quant_idx: u8) -> ProgressiveTile<'static> {
++        ProgressiveTile::Simple(TileSimple {
++            quant_idx_y: quant_idx,
++            quant_idx_cb: 0,
++            quant_idx_cr: 0,
++            x_idx,
++            y_idx: 0,
++            flags: 0,
++            y_data: &[1, 2],
++            cb_data: &[3],
++            cr_data: &[4],
++            tail_data: &[],
++        })
++    }
++
++    fn region(tiles: Vec<ProgressiveTile<'_>>) -> ProgressiveBlock<'_> {
++        ProgressiveBlock::Region(ProgressiveRegion {
++            tile_size: 0x40,
++            rects: vec![RfxRectangle {
++                x: 0,
++                y: 0,
++                width: 192,
++                height: 64,
++            }],
++            quant_vals: vec![ComponentCodecQuant::LOSSLESS],
++            quant_prog_vals: vec![],
++            flags: 0,
++            tiles,
++        })
++    }
++
++    #[test]
++    fn stream_blocks_are_decoded_one_at_a_time() {
++        let blocks = vec![
++            ProgressiveBlock::Sync(ProgressiveSyncPdu),
++            ProgressiveBlock::Context(ProgressiveContextPdu {
++                context_id: 0,
++                tile_size: 0x0040,
++                flags: 0,
++            }),
++            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
++                frame_index: 0,
++                region_count: 2,
++            }),
++            region(vec![simple_tile(0, 0), simple_tile(1, 0)]),
++            region(vec![
++                ProgressiveTile::First(TileFirst {
++                    quant_idx_y: 0,
++                    quant_idx_cb: 0,
++                    quant_idx_cr: 0,
++                    x_idx: 2,
++                    y_idx: 0,
++                    flags: 0,
++                    quality: 0xFF,
++                    y_data: &[5],
++                    cb_data: &[6],
++                    cr_data: &[7],
++                    tail_data: &[],
++                }),
++                ProgressiveTile::Upgrade(TileUpgrade {
++                    quant_idx_y: 0,
++                    quant_idx_cb: 0,
++                    quant_idx_cr: 0,
++                    x_idx: 2,
++                    y_idx: 0,
++                    quality: 0xFF,
++                    y_srl_data: &[8],
++                    y_raw_data: &[],
++                    cb_srl_data: &[9],
++                    cb_raw_data: &[],
++                    cr_srl_data: &[10],
++                    cr_raw_data: &[11],
++                }),
++            ]),
++            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
++        ];
++        let encoded = encode_progressive_stream(&blocks).unwrap();
++
++        let mut stream_blocks = decode_progressive_stream_blocks(&encoded);
++        assert!(matches!(
++            stream_blocks.next(),
++            Some(Ok(ProgressiveStreamBlock::Sync(_)))
++        ));
++        assert!(matches!(
++            stream_blocks.next(),
++            Some(Ok(ProgressiveStreamBlock::Context(_)))
++        ));
++        assert!(matches!(
++            stream_blocks.next(),
++            Some(Ok(ProgressiveStreamBlock::FrameBegin(_)))
++        ));
++        for expected in &blocks[3..5] {
++            let Some(Ok(ProgressiveStreamBlock::Region { header, tiles })) = stream_blocks.next() else {
++                panic!("expected a REGION block");
++            };
++            let ProgressiveBlock::Region(expected) = expected else {
++                unreachable!()
++            };
++            assert_eq!(header.rects, expected.rects);
++            assert_eq!(header.quant_vals, expected.quant_vals);
++            assert_eq!(usize::from(header.num_tiles), expected.tiles.len());
++            assert_eq!(tiles.collect::<DecodeResult<Vec<_>>>().unwrap(), expected.tiles);
++        }
++        assert!(matches!(
++            stream_blocks.next(),
++            Some(Ok(ProgressiveStreamBlock::FrameEnd(_)))
++        ));
++        assert!(stream_blocks.next().is_none());
++
++        // decode_progressive_stream collects the same blocks.
++        assert_eq!(decode_progressive_stream(&encoded).unwrap(), blocks);
++    }
++
++    #[test]
++    fn stream_blocks_end_after_the_first_error() {
++        let sync = encode_progressive_stream(&[ProgressiveBlock::Sync(ProgressiveSyncPdu)]).unwrap();
++        // A SYNC block, a block of an unknown type, and another SYNC block.
++        let mut encoded = sync.clone();
++        encoded.extend_from_slice(&[0x00, 0xCC, 0x06, 0x00, 0x00, 0x00]);
++        encoded.extend_from_slice(&sync);
++
++        let mut stream_blocks = decode_progressive_stream_blocks(&encoded);
++
++        assert!(matches!(
++            stream_blocks.next(),
++            Some(Ok(ProgressiveStreamBlock::Sync(_)))
++        ));
++        assert!(matches!(stream_blocks.next(), Some(Err(_))));
++        assert!(stream_blocks.next().is_none());
++        decode_progressive_stream(&encoded).unwrap_err();
++    }
++
++    #[test]
++    fn region_tiles_end_after_the_first_error() {
++        // numTiles follows the block header and tileSize, numRects, numQuant, numProgQuant and
++        // flags.
++        const NUM_TILES_OFFSET: usize = ProgressiveBlockHeader::SIZE + 6;
++
++        // A REGION block carrying two tile blocks, and announcing three.
++        let mut encoded = encode_progressive_stream(&[region(vec![simple_tile(0, 0), simple_tile(1, 0)])]).unwrap();
++        encoded[NUM_TILES_OFFSET..NUM_TILES_OFFSET + 2].copy_from_slice(&3u16.to_le_bytes());
++
++        let Some(Ok(ProgressiveStreamBlock::Region { header, mut tiles })) =
++            decode_progressive_stream_blocks(&encoded).next()
++        else {
++            panic!("expected a REGION block");
++        };
++        assert_eq!(header.num_tiles, 3);
++        assert_eq!(tiles.next().unwrap().unwrap(), simple_tile(0, 0));
++        assert_eq!(tiles.next().unwrap().unwrap(), simple_tile(1, 0));
++        tiles.next().unwrap().unwrap_err();
++        assert!(tiles.next().is_none());
++        decode_progressive_stream(&encoded).unwrap_err();
++
++        // A REGION block carrying one quant, and a tile block naming a second one.
++        let encoded = encode_progressive_stream(&[region(vec![simple_tile(0, 1), simple_tile(1, 0)])]).unwrap();
++
++        let Some(Ok(ProgressiveStreamBlock::Region { mut tiles, .. })) =
++            decode_progressive_stream_blocks(&encoded).next()
++        else {
++            panic!("expected a REGION block");
++        };
++        tiles.next().unwrap().unwrap_err();
++        assert!(tiles.next().is_none());
++        decode_progressive_stream(&encoded).unwrap_err();
++    }
++
+     #[test]
+     fn nibble_order_differs_from_classic() {
+         // Verify that progressive ComponentCodecQuant has HL/LH swapped vs classic
+diff --git a/crates/ironrdp-testsuite-core/tests/peak_heap.rs b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+index 6925a07b..2f94646e 100644
+--- a/crates/ironrdp-testsuite-core/tests/peak_heap.rs
++++ b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+@@ -9,6 +9,12 @@ use core::cell::Cell;
+ use std::alloc::System;
+ 
+ use ironrdp_graphics::clearcodec::ClearCodecDecoder;
++use ironrdp_graphics::progressive::{ProgressiveDecodeError, ProgressiveDecoder};
++use ironrdp_pdu::codecs::rfx::RfxRectangle;
++use ironrdp_pdu::codecs::rfx::progressive::{
++    ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
++    ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
++};
+ 
+ /// The system allocator, counting the bytes each thread holds.
+ struct CountingAllocator;
+@@ -111,3 +117,85 @@ fn clearcodec_bands_past_the_destination_take_no_memory() {
+     assert_eq!(pixels.unwrap(), [red, green, red, green].concat());
+     assert!(peak < 1024 * 1024, "decoding the layer took {peak} bytes");
+ }
++
++/// A progressive bitmap stream: SYNC, CONTEXT and FRAME_BEGIN blocks, then `blocks`.
++fn progressive_stream(blocks: impl IntoIterator<Item = ProgressiveBlock<'static>>) -> Vec<u8> {
++    let mut stream = vec![
++        ProgressiveBlock::Sync(ProgressiveSyncPdu),
++        ProgressiveBlock::Context(ProgressiveContextPdu {
++            context_id: 0,
++            tile_size: 0x0040,
++            flags: 0,
++        }),
++        ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
++            frame_index: 0,
++            region_count: 1,
++        }),
++    ];
++    stream.extend(blocks);
++    encode_progressive_stream(&stream).expect("the stream encodes")
++}
++
++#[test]
++fn progressive_tile_blocks_take_no_memory_before_they_are_decoded() {
++    // Eight REGION blocks of 65535 empty TILE_SIMPLE blocks each, 11 MiB: in the frame, more tile
++    // blocks than a bitmap may decode; after it, tile blocks the decoder ignores. Collected, they
++    // took 56 MiB on 64-bit targets.
++    let region = ProgressiveBlock::Region(ProgressiveRegion {
++        tile_size: 0x40,
++        rects: vec![RfxRectangle {
++            x: 0,
++            y: 0,
++            width: 64,
++            height: 64,
++        }],
++        quant_vals: vec![ComponentCodecQuant::LOSSLESS],
++        quant_prog_vals: vec![],
++        flags: 0,
++        tiles: vec![
++            ProgressiveTile::Simple(TileSimple {
++                quant_idx_y: 0,
++                quant_idx_cb: 0,
++                quant_idx_cr: 0,
++                x_idx: 0,
++                y_idx: 0,
++                flags: 0,
++                y_data: &[],
++                cb_data: &[],
++                cr_data: &[],
++                tail_data: &[],
++            });
++            65535
++        ],
++    });
++    let regions = || core::iter::repeat_n(region.clone(), 8);
++    let frame_end = || ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu);
++    let in_frame = progressive_stream(regions().chain([frame_end()]));
++    let after_frame = progressive_stream(core::iter::once(frame_end()).chain(regions()));
++
++    let (result, peak) = peak_heap(|| ProgressiveDecoder::new().decode_bitmap(1, 0, 64, 64, &in_frame));
++    assert!(peak < 1024 * 1024, "refusing the bitmap took {peak} bytes");
++    assert!(
++        matches!(result, Err(ProgressiveDecodeError::TileLimitExceeded { .. })),
++        "{:?}",
++        result.map(|tiles| tiles.len())
++    );
++
++    let (result, peak) = peak_heap(|| ProgressiveDecoder::new().decode_bitmap(1, 0, 64, 64, &after_frame));
++    assert!(peak < 1024 * 1024, "decoding the bitmap took {peak} bytes");
++    assert!(result.unwrap().is_empty());
++}
++
++#[test]
++fn progressive_blocks_take_no_memory_before_they_are_decoded() {
++    // A million FRAME_END blocks, 6 MB. Collected, they took 156 MiB on 64-bit targets.
++    let stream = progressive_stream(core::iter::repeat_n(
++        ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
++        1_000_000,
++    ));
++
++    let (result, peak) = peak_heap(|| ProgressiveDecoder::new().decode_bitmap(1, 0, 64, 64, &stream));
++
++    assert!(peak < 1024 * 1024, "decoding the bitmap took {peak} bytes");
++    assert!(result.unwrap().is_empty());
++}

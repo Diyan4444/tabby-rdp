@@ -25,12 +25,13 @@ for c in virsh virt-install cloud-localds; do
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 V="virsh -c ${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-IMAGE_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+: "${UBUNTU_IMAGE:?set UBUNTU_IMAGE to a reviewed local Ubuntu 24.04 cloud image}"
+: "${UBUNTU_IMAGE_SHA256:?set UBUNTU_IMAGE_SHA256 from a trusted publisher checksum}"
+sh "$HERE/../verify-image.sh" "$UBUNTU_IMAGE" "$UBUNTU_IMAGE_SHA256"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed}"
 mkdir -p "$WORK"
 
-# The cloud image (kept for next time) and a cloud-init seed with the key.
-[ -f "$WORK/noble.img" ] || curl -fL -o "$WORK/noble.img" "$IMAGE_URL"
+# The verified cloud image and a cloud-init seed with the key.
 printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-data"
 {
     printf '#cloud-config\nhostname: %s\nusers:\n  - default\nssh_pwauth: false\nssh_authorized_keys:\n' "$NAME"
@@ -50,7 +51,7 @@ if ! $V pool-info "$NAME" >/dev/null 2>&1; then
     $V pool-autostart "$NAME" >/dev/null
 fi
 $V vol-create-as "$NAME" "$NAME.qcow2" 4G --format qcow2 >/dev/null
-$V vol-upload --pool "$NAME" "$NAME.qcow2" "$WORK/noble.img"
+$V vol-upload --pool "$NAME" "$NAME.qcow2" "$UBUNTU_IMAGE"
 $V vol-resize --pool "$NAME" "$NAME.qcow2" 20G >/dev/null
 $V vol-create-as "$NAME" seed.iso "$(wc -c < "$WORK/seed.iso")" --format raw >/dev/null
 $V vol-upload --pool "$NAME" seed.iso "$WORK/seed.iso"
@@ -75,6 +76,7 @@ done
 # Let cloud-init finish first (it exits 2 for "done, with warnings", which is fine here).
 $SSH cloud-init status --wait >/dev/null 2>&1 || true
 $SSH 'cat > /tmp/provision.sh' < "$HERE/provision.sh"
+$SSH 'cat > /tmp/winrm-requirements.txt' < "$HERE/winrm-requirements.txt"
 $SSH sudo sh /tmp/provision.sh ubuntu
 # The cloud-init seed isn't needed any more (it would show as a "cidata" drive in Files). Then restart into the
 # provisioned system (text mode, NetworkManager), as it will run from now on.

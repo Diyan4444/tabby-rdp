@@ -1,0 +1,440 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 12:55:10 -0700
+Subject: [PATCH 31/51] fix(graphics,egfx): cap RDP6 planar images at 8192
+ pixels and size them from the input
+
+The RDP6 bitmap stream decoder (32 bpp fast-path bitmaps, and the EGFX
+Planar codec) takes the image's width and height from its container,
+16-bit values that nothing bounds. It reserved width * height * 3 bytes
+for the RGB24 output before looking at the stream, and with RLE it
+sized its plane buffer for the whole image before decoding a byte; the
+products were unchecked. A server could send an EGFX Planar command of
+three bytes with a 20000x20000 destination rectangle and make the client
+allocate over 2 GB, or one of 65535x65535, whose size overflows a 32-bit
+usize: in the WebAssembly build that reservation panics (a trap).
+
+The decoder now refuses images wider or taller than 8192 pixels: the
+per-axis cap of the interleaved RLE and ClearCodec decoders, MS-RDPBCGR's
+maximum desktop width and height, and room for an 8K monitor
+(7680x4320). Within it, every size it computes fits a 32-bit usize. It
+also refuses RLE data too short for the planes before allocating them
+(a plane's scanline takes at least one byte per 47 pixels, MS-RDPEGDI
+3.1.9.2), and reserves the output once the planes are known to cover
+the image, so a few bytes can no longer size buffers for the largest
+image.
+
+The largest image still takes 192 MiB of planes and 192 MiB of RGB24,
+and the EGFX client's RGBA copy of it 256 MiB. These are now allocated
+fallibly: a session that runs out of memory for them fails with
+BitmapDecodeError::OutOfMemory, or a Planar decode error, rather than
+aborting the instance every session shares. The plane buffer, which the
+decoder reuses from image to image, grew by doubling: an 8192x8191 image
+and then an 8192x8192 one left it holding 384 MiB, twice what the second
+needed. A buffer too small for an image is now replaced with one of the
+exact size, and a buffer over 16 MiB (the planes of a 2560x2048 image)
+is released after its image. Decoding the largest image now peaks at 384
+MiB, and at 448 MiB in the EGFX client while it widens the image to RGBA
+(about 830 MiB before), and leaves the decoder holding nothing.
+---
+ crates/ironrdp-egfx/src/client.rs             |  15 +-
+ .../src/rdp6/bitmap_stream/decoder.rs         | 249 +++++++++++++++++-
+ crates/ironrdp-graphics/src/rdp6/rle.rs       |  11 +
+ 3 files changed, 257 insertions(+), 18 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 82b12bc9..c6654249 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -1400,7 +1400,8 @@ impl GraphicsPipelineClient {
+         // separate `RDPGFX_CODECID_ALPHA` (0x000C) command carrying an
+         // `ALPHACODEC_BITMAP_STREAM` ([MS-RDPEGFX] 2.2.4.3), so a Planar command
+         // contributes color only and the pixels are opaque.
+-        let rgba = convert_rgb24_to_rgba(&rgb24);
++        let rgba = convert_rgb24_to_rgba(&rgb24).map_err(|e| pdu_other_err!("Planar decode", source: e))?;
++        drop(rgb24);
+ 
+         let update = BitmapUpdate {
+             surface_id,
+@@ -1613,14 +1614,16 @@ fn bound_regions(
+ ///
+ /// The RDP 6.0 Planar decoder emits three bytes per pixel; `BitmapUpdate` carries
+ /// four. See `decode_planar` for why the alpha byte is synthesized rather than
+-/// taken from the stream.
+-fn convert_rgb24_to_rgba(src: &[u8]) -> Vec<u8> {
++/// taken from the stream. The result takes up to 256 MiB, for an 8192x8192 image,
++/// so it is allocated fallibly.
++fn convert_rgb24_to_rgba(src: &[u8]) -> Result<Vec<u8>, std::collections::TryReserveError> {
+     debug_assert!(src.len().is_multiple_of(3), "RGB24 input length not aligned to 3 bytes");
+-    let mut dst = Vec::with_capacity(src.len() / 3 * 4);
++    let mut dst = Vec::new();
++    dst.try_reserve_exact(src.len() / 3 * 4)?;
+     for pixel in src.chunks_exact(3) {
+         dst.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0xFF]);
+     }
+-    dst
++    Ok(dst)
+ }
+ 
+ fn convert_bgra_to_rgba(src: &[u8]) -> Vec<u8> {
+@@ -2047,7 +2050,7 @@ mod tests {
+         ];
+ 
+         assert_eq!(
+-            convert_rgb24_to_rgba(&rgb),
++            convert_rgb24_to_rgba(&rgb).unwrap(),
+             vec![0x10, 0x20, 0x30, 0xFF, 0x40, 0x50, 0x60, 0xFF]
+         );
+     }
+diff --git a/crates/ironrdp-graphics/src/rdp6/bitmap_stream/decoder.rs b/crates/ironrdp-graphics/src/rdp6/bitmap_stream/decoder.rs
+index 78b511b7..47238c8d 100644
+--- a/crates/ironrdp-graphics/src/rdp6/bitmap_stream/decoder.rs
++++ b/crates/ironrdp-graphics/src/rdp6/bitmap_stream/decoder.rs
+@@ -1,14 +1,42 @@
++use std::collections::TryReserveError;
++
+ use ironrdp_core::{DecodeError, decode};
+ use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
+ 
+ use crate::color_conversion::Rgb;
+-use crate::rdp6::rle::{RleDecodeError, decompress_8bpp_plane};
++use crate::rdp6::rle::{RleDecodeError, decompress_8bpp_plane, min_compressed_8bpp_plane_size};
++
++/// Largest image width or height the decoder accepts, in pixels.
++///
++/// An `RDP6_BITMAP_STREAM` does not carry its dimensions: they come from its container
++/// (TS_BITMAP_DATA, or an EGFX destination rectangle) as 16-bit values nothing else bounds, and
++/// the planes and the RGB24 output are sized from them. 8192 is the per-axis cap of the
++/// interleaved RLE and ClearCodec decoders, MS-RDPBCGR's maximum desktop width and height, and
++/// holds an 8K monitor (7680x4320).
++const MAX_DECODE_DIM: usize = 8192;
++
++/// Largest plane buffer the decoder keeps for its next image, in bytes.
++///
++/// The decoder reuses the buffer it decompresses RLE planes into, sized for the largest image it
++/// has decoded. Images whose planes take more, up to 192 MiB for 8192x8192, get a buffer of their
++/// own that is released after them, so that one large image does not keep a session holding its
++/// size. 16 MiB holds the planes of a 2560x2048 image.
++const MAX_KEPT_PLANES_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+ 
+ #[derive(Debug)]
+ pub enum BitmapDecodeError {
+     Decode(DecodeError),
+     Rle(RleDecodeError),
+     InvalidUncompressedDataSize,
++    /// The RLE-compressed color planes are too short for the image's dimensions.
++    InvalidCompressedDataSize,
++    /// The image's width or height is above the decoder's 8192-pixel limit.
++    DimensionsTooLarge {
++        width: usize,
++        height: usize,
++    },
++    /// There is not enough memory for the image's planes or output.
++    OutOfMemory(TryReserveError),
+ }
+ 
+ impl core::fmt::Display for BitmapDecodeError {
+@@ -22,6 +50,15 @@ impl core::fmt::Display for BitmapDecodeError {
+                 f,
+                 "color plane data size provided in PDU is not sufficient to reconstruct the bitmap"
+             ),
++            BitmapDecodeError::InvalidCompressedDataSize => write!(
++                f,
++                "compressed color plane data provided in PDU is too short to reconstruct the bitmap"
++            ),
++            BitmapDecodeError::DimensionsTooLarge { width, height } => write!(
++                f,
++                "width {width} or height {height} exceeds {MAX_DECODE_DIM}-pixel decoder limit"
++            ),
++            BitmapDecodeError::OutOfMemory(_error) => write!(f, "not enough memory to decode the bitmap"),
+         }
+     }
+ }
+@@ -31,7 +68,10 @@ impl core::error::Error for BitmapDecodeError {
+         match self {
+             BitmapDecodeError::Decode(err) => Some(err),
+             BitmapDecodeError::Rle(err) => Some(err),
+-            BitmapDecodeError::InvalidUncompressedDataSize => None,
++            BitmapDecodeError::OutOfMemory(err) => Some(err),
++            BitmapDecodeError::InvalidUncompressedDataSize
++            | BitmapDecodeError::InvalidCompressedDataSize
++            | BitmapDecodeError::DimensionsTooLarge { .. } => None,
+         }
+     }
+ }
+@@ -75,7 +115,17 @@ struct AYCoCgParams {
+ }
+ 
+ impl<'a> BitmapStreamDecoderImpl<'a> {
+-    fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Self {
++    fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Result<Self, BitmapDecodeError> {
++        // INVARIANT: image_width <= MAX_DECODE_DIM && image_height <= MAX_DECODE_DIM, so a plane
++        // holds at most 2^26 bytes, and every size computed from them below (at most four planes'
++        // worth) fits a 32-bit usize.
++        if image_width > MAX_DECODE_DIM || image_height > MAX_DECODE_DIM {
++            return Err(BitmapDecodeError::DimensionsTooLarge {
++                width: image_width,
++                height: image_height,
++            });
++        }
++
+         let (chroma_width, chroma_height) = if bitmap.has_subsampled_chroma() {
+             // When image is subsampled, chroma plane has half the size of the luma plane, however
+             // its size is rounded up to the nearest greater integer, to take into account odd image
+@@ -97,7 +147,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
+ 
+         let color_plane_offsets = [0, full_plane_size, full_plane_size + chroma_plane_size];
+ 
+-        Self {
++        Ok(Self {
+             bitmap,
+             image_width,
+             image_height,
+@@ -107,12 +157,35 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
+             chroma_plane_size,
+             uncompressed_planes_size,
+             color_plane_offsets,
+-        }
++        })
+     }
+ 
+     fn decompress_planes(&'a self, aux_buffer: &'a mut Vec<u8>) -> Result<&'a [u8], BitmapDecodeError> {
+         let planes = if self.bitmap.header.enable_rle_compression {
+-            // We don't care for the previous content, just resize it to fit the data
++            // Refuse data too short to fill the planes before allocating them: a few bytes must
++            // not size a buffer for the largest image.
++            let full_plane_min_size = min_compressed_8bpp_plane_size(self.image_width, self.image_height);
++            let chroma_plane_min_size = min_compressed_8bpp_plane_size(self.chroma_width, self.chroma_height);
++            let alpha_plane_min_size = if self.bitmap.header.use_alpha {
++                full_plane_min_size
++            } else {
++                0
++            };
++            let min_compressed_size = alpha_plane_min_size + full_plane_min_size + chroma_plane_min_size * 2;
++            if self.bitmap.color_panes_data().len() < min_compressed_size {
++                return Err(BitmapDecodeError::InvalidCompressedDataSize);
++            }
++
++            // We don't care for the previous content, just resize it to fit the data. A buffer
++            // too small is replaced with one of the exact size, allocated fallibly: growing it
++            // would double its capacity, and copy the old planes, when an 8192x8192 image's
++            // planes alone take 192 MiB.
++            if aux_buffer.capacity() < self.uncompressed_planes_size {
++                *aux_buffer = Vec::new();
++                aux_buffer
++                    .try_reserve_exact(self.uncompressed_planes_size)
++                    .map_err(BitmapDecodeError::OutOfMemory)?;
++            }
+             aux_buffer.resize(self.uncompressed_planes_size, 0);
+             let uncompressed_planes_buffer = &mut aux_buffer[..self.uncompressed_planes_size];
+ 
+@@ -230,12 +303,15 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
+     }
+ 
+     fn decode(self, dst: &mut Vec<u8>, aux_buffer: &'a mut Vec<u8>) -> Result<(), BitmapDecodeError> {
+-        // Reserve enough space for decoded RGB channels data
+-        dst.reserve(self.image_height * self.image_width * 3);
++        let color_planes = self.decompress_planes(aux_buffer)?;
++
++        // Reserve enough space for decoded RGB channels data, now that the color planes are known
++        // to describe the whole image: fallibly, as it takes up to 192 MiB.
++        dst.try_reserve_exact(self.full_plane_size * 3)
++            .map_err(BitmapDecodeError::OutOfMemory)?;
+ 
+         match self.bitmap.header.color_plane_definition {
+             ColorPlaneDefinition::Argb => {
+-                let color_planes = self.decompress_planes(aux_buffer)?;
+                 self.write_argb_planes_to_rgb24(color_planes, dst);
+             }
+             ColorPlaneDefinition::AYCoCg {
+@@ -248,7 +324,6 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
+                     chroma_subsampling: use_chroma_subsampling,
+                     alpha: self.bitmap.header.use_alpha,
+                 };
+-                let color_planes = self.decompress_planes(aux_buffer)?;
+                 self.write_aycocg_planes_to_rgb24(params, color_planes, dst);
+             }
+         }
+@@ -298,8 +373,158 @@ impl BitmapStreamDecoder {
+     ) -> Result<(), BitmapDecodeError> {
+         let bitmap = decode::<BitmapStreamPdu<'_>>(bitmap_data)?;
+ 
+-        let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
++        let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height)?;
++
++        let result = decoder.decode(dst, &mut self.planes_buffer);
++
++        if self.planes_buffer.capacity() > MAX_KEPT_PLANES_BUFFER_SIZE {
++            self.planes_buffer = Vec::new();
++        }
++
++        result
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::rdp6::{BitmapStreamEncoder, RgbChannels};
++
++    #[test]
++    fn decode_refuses_dimensions_above_the_cap_before_allocating() {
++        for (width, height) in [(8193, 8193), (8193, 1), (1, 8193)] {
++            let mut decoder = BitmapStreamDecoder::default();
++            let mut dst = Vec::new();
++
++            // RLE, ARGB with alpha, and two bytes of plane data.
++            let error = decoder
++                .decode_bitmap_stream_to_rgb24(&[0x10, 0x00, 0x00], &mut dst, width, height)
++                .unwrap_err();
++
++            assert!(
++                matches!(error, BitmapDecodeError::DimensionsTooLarge { width: w, height: h } if (w, h) == (width, height)),
++                "{error:?}"
++            );
++            assert_eq!(dst.capacity(), 0);
++            assert_eq!(decoder.planes_buffer.capacity(), 0);
++        }
++    }
++
++    #[test]
++    fn decode_refuses_rle_planes_too_short_for_the_image_before_allocating() {
++        let mut decoder = BitmapStreamDecoder::default();
++        let mut dst = Vec::new();
+ 
+-        decoder.decode(dst, &mut self.planes_buffer)
++        // RLE, ARGB with alpha: each of the four 8192-pixel-wide planes needs at least 175 bytes
++        // per scanline, and two bytes are all there is.
++        let error = decoder
++            .decode_bitmap_stream_to_rgb24(&[0x10, 0x00, 0x00], &mut dst, 8192, 8192)
++            .unwrap_err();
++
++        assert!(
++            matches!(error, BitmapDecodeError::InvalidCompressedDataSize),
++            "{error:?}"
++        );
++        assert_eq!(dst.capacity(), 0);
++        assert_eq!(decoder.planes_buffer.capacity(), 0);
++    }
++
++    #[test]
++    fn decode_refuses_raw_planes_too_short_for_the_image_before_allocating() {
++        let mut decoder = BitmapStreamDecoder::default();
++        let mut dst = Vec::new();
++
++        // No RLE, no alpha, an empty set of planes and the padding byte.
++        let error = decoder
++            .decode_bitmap_stream_to_rgb24(&[0x20, 0x00], &mut dst, 8192, 8192)
++            .unwrap_err();
++
++        assert!(
++            matches!(error, BitmapDecodeError::InvalidUncompressedDataSize),
++            "{error:?}"
++        );
++        assert_eq!(dst.capacity(), 0);
++        assert_eq!(decoder.planes_buffer.capacity(), 0);
++    }
++
++    /// RLE-compressed planes, without alpha, of a `width` x `height` image whose bytes are all zero.
++    ///
++    /// Each scanline is runs of 47 bytes (control byte 0xF2), then a run of the `width % 47` left,
++    /// which must be 0 or from 3 to 15: about one byte per 47 pixels.
++    fn zero_rle_bitmap(width: usize, height: usize) -> Vec<u8> {
++        let mut scanline = vec![0xF2; width / 47];
++        if !width.is_multiple_of(47) {
++            scanline.push(u8::try_from(width % 47).unwrap());
++        }
++
++        // RLE, no alpha, ARGB.
++        let mut bitmap = vec![0x30];
++        for _ in 0..3 * height {
++            bitmap.extend_from_slice(&scanline);
++        }
++        bitmap
++    }
++
++    #[test]
++    fn decode_grows_the_plane_buffer_to_the_size_an_image_needs() {
++        let mut decoder = BitmapStreamDecoder::default();
++
++        for (width, height) in [(94, 93), (94, 94), (47, 47)] {
++            let mut dst = Vec::new();
++            decoder
++                .decode_bitmap_stream_to_rgb24(&zero_rle_bitmap(width, height), &mut dst, width, height)
++                .unwrap();
++            assert_eq!(dst, vec![0; width * height * 3]);
++        }
++
++        // The buffer took the size of the second image's planes, rather than twice the first's,
++        // and the third image reused it.
++        assert_eq!(decoder.planes_buffer.capacity(), 3 * 94 * 94);
++    }
++
++    #[test]
++    fn decode_does_not_keep_the_plane_buffer_of_a_large_image() {
++        let mut decoder = BitmapStreamDecoder::default();
++
++        // About 4 MiB of RLE each, for 192 MiB of planes.
++        for (width, height) in [(8192, 8191), (8192, 8192)] {
++            let mut dst = Vec::new();
++            decoder
++                .decode_bitmap_stream_to_rgb24(&zero_rle_bitmap(width, height), &mut dst, width, height)
++                .unwrap();
++            assert_eq!(dst.len(), width * height * 3);
++
++            assert!(
++                decoder.planes_buffer.capacity() <= 3 * 8192 * 8192,
++                "{width}x{height}: {} bytes of plane buffer",
++                decoder.planes_buffer.capacity()
++            );
++        }
++
++        assert_eq!(decoder.planes_buffer.capacity(), 0);
++    }
++
++    #[test]
++    fn decode_accepts_images_as_wide_or_tall_as_the_cap() {
++        for (width, height) in [(8192, 2), (2, 8192)] {
++            let image: Vec<u8> = (0..width * height * 3)
++                .map(|i| u8::try_from(i % 251).expect("< 251"))
++                .collect();
++
++            for rle in [true, false] {
++                // RLE takes a control byte for every scanline: a two-pixel-wide plane grows by half.
++                let mut pdu = vec![0; width * height * 8 + 2];
++                let written = BitmapStreamEncoder::new(width, height)
++                    .encode_bitmap::<RgbChannels>(&image, &mut pdu, rle)
++                    .unwrap();
++
++                let mut decoded = Vec::new();
++                BitmapStreamDecoder::default()
++                    .decode_bitmap_stream_to_rgb24(&pdu[..written], &mut decoded, width, height)
++                    .unwrap();
++
++                assert_eq!(decoded, image, "{width}x{height}, rle: {rle}");
++            }
++        }
+     }
+ }
+diff --git a/crates/ironrdp-graphics/src/rdp6/rle.rs b/crates/ironrdp-graphics/src/rdp6/rle.rs
+index 7e9a66fc..9688bcd3 100644
+--- a/crates/ironrdp-graphics/src/rdp6/rle.rs
++++ b/crates/ironrdp-graphics/src/rdp6/rle.rs
+@@ -191,6 +191,17 @@ pub(crate) fn decompress_8bpp_plane(
+     RlePlaneDecoder::new(width, height).decode(src, dst)
+ }
+ 
++/// Returns the fewest bytes an RLE-compressed 8bpp color plane of `width` x `height` can take.
++///
++/// Each scanline is encoded on its own, as segments that start with a control byte and decode
++/// to at most [`MAX_DECODED_SEGMENT_SIZE`] bytes, so a scanline takes at least one byte for
++/// every 47 pixels ([MS-RDPEGDI] 3.1.9.2).
++///
++/// [MS-RDPEGDI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi/
++pub(crate) fn min_compressed_8bpp_plane_size(width: usize, height: usize) -> usize {
++    width.div_ceil(MAX_DECODED_SEGMENT_SIZE).saturating_mul(height)
++}
++
+ struct RleEncoderScanlineIterator<I> {
+     inner: core::iter::Enumerate<I>,
+     width: usize,

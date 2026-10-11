@@ -1,0 +1,482 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <aaronhritz@gmail.com>
+Date: Sat, 10 Oct 2026 16:38:42 -0700
+Subject: [PATCH] fix(web): bound queued drive requests and bytes
+
+---
+ crates/ironrdp-rdpdr/src/pdu/efs.rs |   3 +
+ crates/ironrdp-web/src/drive.rs     | 381 +++++++++++++++++++++++++++-
+ 2 files changed, 377 insertions(+), 7 deletions(-)
+
+diff --git a/crates/ironrdp-rdpdr/src/pdu/efs.rs b/crates/ironrdp-rdpdr/src/pdu/efs.rs
+index 29f7057a..320b0216 100644
+--- a/crates/ironrdp-rdpdr/src/pdu/efs.rs
++++ b/crates/ironrdp-rdpdr/src/pdu/efs.rs
+@@ -1599,6 +1599,8 @@ impl NtStatus {
+     pub const LOCK_NOT_GRANTED: Self = Self(0xC000_0055);
+     /// STATUS_DISK_FULL
+     pub const DISK_FULL: Self = Self(0xC000_007F);
++    /// STATUS_INSUFFICIENT_RESOURCES
++    pub const INSUFFICIENT_RESOURCES: Self = Self(0xC000_009A);
+     /// STATUS_FILE_IS_A_DIRECTORY
+     pub const FILE_IS_A_DIRECTORY: Self = Self(0xC000_00BA);
+     /// STATUS_CANCELLED
+@@ -1634,6 +1636,7 @@ impl Debug for NtStatus {
+             NtStatus::SHARING_VIOLATION => write!(f, "STATUS_SHARING_VIOLATION"),
+             NtStatus::LOCK_NOT_GRANTED => write!(f, "STATUS_LOCK_NOT_GRANTED"),
+             NtStatus::DISK_FULL => write!(f, "STATUS_DISK_FULL"),
++            NtStatus::INSUFFICIENT_RESOURCES => write!(f, "STATUS_INSUFFICIENT_RESOURCES"),
+             NtStatus::FILE_IS_A_DIRECTORY => write!(f, "STATUS_FILE_IS_A_DIRECTORY"),
+             NtStatus::CANCELLED => write!(f, "STATUS_CANCELLED"),
+             NtStatus::DELETE_PENDING => write!(f, "STATUS_DELETE_PENDING"),
+diff --git a/crates/ironrdp-web/src/drive.rs b/crates/ironrdp-web/src/drive.rs
+index c2ec081f..653d69d8 100644
+--- a/crates/ironrdp-web/src/drive.rs
++++ b/crates/ironrdp-web/src/drive.rs
+@@ -8,7 +8,8 @@
+ //! page: [`WasmDriveBackend`], on the SVC processor side, only queues each request. A worker task
+ //! ([`DriveWorker`]) takes them one at a time, in the order the server sent them, awaits the JavaScript operations
+ //! (which may return promises) and hands the response to the session's event loop, which sends it. A slow
+-//! operation holds up the drive, not the page.
++//! operation holds up the drive, not the page. The queue is bounded ([`QueueLimits`]): a server that sends requests
++//! faster than they are served has those past the bound answered with an error at once.
+ //!
+ //! The JavaScript object (`DriveFs` below) sees the server's paths as the server sends them, relative to the drive,
+ //! with backslashes, and is responsible for resolving them inside the folder it shares (and refusing paths that
+@@ -17,8 +18,10 @@
+ //!
+ //! [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4a0ab25e
+ 
++use core::sync::atomic::{AtomicUsize, Ordering};
+ use std::collections::HashMap;
+ use std::fmt;
++use std::sync::Arc;
+ 
+ use futures_channel::mpsc;
+ use futures_util::StreamExt as _;
+@@ -330,12 +333,66 @@ struct OpenEntry {
+     delete_on_close: bool,
+ }
+ 
++/// How many requests may wait for the worker (queued, or being served), and how much they may hold in all.
++///
++/// The server doesn't wait for one request's response before sending the next, and nothing else bounds what waits:
++/// A request past either limit is answered at once with STATUS_INSUFFICIENT_RESOURCES instead of being queued,
++/// including a request that exceeds the byte limit while the queue is empty.
++#[derive(Debug, Clone, Copy)]
++struct QueueLimits {
++    requests: usize,
++    /// Bytes, counted as the requests' size on the wire: their data and paths, mostly.
++    bytes: usize,
++}
++
++impl QueueLimits {
++    /// A server sends one request per I/O its applications do, and even a copy on many threads has a few dozen
++    /// outstanding; servers read 64 KiB or so at a time, and write alike. 1,024 requests holding 64 MiB is a thousand
++    /// such writes.
++    const DEFAULT: Self = Self {
++        requests: 1024,
++        bytes: 64 * 1024 * 1024,
++    };
++}
++
++/// What the requests waiting for the worker hold: counted in by the backend, out by each request's [`QueuePlace`].
++#[derive(Debug, Default)]
++struct QueueUsage {
++    requests: AtomicUsize,
++    bytes: AtomicUsize,
++}
++
++/// A request's place in the queue, given up when the worker is done with it (or the queue is dropped).
++#[derive(Debug)]
++struct QueuePlace {
++    bytes: usize,
++    usage: Arc<QueueUsage>,
++}
++
++impl Drop for QueuePlace {
++    fn drop(&mut self) {
++        self.usage.requests.fetch_sub(1, Ordering::AcqRel);
++        self.usage.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
++    }
++}
++
++/// A request on its way to the worker.
++#[derive(Debug)]
++struct Queued {
++    request: ServerDriveIoRequest,
++    _place: QueuePlace,
++}
++
+ /// Drive redirection served by a JavaScript file system (see the module documentation): the SVC processor's side,
+ /// which queues the server's requests for the [`DriveWorker`].
+ #[derive(Debug)]
+ pub(crate) struct WasmDriveBackend {
+     drives: Vec<SharedDrive>,
+-    requests: mpsc::UnboundedSender<ServerDriveIoRequest>,
++    requests: mpsc::UnboundedSender<Queued>,
++    limits: QueueLimits,
++    usage: Arc<QueueUsage>,
++    /// Requests are being refused, and that was logged.
++    refusing: bool,
+ }
+ 
+ impl_as_any!(WasmDriveBackend);
+@@ -352,7 +409,35 @@ impl WasmDriveBackend {
+             open: HashMap::new(),
+         };
+         spawn_local(worker.run(queue, events));
+-        Self { drives, requests }
++        Self::with_queue(drives, requests, QueueLimits::DEFAULT)
++    }
++
++    /// The backend queuing requests for whoever takes them from `requests`, within `limits`.
++    fn with_queue(drives: Vec<SharedDrive>, requests: mpsc::UnboundedSender<Queued>, limits: QueueLimits) -> Self {
++        Self {
++            drives,
++            requests,
++            limits,
++            usage: Arc::new(QueueUsage::default()),
++            refusing: false,
++        }
++    }
++
++    /// A place in the queue for a request `bytes` long, if it has room for it (see [`QueueLimits`]).
++    fn place(&self, bytes: usize) -> Option<QueuePlace> {
++        // Only the backend counts requests in, so the room it sees can't be taken meanwhile.
++        let requests = self.usage.requests.load(Ordering::Acquire);
++        let queued_bytes = self.usage.bytes.load(Ordering::Acquire);
++        let new_bytes = queued_bytes.checked_add(bytes)?;
++        if !(requests < self.limits.requests && new_bytes <= self.limits.bytes) {
++            return None;
++        }
++        self.usage.requests.fetch_add(1, Ordering::AcqRel);
++        self.usage.bytes.fetch_add(bytes, Ordering::AcqRel);
++        Some(QueuePlace {
++            bytes,
++            usage: Arc::clone(&self.usage),
++        })
+     }
+ 
+     /// The drives to announce, as `Rdpdr::with_drives` takes them.
+@@ -372,10 +457,11 @@ struct DriveWorker {
+ impl DriveWorker {
+     async fn run(
+         mut self,
+-        mut requests: mpsc::UnboundedReceiver<ServerDriveIoRequest>,
++        mut requests: mpsc::UnboundedReceiver<Queued>,
+         events: mpsc::UnboundedSender<RdpInputEvent>,
+     ) {
+-        while let Some(request) = requests.next().await {
++        // A request keeps its place in the queue until it has been served.
++        while let Some(Queued { request, _place }) = requests.next().await {
+             match self.handle(request).await {
+                 Ok(messages) if messages.is_empty() => {}
+                 // Encoded here: the event loop's messages are plain data.
+@@ -985,14 +1071,121 @@ impl RdpdrBackend for WasmDriveBackend {
+     }
+ 
+     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
++        // Change notification is never answered (see `DriveWorker::handle`): nothing for the worker to do.
++        if matches!(req, ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(_)) {
++            return Ok(Vec::new());
++        }
++        let Some(place) = self.place(wire_size(&req)) else {
++            if !self.refusing {
++                self.refusing = true;
++                warn!(
++                    requests = self.limits.requests,
++                    bytes = self.limits.bytes,
++                    "Drive requests refused until fewer wait for the file system"
++                );
++            }
++            return refusal(req, NtStatus::INSUFFICIENT_RESOURCES);
++        };
++        self.refusing = false;
+         // Answered by the worker, through the event loop.
+-        if self.requests.unbounded_send(req).is_err() {
++        let queued = Queued {
++            request: req,
++            _place: place,
++        };
++        if self.requests.unbounded_send(queued).is_err() {
+             warn!("Drive request dropped: the worker has ended");
+         }
+-        Ok(Vec::new())
++        return Ok(Vec::new());
++
++        /// The size of a request on the wire, which is about what it holds queued: its data and paths, mostly.
++        fn wire_size(req: &ServerDriveIoRequest) -> usize {
++            match req {
++                ServerDriveIoRequest::ServerCreateDriveRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveQueryInformationRequest(req) => req.size(),
++                ServerDriveIoRequest::DeviceCloseRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveQueryVolumeInformationRequest(req) => req.size(),
++                ServerDriveIoRequest::DeviceControlRequest(req) => req.size(),
++                ServerDriveIoRequest::DeviceReadRequest(req) => req.size(),
++                ServerDriveIoRequest::DeviceWriteRequest(req) => req.size(),
++                ServerDriveIoRequest::DeviceFlushBuffersRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveSetInformationRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveLockControlRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveQuerySecurityRequest(req) => req.size(),
++                ServerDriveIoRequest::ServerDriveSetSecurityRequest(req) => req.size(),
++            }
++        }
+     }
+ }
+ 
++/// The response failing `req` with `status`, in the form its kind of request is answered (as the worker answers one
++/// it can't serve); none for change notification, which is never answered.
++fn refusal(req: ServerDriveIoRequest, status: NtStatus) -> PduResult<Vec<SvcMessage>> {
++    let pdu = match req {
++        ServerDriveIoRequest::ServerCreateDriveRequest(req) => RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
++            device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
++            file_id: 0,
++            information: Information::empty(),
++        }),
++        ServerDriveIoRequest::ServerDriveQueryInformationRequest(req) => {
++            RdpdrPdu::ClientDriveQueryInformationResponse(ClientDriveQueryInformationResponse {
++                device_io_response: DeviceIoResponse::new(req.device_io_request, status),
++                buffer: None,
++            })
++        }
++        ServerDriveIoRequest::DeviceCloseRequest(req) => RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
++            device_io_response: DeviceIoResponse::new(req.device_io_request, status),
++        }),
++        ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(req) => {
++            RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
++                device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
++                buffer: None,
++            })
++        }
++        ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(_) => return Ok(Vec::new()),
++        ServerDriveIoRequest::ServerDriveQueryVolumeInformationRequest(req) => {
++            RdpdrPdu::ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse {
++                device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
++                buffer: None,
++            })
++        }
++        ServerDriveIoRequest::DeviceControlRequest(req) => RdpdrPdu::DeviceControlResponse(DeviceControlResponse {
++            device_io_reply: DeviceIoResponse::new(req.header, status),
++            output_buffer: None,
++        }),
++        ServerDriveIoRequest::DeviceReadRequest(req) => RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
++            device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
++            read_data: Vec::new(),
++        }),
++        ServerDriveIoRequest::DeviceWriteRequest(req) => RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
++            device_io_reply: DeviceIoResponse::new(req.device_io_request, status),
++            length: 0,
++        }),
++        ServerDriveIoRequest::DeviceFlushBuffersRequest(req) => {
++            RdpdrPdu::DeviceFlushBuffersResponse(DeviceFlushBuffersResponse {
++                device_io_response: DeviceIoResponse::new(req.device_io_request, status),
++            })
++        }
++        ServerDriveIoRequest::ServerDriveSetInformationRequest(req) => RdpdrPdu::ClientDriveSetInformationResponse(
++            ClientDriveSetInformationResponse::new(&req, status).map_err(|e| encode_err!(e))?,
++        ),
++        ServerDriveIoRequest::ServerDriveLockControlRequest(req) => {
++            RdpdrPdu::ClientDriveLockControlResponse(ClientDriveLockControlResponse::new(req.device_io_request, status))
++        }
++        ServerDriveIoRequest::ServerDriveQuerySecurityRequest(req) => {
++            RdpdrPdu::ClientDriveQuerySecurityResponse(ClientDriveQuerySecurityResponse {
++                device_io_response: DeviceIoResponse::new(req.device_io_request, status),
++                security_descriptor: None,
++            })
++        }
++        ServerDriveIoRequest::ServerDriveSetSecurityRequest(req) => RdpdrPdu::ClientDriveSetSecurityResponse(
++            ClientDriveSetSecurityResponse::new(&req, status).map_err(|e| encode_err!(e))?,
++        ),
++    };
++    Ok(vec![SvcMessage::from(pdu)])
++}
++
+ /// The server's path with a leading backslash and no trailing one (the root is `\`), forward slashes as backslashes.
+ fn normalize(path: &str) -> String {
+     let path = path.replace('/', "\\");
+@@ -1121,8 +1314,182 @@ fn matches(pattern: &str, name: &str) -> bool {
+ 
+ #[cfg(test)]
+ mod tests {
++    use ironrdp::rdpdr::pdu::efs::{
++        MajorFunction, MinorFunction, ServerDriveNotifyChangeDirectoryRequest, SharedAccess,
++    };
++
+     use super::*;
+ 
++    fn io_request(major_function: MajorFunction, completion_id: u32) -> DeviceIoRequest {
++        DeviceIoRequest {
++            device_id: 1,
++            file_id: 1,
++            completion_id,
++            major_function,
++            minor_function: MinorFunction::from(0),
++        }
++    }
++
++    fn read(completion_id: u32) -> ServerDriveIoRequest {
++        ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
++            device_io_request: io_request(MajorFunction::Read, completion_id),
++            length: 64 * 1024,
++            offset: 0,
++        })
++    }
++
++    fn write(completion_id: u32, length: usize) -> ServerDriveIoRequest {
++        ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
++            device_io_request: io_request(MajorFunction::Write, completion_id),
++            offset: 0,
++            write_data: vec![0x55; length],
++        })
++    }
++
++    fn backend(limits: QueueLimits) -> (WasmDriveBackend, mpsc::UnboundedReceiver<Queued>) {
++        let (requests, queue) = mpsc::unbounded();
++        (WasmDriveBackend::with_queue(Vec::new(), requests, limits), queue)
++    }
++
++    /// The one response's completion ID, status and length.
++    fn answer(responses: &[SvcMessage]) -> (u32, NtStatus, usize) {
++        let [response] = responses else {
++            panic!("one response, not {}", responses.len());
++        };
++        let bytes = response.encode_unframed_pdu().expect("response encodes");
++        // RDPDR header (4 bytes), then DR_DEVICE_IOCOMPLETION: DeviceId, CompletionId, IoStatus.
++        let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
++        (field(8), NtStatus::from(field(12)), bytes.len())
++    }
++
++    #[test]
++    fn requests_past_the_queue_limit_are_refused() {
++        let (mut backend, mut queue) = backend(QueueLimits {
++            requests: 2,
++            bytes: 1024 * 1024,
++        });
++
++        assert!(backend.handle_drive_io_request(read(1)).unwrap().is_empty());
++        assert!(backend.handle_drive_io_request(read(2)).unwrap().is_empty());
++        let refused = backend.handle_drive_io_request(read(3)).unwrap();
++        assert_eq!(answer(&refused), (3, NtStatus::INSUFFICIENT_RESOURCES, 20));
++
++        // Once the worker is done with one, another takes its place.
++        let served = queue.try_recv().expect("queued request");
++        assert_eq!(served.request, read(1));
++        drop(served);
++        assert!(backend.handle_drive_io_request(read(4)).unwrap().is_empty());
++        let refused = backend.handle_drive_io_request(read(5)).unwrap();
++        assert_eq!(answer(&refused).1, NtStatus::INSUFFICIENT_RESOURCES);
++    }
++
++    #[test]
++    fn requests_past_the_queue_bytes_are_refused() {
++        const WRITE_REQUEST: usize = 20 /* DR_DEVICE_IOREQUEST */ + 32 /* fields, padding */;
++        let (mut backend, mut queue) = backend(QueueLimits {
++            requests: 100,
++            bytes: 1000,
++        });
++
++        // The byte limit also applies when the queue is empty.
++        let refused = backend.handle_drive_io_request(write(1, 1001)).unwrap();
++        assert_eq!(answer(&refused), (1, NtStatus::INSUFFICIENT_RESOURCES, 21));
++        assert!(queue.try_recv().is_err());
++
++        assert!(backend.handle_drive_io_request(write(3, 500)).unwrap().is_empty());
++        assert!(
++            backend
++                .handle_drive_io_request(write(4, 1000 - 500 - 2 * WRITE_REQUEST))
++                .unwrap()
++                .is_empty()
++        );
++        assert_eq!(backend.usage.bytes.load(Ordering::Acquire), 1000);
++        let refused = backend.handle_drive_io_request(write(5, 0)).unwrap();
++        assert_eq!(answer(&refused).1, NtStatus::INSUFFICIENT_RESOURCES);
++        // Requests carrying no data still count.
++        let refused = backend.handle_drive_io_request(read(6)).unwrap();
++        assert_eq!(answer(&refused).1, NtStatus::INSUFFICIENT_RESOURCES);
++    }
++
++    #[test]
++    fn in_flight_requests_and_queue_drop_release_their_budget() {
++        let (mut backend, mut queue) = backend(QueueLimits {
++            requests: 1,
++            bytes: 1024,
++        });
++        assert!(backend.handle_drive_io_request(read(1)).unwrap().is_empty());
++        let in_flight = queue.try_recv().expect("queued request");
++        assert_eq!(
++            answer(&backend.handle_drive_io_request(read(2)).unwrap()).1,
++            NtStatus::INSUFFICIENT_RESOURCES
++        );
++        drop(in_flight);
++        assert!(backend.handle_drive_io_request(read(3)).unwrap().is_empty());
++        drop(queue);
++        assert_eq!(backend.usage.requests.load(Ordering::Acquire), 0);
++        assert_eq!(backend.usage.bytes.load(Ordering::Acquire), 0);
++    }
++
++    #[test]
++    fn refused_requests_are_answered_as_their_kind_is() {
++        let (mut backend, _queue) = backend(QueueLimits {
++            requests: 1,
++            bytes: 1024,
++        });
++        assert!(backend.handle_drive_io_request(read(1)).unwrap().is_empty());
++
++        let create = ServerDriveIoRequest::ServerCreateDriveRequest(DeviceCreateRequest {
++            device_io_request: io_request(MajorFunction::Create, 2),
++            desired_access: DesiredAccess::empty(),
++            allocation_size: 0,
++            file_attributes: FileAttributes::empty(),
++            shared_access: SharedAccess::empty(),
++            create_disposition: CreateDisposition::FILE_OPEN,
++            create_options: CreateOptions::empty(),
++            path: "\\file.txt".to_owned(),
++        });
++        let close = ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
++            device_io_request: io_request(MajorFunction::Close, 3),
++        });
++        // DR_DEVICE_IOCOMPLETION (16 bytes with the RDPDR header) and what each response adds to it.
++        for (request, completion_id, length) in [
++            (create, 2, 16 + 4 /* FileId */ + 1 /* Information */),
++            (close, 3, 16 + 4 /* Padding */),
++            (read(4), 4, 16 + 4 /* Length */),
++            (write(5, 8), 5, 16 + 4 /* Length */ + 1 /* Padding */),
++        ] {
++            let refused = backend.handle_drive_io_request(request).unwrap();
++            assert_eq!(
++                answer(&refused),
++                (completion_id, NtStatus::INSUFFICIENT_RESOURCES, length)
++            );
++        }
++    }
++
++    #[test]
++    fn change_notifications_take_no_place_in_the_queue() {
++        let (mut backend, mut queue) = backend(QueueLimits {
++            requests: 1,
++            bytes: 1024,
++        });
++
++        // Never answered, by the worker or here. Sent while the queue has room: queued, it would take the one place
++        // there is, and the read after it would be refused.
++        let notify =
++            ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(ServerDriveNotifyChangeDirectoryRequest {
++                device_io_request: io_request(MajorFunction::DirectoryControl, 2),
++                watch_tree: 1,
++                completion_filter: 0x17,
++            });
++        assert!(backend.handle_drive_io_request(notify).unwrap().is_empty());
++        assert!(
++            backend.handle_drive_io_request(read(1)).unwrap().is_empty(),
++            "queued, not refused"
++        );
++        assert_eq!(queue.try_recv().expect("queued request").request, read(1));
++        assert!(queue.try_recv().is_err(), "nothing else queued");
++    }
++
+     #[test]
+     fn patterns() {
+         assert!(matches("*", "anything"));

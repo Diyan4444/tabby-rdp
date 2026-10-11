@@ -1,0 +1,419 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <aaronhritz@gmail.com>
+Date: Sat, 10 Oct 2026 16:38:41 -0700
+Subject: [PATCH] fix(cliprdr): cap clipboard formats and format names
+
+---
+ crates/ironrdp-cliprdr/src/lib.rs             |  16 +-
+ crates/ironrdp-cliprdr/src/pdu/format_list.rs |  72 +++++-
+ .../tests/clipboard/format_list_limits.rs     | 239 ++++++++++++++++++
+ .../tests/clipboard/mod.rs                    |   1 +
+ 4 files changed, 323 insertions(+), 5 deletions(-)
+ create mode 100644 crates/ironrdp-testsuite-core/tests/clipboard/format_list_limits.rs
+
+diff --git a/crates/ironrdp-cliprdr/src/lib.rs b/crates/ironrdp-cliprdr/src/lib.rs
+index 71ae8126..9b58136c 100644
+--- a/crates/ironrdp-cliprdr/src/lib.rs
++++ b/crates/ironrdp-cliprdr/src/lib.rs
+@@ -720,7 +720,21 @@ impl<R: Role> Cliprdr<R> {
+         // because the remote rejected our clipboard and no further responses for
+         // those requests will arrive.
+ 
+-        let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
++        let formats = match format_list.get_formats(self.are_long_format_names_enabled()) {
++            Ok(formats) => formats,
++            Err(error) => {
++                // [MS-RDPECLIP] 2.2.3.2 - CB_RESPONSE_FAIL: the Format List was not processed. One that
++                // can't be decoded, or holds more than MAX_FORMAT_COUNT formats or a name longer than
++                // MAX_FORMAT_NAME_LENGTH, leaves the remote clipboard with nothing to paste here; the
++                // channel goes on with the next copy.
++                warn!(%error, "Refusing the remote format list");
++                self.backend.on_remote_copy(&[]);
++
++                return Ok(vec![into_cliprdr_message(ClipboardPdu::FormatListResponse(
++                    FormatListResponse::Fail,
++                ))]);
++            }
++        };
+ 
+         // Notify backend of available formats
+         self.backend.on_remote_copy(&formats);
+diff --git a/crates/ironrdp-cliprdr/src/pdu/format_list.rs b/crates/ironrdp-cliprdr/src/pdu/format_list.rs
+index 9bcf9a52..ba13cc13 100644
+--- a/crates/ironrdp-cliprdr/src/pdu/format_list.rs
++++ b/crates/ironrdp-cliprdr/src/pdu/format_list.rs
+@@ -1,7 +1,7 @@
+ use std::borrow::Cow;
+ 
+ use ironrdp_core::{
+-    Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_int, ensure_size,
++    Decode, DecodeError, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_int, ensure_size,
+     invalid_field_err,
+ };
+ use ironrdp_pdu::utils::{CharacterSet, read_string_from_cursor, to_utf16_bytes, write_string_to_cursor};
+@@ -9,6 +9,20 @@ use ironrdp_pdu::{PduResult, decode_err, impl_pdu_borrowing, impl_pdu_pod};
+ 
+ use crate::pdu::{ClipboardPduFlags, PartialHeader};
+ 
++/// Most formats taken from one Format List PDU.
++///
++/// Applications put a few dozen formats on the clipboard at most. The limit is far above that, and keeps
++/// what a list costs to decode and to go through small: a few megabytes at most, with names of
++/// [`MAX_FORMAT_NAME_LENGTH`] characters.
++pub const MAX_FORMAT_COUNT: usize = 1024;
++
++/// Longest format name taken from a Format List PDU, in characters (UTF-16 code units, or bytes for
++/// ANSI names), not counting its null terminator.
++///
++/// Windows keeps registered format names as atoms, at most 255 characters long; servers that name
++/// formats after MIME types use at most 255 as well (RFC 6838 4.2).
++pub const MAX_FORMAT_NAME_LENGTH: usize = 1024;
++
+ /// Clipboard format id.
+ ///
+ /// [Standard clipboard formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/standard-clipboard-formats)
+@@ -329,6 +343,10 @@ impl FormatList<'_> {
+         Self::new_impl(formats, use_long_format, true)
+     }
+ 
++    /// The formats in the list.
++    ///
++    /// Fails for a list of more than [`MAX_FORMAT_COUNT`] formats, or with a name longer than
++    /// [`MAX_FORMAT_NAME_LENGTH`] characters.
+     pub fn get_formats(&self, use_long_format: bool) -> PduResult<Vec<ClipboardFormat>> {
+         let mut src = ReadCursor::new(self.encoded_formats.as_ref());
+         let charset = if self.use_ascii {
+@@ -339,13 +357,17 @@ impl FormatList<'_> {
+ 
+         if use_long_format {
+             // Minimal `CLIPRDR_LONG_FORMAT_NAME` size (id + null-terminated name)
+-            const MINIMAL_FORMAT_SIZE: usize = 4 /* id */ + 2 /* null-terminated name */;
++            let minimal_format_size = 4 /* id */ + if self.use_ascii { 1 } else { 2 } /* null terminator */;
+ 
+             let mut formats = Vec::with_capacity(16);
+ 
+-            while src.len() >= MINIMAL_FORMAT_SIZE {
++            while src.len() >= minimal_format_size {
++                if formats.len() == MAX_FORMAT_COUNT {
++                    return Err(decode_err!(too_many_formats(&src)));
++                }
++
+                 let id = src.read_u32();
+-                let name = read_string_from_cursor(&mut src, charset, true).map_err(|e| decode_err!(e))?;
++                let name = read_format_name(&mut src, charset).map_err(|e| decode_err!(e))?;
+ 
+                 let format = ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new(name));
+ 
+@@ -356,6 +378,10 @@ impl FormatList<'_> {
+         } else {
+             let items_count = src.len() / Self::SHORT_FORMAT_SIZE;
+ 
++            if items_count > MAX_FORMAT_COUNT {
++                return Err(decode_err!(too_many_formats(&src)));
++            }
++
+             let mut formats = Vec::with_capacity(items_count);
+ 
+             for _ in 0..items_count {
+@@ -375,6 +401,44 @@ impl FormatList<'_> {
+     }
+ }
+ 
++fn too_many_formats(src: &ReadCursor<'_>) -> DecodeError {
++    invalid_field_err!(FormatList::NAME, "formatListData", "format count exceeds MAX_FORMAT_COUNT", in: src)
++}
++
++/// Reads a null-terminated format name of at most [`MAX_FORMAT_NAME_LENGTH`] characters. A name that
++/// runs to the end of the list without a terminator is read to its end.
++fn read_format_name(src: &mut ReadCursor<'_>, charset: CharacterSet) -> DecodeResult<String> {
++    // The terminator is looked for among the first MAX_FORMAT_NAME_LENGTH + 1 characters only: a longer
++    // name is refused without going through it.
++    let (terminated, characters_left) = match charset {
++        CharacterSet::Unicode => (
++            src.remaining()
++                .chunks_exact(2)
++                .take(MAX_FORMAT_NAME_LENGTH + 1)
++                .any(|character| character == [0, 0]),
++            src.len() / 2,
++        ),
++        CharacterSet::Ansi => (
++            src.remaining()
++                .iter()
++                .take(MAX_FORMAT_NAME_LENGTH + 1)
++                .any(|&character| character == 0),
++            src.len(),
++        ),
++    };
++
++    if !terminated && characters_left > MAX_FORMAT_NAME_LENGTH {
++        return Err(invalid_field_err!(
++            FormatList::NAME,
++            "wszFormatName",
++            "format name exceeds MAX_FORMAT_NAME_LENGTH",
++            in: src
++        ));
++    }
++
++    read_string_from_cursor(src, charset, true)
++}
++
+ impl<'de> Decode<'de> for FormatList<'de> {
+     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+         let header = PartialHeader::decode(src)?;
+diff --git a/crates/ironrdp-testsuite-core/tests/clipboard/format_list_limits.rs b/crates/ironrdp-testsuite-core/tests/clipboard/format_list_limits.rs
+new file mode 100644
+index 00000000..19aa9230
+--- /dev/null
++++ b/crates/ironrdp-testsuite-core/tests/clipboard/format_list_limits.rs
+@@ -0,0 +1,239 @@
++//! What a Format List PDU may carry: at most [`MAX_FORMAT_COUNT`] formats, with names of at most
++//! [`MAX_FORMAT_NAME_LENGTH`] characters. A list over these limits is answered with
++//! CB_RESPONSE_FAIL, and the channel goes on.
++
++use std::sync::{Arc, Mutex};
++
++use ironrdp_cliprdr::CliprdrClient;
++use ironrdp_cliprdr::backend::CliprdrBackend;
++use ironrdp_cliprdr::pdu::{
++    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, ClipboardPdu,
++    FileContentsRequest, FileContentsResponse, FormatDataRequest, FormatDataResponse, FormatList, FormatListResponse,
++    LockDataId, MAX_FORMAT_COUNT, MAX_FORMAT_NAME_LENGTH,
++};
++use ironrdp_core::AsAny;
++use ironrdp_svc::SvcProcessor as _;
++
++use super::test_helpers::{init_ready_client_with_backend, real_now_ms};
++
++fn named(id: u32, name: &str) -> ClipboardFormat {
++    ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new(name.to_owned()))
++}
++
++fn unnamed(id: ClipboardFormatId) -> ClipboardFormat {
++    ClipboardFormat::new(id)
++}
++
++/// A Format List PDU (Unicode names) with `body` as its format entries, as the server sends it.
++fn format_list_pdu(body: &[u8]) -> Vec<u8> {
++    let mut pdu = vec![0x02, 0x00, 0x00, 0x00]; // msgType CB_FORMAT_LIST, msgFlags 0
++    pdu.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
++    pdu.extend_from_slice(body);
++    pdu
++}
++
++fn decode_long_names(pdu: &[u8]) -> Result<Vec<ClipboardFormat>, ironrdp_pdu::PduError> {
++    match ironrdp_core::decode::<ClipboardPdu<'_>>(pdu).unwrap() {
++        ClipboardPdu::FormatList(list) => list.get_formats(true),
++        other => panic!("expected a Format List, got {other:?}"),
++    }
++}
++
++#[test]
++fn takes_a_format_list_at_the_limits() {
++    let name = "n".repeat(MAX_FORMAT_NAME_LENGTH);
++    let list = vec![named(0xC001, &name); MAX_FORMAT_COUNT];
++
++    for encoded in [
++        FormatList::new_unicode(&list, true).unwrap(),
++        FormatList::new_ascii(&list, true).unwrap(),
++    ] {
++        let formats = encoded.get_formats(true).unwrap();
++        assert_eq!(formats.len(), MAX_FORMAT_COUNT);
++        assert!(formats.iter().all(|format| format == &list[0]));
++    }
++
++    // Short format names: 32 bytes each.
++    let list = vec![unnamed(ClipboardFormatId::CF_UNICODETEXT); MAX_FORMAT_COUNT];
++    let formats = FormatList::new_unicode(&list, false)
++        .unwrap()
++        .get_formats(false)
++        .unwrap();
++    assert_eq!(formats, list);
++}
++
++#[test]
++fn counts_empty_ansi_names_at_the_limit() {
++    let list = vec![unnamed(ClipboardFormatId::CF_DIB); MAX_FORMAT_COUNT];
++    assert_eq!(
++        FormatList::new_ascii(&list, true)
++            .unwrap()
++            .get_formats(true)
++            .unwrap()
++            .len(),
++        MAX_FORMAT_COUNT
++    );
++    let too_many = vec![unnamed(ClipboardFormatId::CF_DIB); MAX_FORMAT_COUNT + 1];
++    assert!(
++        FormatList::new_ascii(&too_many, true)
++            .unwrap()
++            .get_formats(true)
++            .is_err()
++    );
++}
++
++#[test]
++fn refuses_more_formats_than_the_limit() {
++    let list = vec![named(0xC001, "PNG"); MAX_FORMAT_COUNT + 1];
++
++    assert!(FormatList::new_unicode(&list, true).unwrap().get_formats(true).is_err());
++    assert!(FormatList::new_ascii(&list, true).unwrap().get_formats(true).is_err());
++    assert!(
++        FormatList::new_unicode(&list, false)
++            .unwrap()
++            .get_formats(false)
++            .is_err()
++    );
++}
++
++#[test]
++fn refuses_a_format_name_longer_than_the_limit() {
++    let list = [named(0xC001, &"n".repeat(MAX_FORMAT_NAME_LENGTH + 1))];
++
++    assert!(FormatList::new_unicode(&list, true).unwrap().get_formats(true).is_err());
++    assert!(FormatList::new_ascii(&list, true).unwrap().get_formats(true).is_err());
++}
++
++#[test]
++fn refuses_an_unterminated_name_longer_than_the_limit() {
++    // One format whose name runs past the limit without a terminator.
++    let mut body = 0xC001u32.to_le_bytes().to_vec();
++    body.extend(core::iter::repeat_n([b'n', 0], MAX_FORMAT_NAME_LENGTH + 1).flatten());
++
++    assert!(decode_long_names(&format_list_pdu(&body)).is_err());
++}
++
++#[test]
++fn takes_an_unterminated_name_within_the_limit() {
++    // As before the limits: a name that ends with the PDU is read to its end.
++    let mut body = 0xC001u32.to_le_bytes().to_vec();
++    body.extend_from_slice(b"P\0N\0G\0");
++
++    assert_eq!(
++        decode_long_names(&format_list_pdu(&body)).unwrap(),
++        [named(0xC001, "PNG")]
++    );
++}
++
++/// Records the formats the remote copies.
++#[derive(Debug)]
++struct RemoteCopies(Arc<Mutex<Vec<Vec<ClipboardFormat>>>>);
++
++impl CliprdrBackend for RemoteCopies {
++    fn temporary_directory(&self) -> &str {
++        "/tmp"
++    }
++    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
++        ClipboardGeneralCapabilityFlags::empty()
++    }
++    fn on_ready(&mut self) {}
++    fn on_request_format_list(&mut self) {}
++    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
++    fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
++        self.0.lock().unwrap().push(available_formats.to_vec());
++    }
++    fn on_format_data_request(&mut self, _: FormatDataRequest) {}
++    fn on_format_data_response(&mut self, _: FormatDataResponse<'_>) {}
++    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
++    fn on_file_contents_response(&mut self, _: FileContentsResponse<'_>) {}
++    fn on_lock(&mut self, _: LockDataId) {}
++    fn on_unlock(&mut self, _: LockDataId) {}
++
++    fn now_ms(&self) -> u64 {
++        real_now_ms()
++    }
++    fn elapsed_ms(&self, since: u64) -> u64 {
++        self.now_ms().saturating_sub(since)
++    }
++}
++
++impl AsAny for RemoteCopies {
++    fn as_any(&self) -> &dyn core::any::Any {
++        self
++    }
++    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
++        self
++    }
++}
++
++/// A client in the Ready state, and what its backend hears of the remote's copies.
++fn ready_client() -> (CliprdrClient, Arc<Mutex<Vec<Vec<ClipboardFormat>>>>) {
++    let copies = Arc::new(Mutex::new(Vec::new()));
++    let cliprdr = init_ready_client_with_backend(Box::new(RemoteCopies(Arc::clone(&copies))));
++    (cliprdr, copies)
++}
++
++/// Hands the client the remote's Format List PDU; returns its answers.
++fn process(cliprdr: &mut CliprdrClient, pdu: &[u8]) -> Vec<FormatListResponse> {
++    cliprdr
++        .process(pdu)
++        .unwrap()
++        .into_iter()
++        .map(|message| {
++            let bytes = message.encode_unframed_pdu().unwrap();
++            match ironrdp_core::decode::<ClipboardPdu<'_>>(&bytes).unwrap() {
++                ClipboardPdu::FormatListResponse(response) => response,
++                other => panic!("expected a Format List Response, got {other:?}"),
++            }
++        })
++        .collect()
++}
++
++fn encode(list: &[ClipboardFormat]) -> Vec<u8> {
++    ironrdp_core::encode_vec(&ClipboardPdu::FormatList(FormatList::new_unicode(list, true).unwrap())).unwrap()
++}
++
++#[test]
++fn answers_a_format_list_over_the_limit_with_a_failure_and_goes_on() {
++    let (mut cliprdr, copies) = ready_client();
++
++    // Repeated supported formats are rejected before reaching backend selection.
++    let responses = process(
++        &mut cliprdr,
++        &encode(&vec![unnamed(ClipboardFormatId::CF_DIB); MAX_FORMAT_COUNT + 1]),
++    );
++
++    assert_eq!(responses, [FormatListResponse::Fail]);
++    // The remote clipboard changed to nothing the client can take.
++    assert_eq!(*copies.lock().unwrap(), [Vec::<ClipboardFormat>::new()]);
++
++    // The next copy goes through.
++    let list = [unnamed(ClipboardFormatId::CF_UNICODETEXT), named(0xC001, "HTML Format")];
++    assert_eq!(process(&mut cliprdr, &encode(&list)), [FormatListResponse::Ok]);
++    assert_eq!(copies.lock().unwrap().last().unwrap(), &list);
++}
++
++#[test]
++fn answers_a_format_name_over_the_limit_with_a_failure() {
++    let (mut cliprdr, copies) = ready_client();
++
++    let list = [named(0xC001, &"n".repeat(MAX_FORMAT_NAME_LENGTH + 1))];
++
++    assert_eq!(process(&mut cliprdr, &encode(&list)), [FormatListResponse::Fail]);
++    assert_eq!(*copies.lock().unwrap(), [Vec::<ClipboardFormat>::new()]);
++}
++
++#[test]
++fn answers_a_format_list_it_cannot_decode_with_a_failure() {
++    let (mut cliprdr, copies) = ready_client();
++
++    // A name with an unpaired surrogate.
++    let mut body = 0xC001u32.to_le_bytes().to_vec();
++    body.extend_from_slice(&[0x00, 0xD8, 0x00, 0x00]);
++
++    assert_eq!(
++        process(&mut cliprdr, &format_list_pdu(&body)),
++        [FormatListResponse::Fail]
++    );
++    assert_eq!(*copies.lock().unwrap(), [Vec::<ClipboardFormat>::new()]);
++}
+diff --git a/crates/ironrdp-testsuite-core/tests/clipboard/mod.rs b/crates/ironrdp-testsuite-core/tests/clipboard/mod.rs
+index d03a3141..cbf57458 100644
+--- a/crates/ironrdp-testsuite-core/tests/clipboard/mod.rs
++++ b/crates/ironrdp-testsuite-core/tests/clipboard/mod.rs
+@@ -6,6 +6,7 @@ mod file_contents_validation;
+ mod file_list_format;
+ mod file_transfer_capabilities;
+ mod format;
++mod format_list_limits;
+ mod lock_lifecycle;
+ mod lock_strategy;
+ mod lock_timeout;
