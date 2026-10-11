@@ -222,3 +222,10 @@ still supports Node 18. `test/package.json` marks the tree as ESM (the plugin it
 build). A page expression is a string, so nothing can check what it returns: `ev` and `waitFor` default to `unknown`,
 and a suite that reads a shape out of one states it (`ev<CanvasInfo>(...)`) — the shared ones are exported from
 [`lib/harness.ts`](lib/harness.ts).
+
+## Visual QA dashboard
+
+`npm run qa` serves the authenticated Phase 1 dashboard at <http://127.0.0.1:4317>. It runs the real plugin settings
+UI in the existing disposable Tabby runner, with Playwright screenshots and traces. `npm run test:visual` runs the
+same check locally. See [visual QA operations](../docs/visual-qa.md) for access, baselines, storage and validation.
+This checkpoint does not establish RDP rendering coverage.

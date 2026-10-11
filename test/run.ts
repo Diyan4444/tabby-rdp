@@ -19,7 +19,7 @@ import { waitForPort } from './lib/cdp.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LINUX_SUITES = ['e2e', 'desk', 'resize', 'keyboard', 'focus', 'actions', 'clipboard', 'files', 'audio', 'microphone', 'graphics', 'reconnect', 'desktops', 'profiles', 'direct', 'certificates', 'status', 'wake', 'help', 'nested', 'vms', 'headless', 'takeover']
-const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates']
+const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host']
 
 const args = process.argv.slice(2)
 const flag = (name: string) => args.includes(name)
@@ -37,7 +37,7 @@ for (const s of suites) {
     }
 }
 const selected = suites.length ? suites : LINUX_SUITES
-const smoke = selected.some(s => s.startsWith('smoke-'))
+const smoke = selected.some(s => s.startsWith('smoke-') || s === 'visual-host')
 if (flag('--require-rdp') && selected.includes('smoke-rdp') && !process.env.TRD_TEST_HOST) {
     console.error('--require-rdp needs TRD_TEST_HOST; live RDP coverage cannot be skipped')
     process.exit(2)
@@ -126,7 +126,10 @@ function makeSandbox (): string {
 
 let tabby: ChildProcess | null = null
 let sandbox: string | null = null
+let suiteChild: ChildProcess | null = null
 function teardown () {
+    suiteChild?.kill('SIGTERM')
+    suiteChild = null
     if (tabby && !flag('--keep')) {
         // Detached: the whole process group goes, so a Tabby that started helpers doesn't leave them behind.
         if (tabby.pid !== undefined) {
@@ -141,6 +144,13 @@ function teardown () {
     }
 }
 process.on('exit', teardown)
+// A dashboard crash must not leave its disposable Tabby running.
+if (process.env.TRD_QA_PARENT_PID) {
+    const parent = Number(process.env.TRD_QA_PARENT_PID)
+    setInterval(() => {
+        try { process.kill(parent, 0) } catch { teardown(); process.exit(1) }
+    }, 1000).unref()
+}
 for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => { teardown(); process.exit(130) })
 }
@@ -180,10 +190,14 @@ if (selected.some(s => s !== 'trd-pty') && !port) {
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
     ], { env: { ...process.env, TABBY_CONFIG_DIRECTORY: sandbox }, detached: true, stdio: 'ignore' })
+    let launched = false
+    tabby.on('error', error => { console.error(error); process.exit(1) })
+    tabby.on('exit', () => { if (!launched) { console.error('The test Tabby exited before DevTools became ready'); process.exit(1) } })
     if (!await waitForPort(port)) {
         console.error('The test Tabby did not start')
         process.exit(1)
     }
+    launched = true
     console.log(`Test Tabby: DevTools on ${port}, profile ${sandbox}${flag('--packed') ? ' (plugin installed from npm pack)' : ''}`)
 }
 
@@ -198,7 +212,10 @@ for (const name of selected) {
             // tsx, not this Node alone: the suites are TypeScript (see tsconfig.test.json). Node 22.18+ could strip the
             // types itself, but the suites run on any Node 22 (lib/cdp.ts) and this keeps it that way. Resolved from
             // here: by name, Node would look for it from the current directory, which need not be this checkout.
-            const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), path.join(ROOT, 'test', 'suites', `${name}.ts`)], {
+            const command = name === 'visual-host'
+                ? [path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js'), 'test', '--config', path.join(ROOT, 'test', 'visual', 'playwright.config.ts')]
+                : ['--import', import.meta.resolve('tsx'), path.join(ROOT, 'test', 'suites', `${name}.ts`)]
+            const child = spawn(process.execPath, command, {
                 env: {
                     ...process.env, TRD_CDP_PORT: String(port),
                     ...(expectedXterm ? { TRD_SMOKE_EXPECT_XTERM: expectedXterm } : {}),
@@ -206,7 +223,9 @@ for (const name of selected) {
                 },
                 stdio: 'inherit',
             })
-            child.on('exit', code => resolve(code ?? 1))
+            suiteChild = child
+            child.on('error', error => { console.error(error); resolve(1) })
+            child.on('exit', code => { suiteChild = null; resolve(code ?? 1) })
         })
     results.push([name, code, Math.round((Date.now() - started) / 1000), skipped])
 }
