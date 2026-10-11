@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.5.4-rc.1
+## 0.5.4
 
-Local release candidate; not published on npm or as a GitHub release.
+Expanded Linux desktop qualification, cross-platform visual QA and RDP security hardening.
 
 **Added**
 - **Cross-platform visual QA against real desktops:** native Tabby clients on macOS, Windows and Linux cover
@@ -43,7 +43,7 @@ Local release candidate; not published on npm or as a GitHub release.
   find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
   bounded yet, so this slows what a server can have the desktop keep rather than ends it.
 
-**Additional RC security hardening** (#77–87)
+**Additional security hardening** (#77–87)
 
 - **CredSSP requires version 5 or later** before authentication continues. Servers offering only versions 2–4
   must be updated; accepting their TLS certificate does not enable the legacy authentication binding.
@@ -69,8 +69,9 @@ Local release candidate; not published on npm or as a GitHub release.
 - **The combined patch series is rebuilt into the shipped JavaScript/WASM**, including the public decoder-cap
   integration and bounded key-frame admission tests.
 
-The aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
-This batch is not a stable-release sign-off.
+**Known limits:** the aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
+The visual QA matrix does not qualify those paths; KDE qualification is limited to the patched, fixed-monitor profile.
+See [visual QA coverage](docs/visual-qa.md) for the checks actually performed.
 
 ## 0.5.3
 
