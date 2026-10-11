@@ -16,3 +16,18 @@ test('visual QA rejects a neighboring Debian point release and the wrong GNOME/G
         for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
     }
 })
+
+test('Rocky visual QA requires Xfce, xorgxrdp and an xrdp version with live resize', () => {
+    const keys = ['TRD_TEST_EXPECT_OS', 'TRD_TEST_EXPECT_VERSION', 'TRD_TEST_EXPECT_POINT', 'TRD_TEST_EXPECT_GNOME', 'TRD_TEST_EXPECT_STACK']
+    const previous = Object.fromEntries(keys.map(k => [k, process.env[k]]))
+    Object.assign(process.env, { TRD_TEST_EXPECT_OS: 'rocky', TRD_TEST_EXPECT_VERSION: '9.8', TRD_TEST_EXPECT_POINT: '', TRD_TEST_EXPECT_GNOME: '', TRD_TEST_EXPECT_STACK: 'xrdp' })
+    const actual = { os: 'rocky', version: '9.8', point: '', xfce: '4.18.3', xrdp: '0.10.6.1', xorgxrdp: '0.10.5' }
+    try {
+        assert.doesNotThrow(() => verifyLinuxIdentity(actual))
+        for (const wrong of [{ xrdp: '0.9.27' }, { xfce: undefined }, { xorgxrdp: undefined }, { os: 'fedora' }]) {
+            assert.throws(() => verifyLinuxIdentity({ ...actual, ...wrong }))
+        }
+    } finally {
+        for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+    }
+})

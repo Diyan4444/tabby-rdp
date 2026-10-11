@@ -3,13 +3,14 @@ import assert from 'node:assert/strict'
 import { matrix, targetEnvironment, missingSettings, validateTargets } from './matrix.mjs'
 import { availableCatalog } from './store.mjs'
 
-test('every native client has its own UI and four explicitly versioned desktop targets', () => {
-    assert.equal(matrix.length, 15)
-    assert.equal(new Set(matrix.map(e => e.id)).size, 15)
+test('every native client has its own UI and five explicitly versioned desktop targets', () => {
+    assert.equal(matrix.length, 18)
+    assert.equal(new Set(matrix.map(e => e.id)).size, 18)
     for (const client of ['darwin', 'win32', 'linux']) {
         const targets = matrix.filter(e => e.client === client)
-        assert.deepEqual(targets.filter(e => e.desktop).map(e => e.desktop.gnome || e.desktop.os), ['46', '50', '48', 'windows'])
+        assert.deepEqual(targets.filter(e => e.desktop).map(e => e.desktop.gnome || e.desktop.stack || e.desktop.os), ['46', '50', '48', 'xrdp', 'windows'])
         assert.equal(targets.find(e => e.desktop?.os === 'debian').desktop.point, '13.7')
+        assert.ok(targets.find(e => e.desktop?.stack === 'xrdp').required.includes('TRD_TEST_XRDP_PASSWORD'))
     }
 })
 test('an unconfigured cell never inherits another target or reports itself configured', () => {

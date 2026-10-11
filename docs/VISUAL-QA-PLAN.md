@@ -581,6 +581,7 @@ Update it after each completed phase.
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
 | 2a. Distro/native-client expansion | In Progress | — | Expanded matrix acceptance underway. |
+| 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
@@ -673,9 +674,9 @@ Prefer concise entries over lengthy architectural essays.
 
 ### Outstanding Issues
 
-- Only macOS arm64 / installed Tabby 1.0.236 / Electron 43.7.0 has a reviewed baseline and executed visual coverage.
-  Its reported xterm declaration is ^6.0.0. Other hosts fail until a baseline is explicitly reviewed there. The
-  other thread’s H.264 resize failure is not resolved by the non-H.264 controls here.
+- Native macOS, Windows and Linux ARM64 clients now have reviewed baselines. Tabby 1.0.236 / Electron 43.7.0
+  is common, but macOS declares xterm ^6.0.0 and the official Linux/Windows builds declare ^5. x86_64 remains
+  unqualified. The other thread’s H.264 resize failure is not resolved by the non-H.264 controls here.
 - Phase 1 had no real RDP coverage. Phase 2 now provisions dedicated Windows/Ubuntu desktops; see its handoff for
   actual acceptance records and the disclosed Windows installer provenance limitation. Only the listed scenarios
   and non-H.264 path are covered; broader Section 5 coverage remains outstanding.
@@ -683,7 +684,7 @@ Prefer concise entries over lengthy architectural essays.
   live canvas bitmap; the captured actual PNG and filmstrip are the pixel evidence. Actions, assertions, timings and DOM snapshots are available in the local viewer.
 - Dashboard runs the current working tree (commit + dirty flag), not a frozen checkout. Use a dedicated checkout;
   do not edit it or run competing desktop suites during execution. The single-run guard covers this server only.
-- The dashboard exposes three visual catalog entries, not the full existing CDP catalog. Legacy-suite ingestion,
+- The dashboard exposes three legacy visual entries plus the native-client/distro matrix, not the full CDP catalog. Legacy-suite ingestion,
   VM lifecycle controls, long-term trends, scheduled runs, AI and mutations remain later-phase work.
 - Runtime evidence is in ignored `.qa/`; back it up separately. Capacity is bounded; automatic retention and remote
   service-manager deployment are documented/deferred. The existing development-only Angular audit advisory predates
@@ -809,7 +810,7 @@ The document must serve as a durable handoff between independent Codex sessions.
 **Scope:** user-requested expansion of Phase 2, not Phase 3. Status: In Progress pending dashboard acceptance.
 
 - Added fixed matrix cells for macOS, Windows and Linux **native Tabby clients**, each with settings UI plus
-  Ubuntu 24.04/GNOME 46, Fedora 44/GNOME 50, Debian 13.7/GNOME 48 and Windows 11 remote desktops.
+  Ubuntu 24.04/GNOME 46, Fedora 44/GNOME 50, Debian 13.7/GNOME 48, Rocky 9/Xfce/xrdp and Windows 11 remote desktops.
 - New isolated ARM64 Fedora and Debian VMs use vendor-checksummed cloud images. The existing isolated Ubuntu
   and Windows QA VMs remain separate from the other thread's work. Clients report Tabby 1.0.236
   ARM64/Electron 43.7.0. Linux/Windows use checksum-verified official binaries and declare xterm ^5; the existing
@@ -821,8 +822,8 @@ The document must serve as a durable handoff between independent Codex sessions.
   A missing cell cannot inherit another cell's credentials/destination. Fixed HTTP IDs remain the only execution input.
 - Added distro-aware package/image provisioning and a small native-client launcher/bundle command. No extra
   service, job queue or parallel test framework. Native client sessions are operator-managed and explicitly stopped.
-- Baseline preparation passed all twelve native-client→remote-desktop combinations, including Windows→Windows
-  on independent VMs, plus native Windows/Linux settings. Final clean-commit dashboard acceptance remains in progress.
+- The initial fifteen-cell GNOME/Windows matrix passed browser acceptance on clean implementation commits.
+  The user subsequently added Rocky/Xfce/xrdp; its preparation and final eighteen-cell acceptance remain in progress.
 - Provisioning findings retained in `.qa/`: Fedora's shim was rejected by the installed ARM Secure Boot firmware;
   its disposable VM explicitly uses non-Secure-Boot AAVMF. Windows portable ARM64 required Microsoft's signed
   Visual C++ ARM64 runtime. First-login GNOME welcome dialogs and overview obscured correct framebuffer content;
@@ -836,6 +837,39 @@ The document must serve as a durable handoff between independent Codex sessions.
   not masked or bypassed. All final Windows desktop cells use the separate server clone. These disposable guests
   are unactivated; future OS overlays can cause legitimate baseline mismatches and require environment review.
 - Operational instructions and lifecycle limitations: `docs/visual-qa.md`, “Native client and desktop matrix”.
+- Rocky reuses the existing xrdp provisioner and GTK fixture, with its own checksummed cloud image, EPEL/CRB
+  packages, dedicated Xfce/Xorg account and loopback listener; SELinux remains enforcing. Session/transport versions
+  are checked and included in baseline names. This is actual xrdp coverage, distinct from GRD.
+- Shared-harness validation caught retained-state/setup failures: failed SSH tabs were not previously tracked for
+  cleanup; an implicit desktop choice reused Windows behind an Ubuntu gateway; tab animation and focus/sign-in layout
+  could change the requested viewport. The fixes track failed tabs, select the own Linux desktop explicitly, wait for
+  initial geometry and scope the fixed viewport to the owned QA pane. Actual dimensions are asserted. No screenshot
+  tolerance, masks or retries were added. Separate failures and corrective commits remain in the evidence history.
+
+### Planned third Linux stack — Fedora KDE Plasma / KRDP
+
+Requested 2026-10-11 as the third **desktop/RDP stack**, alongside GNOME/GRD and Xfce/xrdp. This is a separate
+Fedora KDE guest, not the Fedora GNOME 50 guest with a different label. Status: **Pending; not executed or qualified**.
+
+| Stack | Environments | Native Tabby clients |
+|---|---|---|
+| GNOME / GNOME Remote Desktop | Ubuntu 24.04 (GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48) | macOS, Windows, Linux |
+| Xfce / Xorg / xrdp | Rocky Linux 9 | macOS, Windows, Linux |
+| KDE Plasma / Wayland / KRDP | Separate Fedora KDE Plasma guest | macOS, Windows, Linux; planned |
+
+Before execution, pin and record Fedora, Plasma, KWin, KRDP, PipeWire and encoder versions; provision a dedicated
+session with documented start/restart, login, credential storage and certificate lifecycle. Verify the installed
+release's unattended/headless behavior rather than assuming parity with GRD or xrdp. Upstream documents an existing
+logged-in session or SDDM autologin and an RDP Graphics Pipeline/H.264 path, which needs separate codec qualification.
+Sources: [KRDP session, codec and CLI documentation](https://github.com/KDE/krdp/blob/master/README.md),
+[Fedora KRDP packages](https://packages.fedoraproject.org/pkgs/krdp/krdp-server/).
+
+Acceptance requires real native Tabby runs on all three client OSes: initial frame, keyboard/mouse input, tab return,
+resize with temporal evidence, reconnect and cleanup, with verified guest identity and negotiated codec. Preserve
+raw and visible frames, guest evidence where available, reports and traces. Measure the codec's rendering stability
+before selecting comparison tolerances; do not copy the current non-H.264 baselines or relax them to admit KRDP.
+Report unsupported operations and infrastructure failures explicitly. This planned coverage does not resolve the
+other thread's H.264 resize failure. No KDE VM or passing KRDP cell is claimed by this plan entry.
 
 ## 17. Execution Instructions for Codex / Astra High
 

@@ -1,6 +1,6 @@
 # Visual QA operations (Phases 1–2)
 
-The dashboard runs the local settings UI or **real Windows 11 / Ubuntu GNOME RDP desktops through Tabby and IronRDP** in a disposable Tabby profile. Select an environment before running. Existing CDP suites remain available through `npm test`.
+The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD and Xfce/xrdp desktops through IronRDP**, plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
 
 ## Start and use
 
@@ -209,13 +209,13 @@ spatial damage measurement and repaint/resize/reconnect recovery controls; prese
 ## Native client and desktop matrix
 
 The fixed catalog now separates the **native Tabby client** (macOS, Windows, Linux) from the **remote RDP desktop**:
-Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian **13.7** / GNOME 48, and Windows 11. Each client also has a local
+Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian **13.7** / GNOME 48, Rocky Linux 9 / Xfce / xrdp, and Windows 11. Each client also has a local
 settings test. macOS is a Tabby client target; this does not promise a native macOS RDP server. Windows → Windows needs
 a separate Windows server from the client VM for independent coverage. The original three Phase 1/2 IDs remain available.
 
 The test reads the actual Tabby process's platform/architecture, checks its installed plugin bytes against the current
 build, then verifies `/etc/os-release`, Debian's point release, GNOME Shell and GNOME Remote Desktop versions (or the
-Windows edition/build). A wrong version fails preparation. Screenshot keys include **observed** desktop/distro, GNOME/GRD
+Windows edition/build, or Rocky/Xfce/xrdp/xorgxrdp versions). A wrong version fails preparation. Screenshot keys include **observed** desktop/distro, GNOME/GRD or Xfce/xrdp/xorgxrdp
 versions, client OS/architecture, Tabby and Electron. Updating a VM therefore requires explicit baseline review.
 
 Configure matrix cells with a private JSON file, selected by `TRD_QA_TARGETS_FILE` on both dashboard and baseline commands:
@@ -312,3 +312,31 @@ The Windows test guests are unactivated. An activation watermark appeared on the
 in the retained evidence. Final matrix cells use the separate server VM. No licensing bypass or watermark masking is
 performed. If activation state or another OS overlay changes later, strict comparisons can fail and require environment
 review. The Phase 2 Windows installation-media provenance limitation also carries forward to the offline server clone.
+
+### Rocky Linux 9 / Xfce / xrdp
+
+The existing `test/suites/xrdp.ts` covers functional xrdp behavior on a GNOME/Xfce host. The new Rocky visual cells
+exercise a separate Xfce-only server through the same visual fixture and screenshot/report pipeline, on all three native clients.
+
+```sh
+TEST_DISTRO=rocky9 TEST_XRDP_PASSWORD_FILE=/private/rocky-password \
+  testbed/linux/libvirt.sh qa-rocky /path/test-key.pub
+```
+
+The private password file contains one password and a newline. Provisioning sends it over SSH stdin, installs
+Xfce/xrdp/xorgxrdp from Rocky/EPEL with CRB enabled, and creates `tabbyxrdp` with the supplied SSH keys.
+The Rocky image is pinned to `9.8-20260525.0` (`ROCKY_IMAGE_BUILD` can override it); its vendor SHA256 manifest is checked.
+Sources: [Rocky Xfce setup](https://docs.rockylinux.org/9/guides/desktop/xfce_installation/),
+[Rocky cloud images](https://download.rockylinux.org/pub/rocky/9/images/aarch64/),
+[EPEL xrdp package](https://packages.fedoraproject.org/pkgs/xrdp/xrdp/epel-9.html).
+
+Rocky's xrdp service starts at boot and listens only on guest loopback port 3390; Tabby reaches it through SSH.
+SELinux remains enforcing. Its tested versions are Rocky **9.8**, Xfce **4.18.3**, xrdp **0.10.6.1**, xorgxrdp **0.10.5**.
+Each `visual-{macos,windows,linux}-rocky9` target supplies `TRD_TEST_USER=tabbyxrdp`, `TRD_TEST_XRDP_USER=tabbyxrdp`,
+`TRD_TEST_XRDP_PASSWORD`, and the existing SSH settings as seen by that client. The test verifies real xrdp discovery,
+exercises its certificate-bound non-NLA consent through the normal UI, and locates the actual Xfce/Xorg session.
+It requires xrdp 0.10 or newer for live resize, reuses the GTK fixture on X11, and closes the test's Xfce session afterward.
+Remote JSON and client screenshots are captured; no independent Linux guest pixel oracle is claimed.
+
+Fedora KDE Plasma/KRDP is the planned third Linux RDP stack in [the plan](VISUAL-QA-PLAN.md#planned-third-linux-stack--fedora-kde-plasma--krdp).
+It remains Pending and has no passing dashboard cell. Its session and H.264 requirements must be qualified separately.

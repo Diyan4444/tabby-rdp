@@ -7,6 +7,7 @@ import { clientIdentity, verifyLinuxIdentity, type ClientIdentity } from './iden
 import { windowsGuest } from '../lib/windows.js'
 
 const kind = process.env.TRD_QA_TEST === 'visual-windows' ? 'windows' : 'linux'
+const xrdp = kind === 'linux' && process.env.TRD_TEST_EXPECT_STACK === 'xrdp'
 const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/visual')
 interface FixtureState { version: number, sequence: number, input: string, platform: string, width: number, height: number, ready: boolean, scale: number, font: string, captureId?: number }
 
@@ -27,6 +28,7 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
     let control: (value: object) => Promise<unknown> = async () => {}
     let guestCapture: (name: string, verify?: boolean) => Promise<void> = async () => {}
     let cleanupFixture: () => Promise<unknown> = async () => {}
+    let cleanupSession: () => Promise<unknown> = async () => {}
     const metadata: Record<string, unknown> = { environment: kind, coverage: 'Real RDP framebuffer through Tabby / IronRDP', fixtureVersion: 1, h264: false, checkpoints: [] }
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
@@ -47,14 +49,25 @@ import json, subprocess, pathlib
 os = dict(line.split('=', 1) for line in pathlib.Path('/etc/os-release').read_text().splitlines() if '=' in line)
 def value(key): return os.get(key, '').strip('"')
 def command(args): return subprocess.check_output(args, text=True).strip()
-print(json.dumps(dict(os=value('ID'), version=value('VERSION_ID'), point=pathlib.Path('/etc/debian_version').read_text().strip() if value('ID') == 'debian' else '', gnome=command(['gnome-shell', '--version']), grd=command(['rpm', '-q', '--qf', '%{VERSION}', 'gnome-remote-desktop'] if value('ID') == 'fedora' else ['dpkg-query', '-W', '-f', '\${Version}', 'gnome-remote-desktop']))))
+identity = dict(os=value('ID'), version=value('VERSION_ID'), point=pathlib.Path('/etc/debian_version').read_text().strip() if value('ID') == 'debian' else '')
+if value('ID') == 'rocky':
+    identity.update({key: command(['rpm', '-q', '--qf', '%{VERSION}', package]) for key, package in [('xfce', 'xfce4-session'), ('xrdp', 'xrdp'), ('xorgxrdp', 'xorgxrdp')]})
+else:
+    identity.update(gnome=command(['gnome-shell', '--version']), grd=command(['rpm', '-q', '--qf', '%{VERSION}', 'gnome-remote-desktop'] if value('ID') == 'fedora' else ['dpkg-query', '-W', '-f', '\${Version}', 'gnome-remote-desktop']))
+print(json.dumps(identity))
 PYID`)).trim())
             metadata.remote = identity
             verifyLinuxIdentity(identity)
-            remoteKey = `${identity.os}-${identity.point || identity.version}-gnome-${identity.gnome.match(/\b(\d+\.[\d.]+)/)?.[1]}-grd-${identity.grd.match(/\b(\d+\.[\d.]+)/)?.[1]}`
+            remoteKey = xrdp ? `${identity.os}-${identity.version}-xfce-${identity.xfce}-xrdp-${identity.xrdp}-xorgxrdp-${identity.xorgxrdp}`
+                : `${identity.os}-${identity.point || identity.version}-gnome-${identity.gnome.match(/\b(\d+\.[\d.]+)/)?.[1]}-grd-${identity.grd.match(/\b(\d+\.[\d.]+)/)?.[1]}`
         }
+        t.onCleanup(() => ev('document.getElementById("trd-visual-size")?.remove()'))
         const setSize = async (width: number, height: number) => {
-            await ev(`const el=H.pane.element.nativeElement; Object.assign(el.style,{flex:'none',minWidth:'0',minHeight:'0',width:'${width}px',height:'${height}px'})`)
+            // Tabby's focus/sign-in layout writes inline dimensions again. Keep the test
+            // viewport fixed through those real interactions, scoped to this owned pane.
+            await ev(`const el=H.pane.element.nativeElement; el.setAttribute('data-trd-visual-pane','');
+                let style=document.getElementById('trd-visual-size'); if(!style){style=document.createElement('style');style.id='trd-visual-size';document.head.append(style)}
+                style.textContent='[data-trd-visual-pane] {flex:none!important;min-width:0!important;min-height:0!important;width:${width}px!important;height:${height}px!important}'`)
         }
         await setSize(800, 600)
         // Tabby's new-tab animation can temporarily transform the pane. Negotiate the
@@ -76,14 +89,30 @@ PYID`)).trim())
         }
         const connect = async () => {
             await ev(`await H.inZone(() => RD.desktop.showDesktop(H.pane, ${JSON.stringify(desktopId)}))`)
-            if (kind === 'windows') {
+            if (kind === 'windows' || xrdp) {
+                if (xrdp) {
+                    expect(t.env.user, 'SSH and fixture desktop use the dedicated xrdp account').toBe(t.env.xrdp.user)
+                }
                 await t.waitFor('return RD.desktop.isConnected(H.pane) || !!H.overlay(H.pane)?.querySelector(".trd-signin form")', 30)
+                if (xrdp) expect(await ev('return RD.desktop.desktopOf(H.pane)?.kind'), 'Detected real xrdp desktop').toBe('xrdp')
                 // Credentials use raw CDP, never Playwright arguments; initial sign-in precedes tracing.
-                await ev(`const f=H.overlay(H.pane)?.querySelector('.trd-signin form'); if(f){f.querySelector('[name=remember]').checked=true; f.querySelector('[name=password]').value=${JSON.stringify(win.password)};f.requestSubmit()}`)
+                await ev(`const f=H.overlay(H.pane)?.querySelector('.trd-signin form'); if(f){f.querySelector('[name=remember]').checked=true; f.querySelector('[name=password]').value=${JSON.stringify(xrdp ? t.env.xrdp.password : win.password)};f.requestSubmit()}`)
+                if (xrdp) {
+                    await t.waitFor('return RD.desktop.isConnected(H.pane) || /Network Level Authentication/.test(H.status(H.pane)?.text || "")', 30)
+                    // Exercise the existing certificate-bound consent for the dedicated xrdp server.
+                    await ev('if (/Network Level Authentication/.test(H.status(H.pane)?.text || "")) H.inZone(() => H.clickStatus(H.pane, "Send the password anyway"))')
+                }
             }
             expect(await t.waitFor('return RD.desktop.isConnected(H.pane) && (H.canvas(H.pane)?.colors ?? 0)>10', 60), 'Real RDP connection and decoded desktop frame').toBeTruthy()
         }
         await connect()
+        // Sign-in/consent can cause Tabby to lay out the tab again. Establish the fixed
+        // initial viewport after those dialogs, before launching the fullscreen fixture.
+        await setSize(800, 600)
+        await expect.poll(async () => {
+            const frame = await ev<CanvasInfo>('return H.canvas(H.pane)')
+            return [frame?.w, frame?.h, frame?.cssW, frame?.cssH]
+        }, { timeout: 15_000, message: 'Initial remote and visible resolution is 800x600' }).toEqual([800, 600, 800, 600])
         // Store the initial desktop as evidence, not a nondeterministic OS-shell regression baseline.
         await info.attach('initial-desktop', { body: Buffer.from((await ev<string>('return H.canvasElement(H.pane).toDataURL("image/png")')).split(',')[1], 'base64'), contentType: 'image/png' })
         if (kind === 'linux') {
@@ -91,7 +120,27 @@ PYID`)).trim())
             expect(directory).toMatch(/^\/tmp\/tabby-visual-qa-[A-Za-z0-9]+$/)
             await t.remote('H.pane', `cat > ${directory}/fixture.py`, fs.readFileSync(path.join(fixtures, 'fixture.py'), 'utf8'))
             // Fullscreen fixture owns its fonts/theme/background and has no animations or clock.
-            await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland setsid python3 ${directory}/fixture.py ${directory} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
+            if (xrdp) {
+                let session = ''
+                await expect.poll(async () => {
+                    session = (await t.remote('H.pane', 'pgrep -u "$(id -u)" -x xfce4-session || true')).trim()
+                    return /^\d+$/.test(session)
+                }, { timeout: 30_000, message: 'One real Xfce session for the dedicated xrdp account' }).toBe(true)
+                cleanupSession = () => t.remote('H.pane', `kill ${session} 2>/dev/null || true`)
+                await t.remote('H.pane', `python3 - <<'PYFIXTURE'
+import os, pathlib, subprocess
+session = dict(part.split('=', 1) for part in pathlib.Path('/proc/${session}/environ').read_text().split('\\0') if '=' in part)
+for key in ['DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS']:
+    if key in session: os.environ[key] = session[key]
+assert os.environ.get('DISPLAY'), 'Xfce session has no X11 display'
+os.environ.update(GDK_BACKEND='x11', TRD_VISUAL_DESKTOP='xfce')
+with open('${directory}/fixture.log', 'w') as log:
+    child = subprocess.Popen(['python3', '${directory}/fixture.py', '${directory}'], stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+pathlib.Path('${directory}/pid').write_text(str(child.pid))
+PYFIXTURE`)
+            } else {
+                await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland setsid python3 ${directory}/fixture.py ${directory} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
+            }
             fixtureLog = () => t.remote('H.pane', `cat ${directory}/fixture.log 2>/dev/null || true`)
             readState = async () => { try { return JSON.parse(await t.remote('H.pane', `cat ${directory}/state.json 2>/dev/null || true`)) } catch { return null } }
             control = value => t.remote('H.pane', `cat > ${directory}/command.json`, JSON.stringify(value))
@@ -140,9 +189,9 @@ PYID`)).trim())
         const initial = (await readState())!
         expect(initial.scale, 'Dedicated remote display scale').toBe(1)
         // GNOME opens its overview on a fresh headless session; dismiss it through actual RDP input.
-        if (kind === 'linux') await t.key('Escape', 'Escape', 27)
+        if (kind === 'linux' && !xrdp) await t.key('Escape', 'Escape', 27)
         metadata.fixture = initial
-        metadata.guestPixelOracle = kind === 'windows' ? 'CopyFromScreen in the same interactive RDP session' : 'Unavailable on this Wayland fixture; remote JSON describes application state, not independently captured guest pixels'
+        metadata.guestPixelOracle = kind === 'windows' ? 'CopyFromScreen in the same interactive RDP session' : 'Not captured by the Linux fixture; remote JSON describes application state, not independently captured guest pixels'
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true }); tracing = true
         const canvas = page.locator('.trd-overlay iron-remote-desktop canvas')
         const samples = async () => ev<{ width: number, height: number, points: number[][] }>(`const cv=H.canvasElement(H.pane), c=cv.getContext('2d'),w=cv.width,h=cv.height;
@@ -239,7 +288,7 @@ PYID`)).trim())
             const trace = info.outputPath('trace.zip')
             await context.tracing.stop({ path: trace }); await info.attach('trace', { path: trace, contentType: 'application/zip' })
         }
-        try { await cleanupFixture() } finally {
+        try { try { await cleanupFixture() } finally { await cleanupSession() } } finally {
             try { await harness.close() } finally { await browser.close() }
         }
     }

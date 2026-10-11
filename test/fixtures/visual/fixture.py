@@ -11,7 +11,7 @@ from gi.repository import Gtk, Gdk, GLib
 import cairo
 
 folder = pathlib.Path(sys.argv[1])
-state = {'version': 1, 'sequence': 0, 'input': 'initial', 'platform': 'gnome', 'font': 'DejaVu Sans', 'scale': 1}
+state = {'version': 1, 'sequence': 0, 'input': 'initial', 'platform': os.environ.get('TRD_VISUAL_DESKTOP', 'gnome'), 'font': 'DejaVu Sans', 'scale': 1}
 started = time.monotonic()
 window = Gtk.Window(title='Tabby Visual QA Fixture')
 window.set_decorated(False)

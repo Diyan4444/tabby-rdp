@@ -29,13 +29,19 @@ export async function clientIdentity (ev: (script: string) => Promise<unknown>):
     return { ...actual, pluginSha256: digest as string }
 }
 
-export function verifyLinuxIdentity (actual: { os: string, version: string, point: string, gnome: string, grd: string }) {
+export function verifyLinuxIdentity (actual: { os: string, version: string, point: string, gnome?: string, grd?: string, xfce?: string, xrdp?: string, xorgxrdp?: string }) {
     for (const [field, setting] of [['os', 'OS'], ['version', 'VERSION'], ['point', 'POINT']] as const) {
         const expected = process.env[`TRD_TEST_EXPECT_${setting}`]
         if (expected) expect(actual[field], `Actual remote ${field}`).toBe(expected)
     }
     if (process.env.TRD_TEST_EXPECT_GNOME) {
-        expect(actual.gnome.match(/\b(\d+)\./)?.[1], 'Actual GNOME Shell major').toBe(process.env.TRD_TEST_EXPECT_GNOME)
-        expect(actual.grd.match(/\b(\d+)\./)?.[1], 'Actual GNOME Remote Desktop major').toBe(process.env.TRD_TEST_EXPECT_GNOME)
+        expect(actual.gnome?.match(/\b(\d+)\./)?.[1], 'Actual GNOME Shell major').toBe(process.env.TRD_TEST_EXPECT_GNOME)
+        expect(actual.grd?.match(/\b(\d+)\./)?.[1], 'Actual GNOME Remote Desktop major').toBe(process.env.TRD_TEST_EXPECT_GNOME)
+    }
+    if (process.env.TRD_TEST_EXPECT_STACK === 'xrdp') {
+        expect(actual.xfce, 'Installed Xfce session').toMatch(/^4\./)
+        expect(actual.xorgxrdp, 'Installed xorgxrdp backend').toMatch(/^\d+\.\d+/)
+        const version = actual.xrdp?.match(/^(\d+)\.(\d+)/)
+        expect(!!version && (Number(version[1]) > 0 || Number(version[2]) >= 10), 'xrdp 0.10+ required for live resize').toBe(true)
     }
 }

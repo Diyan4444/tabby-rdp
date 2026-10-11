@@ -234,7 +234,7 @@ reviewed baselines, temporal resize evidence, storage, acceptance and coverage l
 ## Native-client visual matrix
 
 The visual dashboard has distinct cells for macOS, Windows and Linux **Tabby clients**, each targeting Ubuntu 24.04
-(GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48) and Windows 11 desktops. Each client also has a settings capture.
+(GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48), Rocky 9 (Xfce/xrdp) and Windows 11 desktops. Each client also has a settings capture.
 These reuse `visual-host`, `visual-linux` and `visual-windows`; per-cell configuration selects the native CDP session and
 remote machine. Actual client/guest identity and installed plugin content are verified before visual assertions.
 

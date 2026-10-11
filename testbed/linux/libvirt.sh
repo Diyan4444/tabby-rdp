@@ -1,9 +1,10 @@
 #!/bin/sh
-# Creates an Ubuntu 24.04 (default), Debian 13 or Fedora 44 test VM, provisioned with provision.sh and
+# Creates an Ubuntu 24.04 (default), Debian 13, Fedora 44 or Rocky 9 test VM, provisioned with provision.sh and
 # reachable over SSH with your key, then prints the settings for the test suites. Run it on the libvirt host, as a
 # user in the libvirt group (no root needed); it needs virt-install and cloud-localds (cloud-image-utils).
 #
 #     testbed/linux/libvirt.sh [vm-name] [public-key-file]
+# Rocky uses Xfce/xrdp; set TEST_XRDP_PASSWORD_FILE to a private file for its dedicated tabbyxrdp account.
 #
 # Defaults: tabby-rdp-linux, and ~/.ssh/id_ed25519.pub (or id_rsa.pub). The key file can hold several keys, one per
 # line: this host's (for provisioning) and that of the machine that runs the tests, if another.
@@ -48,7 +49,14 @@ case "$DISTRO" in
         IMAGE_NAME="Fedora-Cloud-Base-Generic-44-1.7.$FEDORA_ARCH.qcow2"
         MANIFEST="Fedora-Cloud-44-1.7-$FEDORA_ARCH-CHECKSUM"; CHECK=sha256sum; GUEST_USER=fedora; OS_VARIANT=fedora-unknown
         ;;
-    *) echo 'TEST_DISTRO must be ubuntu2404, debian13 or fedora44' >&2; exit 2 ;;
+    rocky9)
+        case "$IMAGE_ARCH" in arm64) ROCKY_ARCH=aarch64 ;; amd64) ROCKY_ARCH=x86_64 ;; esac
+        IMAGE_BASE="https://download.rockylinux.org/pub/rocky/9/images/$ROCKY_ARCH"
+        IMAGE_NAME="Rocky-9-GenericCloud-Base-${ROCKY_IMAGE_BUILD:-9.8-20260525.0}.$ROCKY_ARCH.qcow2"
+        MANIFEST="$IMAGE_NAME.CHECKSUM"; CHECK=sha256sum; GUEST_USER=rocky; OS_VARIANT=rocky9
+        [ -f "${TEST_XRDP_PASSWORD_FILE:-}" ] || { echo 'Set TEST_XRDP_PASSWORD_FILE to a private password file for Rocky/Xfce/xrdp' >&2; exit 2; }
+        ;;
+    *) echo 'TEST_DISTRO must be ubuntu2404, debian13, fedora44 or rocky9' >&2; exit 2 ;;
 esac
 IMAGE_URL="$IMAGE_BASE/$IMAGE_NAME"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed/$DISTRO}"
@@ -79,7 +87,7 @@ printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-dat
 # DHCP by MAC address: the desktop packages bring NetworkManager, which asks for a lease by MAC, and the address
 # would change at the first reboot otherwise.
 RENDERER=''
-[ "$DISTRO" = fedora44 ] || RENDERER='renderer: networkd'
+case "$DISTRO" in fedora44|rocky9) ;; *) RENDERER='renderer: networkd' ;; esac
 printf 'version: 2\n%s\nethernets:\n  lan:\n    match: {name: "en*"}\n    dhcp4: true\n    dhcp-identifier: mac\n' "$RENDERER" \
     > "$WORK/network-config"
 cloud-localds -N "$WORK/network-config" "$WORK/seed.iso" "$WORK/user-data" "$WORK/meta-data"
@@ -124,6 +132,11 @@ done
 $SSH cloud-init status --wait >/dev/null 2>&1 || true
 $SSH 'cat > /tmp/provision.sh' < "$HERE/provision.sh"
 $SSH sudo sh /tmp/provision.sh "$GUEST_USER"
+if [ "$DISTRO" = rocky9 ]; then
+    $SSH 'cat > /tmp/trd-xrdp-provision.sh' < "$HERE/xrdp.sh"
+    $SSH sudo env TEST_PASSWORD_FILE=- sh /tmp/trd-xrdp-provision.sh tabbyxrdp "$GUEST_USER" < "$TEST_XRDP_PASSWORD_FILE"
+    $SSH 'sudo systemctl enable --now xrdp; rm -f /tmp/trd-xrdp-provision.sh'
+fi
 # Freeze cloud-init before ejecting its datasource; otherwise Debian can rediscover the instance on reboot.
 $SSH sudo touch /etc/cloud/cloud-init.disabled
 # The cloud-init seed isn't needed any more (it would show as a "cidata" drive in Files). Then restart into the

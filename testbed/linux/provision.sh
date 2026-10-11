@@ -1,5 +1,6 @@
 #!/bin/sh
-# Prepares an Ubuntu 24.04, Debian 13 or Fedora 44 machine (a VM is best) as a tabby-rdp test host: GNOME Shell and GNOME Remote Desktop for
+# Prepares Ubuntu 24.04, Debian 13 or Fedora 44 with GNOME, or Rocky 9 for the separate xrdp.sh setup.
+# A VM is best as a tabby-rdp test host: GNOME Shell and GNOME Remote Desktop for
 # headless sessions, the apps the suites drive (Files, Terminal), PipeWire for sound, and a user systemd instance that
 # runs without a login. Run as root, or as the test user with sudo:
 #
@@ -31,6 +32,9 @@ case "${ID:-}:${VERSION_ID:-}" in
     fedora:44)
         dnf install -y gnome-shell gnome-session gnome-settings-daemon gnome-remote-desktop gnome-terminal nautilus pipewire-utils wireplumber python3-gobject python3-cairo dejavu-sans-fonts dejavu-sans-mono-fonts python3-pip tmux openssh-server openssl qemu-guest-agent
         ;;
+    rocky:9.*)
+        dnf install -y python3-gobject python3-cairo gtk3 dejavu-sans-fonts dejavu-sans-mono-fonts python3-pip tmux openssh-server openssl qemu-guest-agent
+        ;;
     *) echo "Unsupported testbed: ${PRETTY_NAME:-unknown}" >&2; exit 2 ;;
 esac
 # pywinrm lets this host run the Windows suite's checks inside a Windows test machine. Ubuntu's python3-winrm can't
@@ -44,6 +48,7 @@ systemctl set-default multi-user.target
 loginctl enable-linger "$TEST_USER"
 
 echo "Ready: $PRETTY_NAME for user $TEST_USER"
+if [ "$ID" = rocky ]; then exit 0; fi # libvirt.sh adds Xfce/xrdp with xrdp.sh, without GNOME.
 gnome-shell --version
 if command -v dpkg-query >/dev/null; then dpkg-query -W gnome-remote-desktop; else rpm -q gnome-remote-desktop; fi
 

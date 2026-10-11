@@ -8,6 +8,7 @@ export const desktops = [
     { id: 'ubuntu2404', name: 'Ubuntu 24.04 / GNOME 46', os: 'ubuntu', version: '24.04', gnome: '46' },
     { id: 'fedora44', name: 'Fedora 44 / GNOME 50', os: 'fedora', version: '44', gnome: '50' },
     { id: 'debian13', name: 'Debian 13.7 / GNOME 48', os: 'debian', version: '13', point: '13.7', gnome: '48' },
+    { id: 'rocky9', name: 'Rocky Linux 9 / Xfce / xrdp', os: 'rocky', version: '9.8', stack: 'xrdp' },
     { id: 'windows11', name: 'Windows 11 26H2', os: 'windows', version: '26H2', build: '26300' },
 ]
 export const linuxRequired = ['TRD_TEST_HOST']
@@ -15,7 +16,7 @@ export const windowsRequired = ['TRD_TEST_WIN_SSH_HOST', 'TRD_TEST_WIN_ADDRESS',
 export const matrix = clients.flatMap(client => [
     { id: `visual-${client.id}-host`, name: `${client.name} Tabby settings`, environment: `${client.name} client → local UI`, client: client.platform, suite: 'visual-host', required: [], coverage: 'Actual native Tabby settings UI' },
     ...desktops.map(desktop => ({ id: `visual-${client.id}-${desktop.id}`, name: `${client.name} → ${desktop.name}`, environment: `${client.name} client → ${desktop.name}`, client: client.platform, desktop,
-        suite: desktop.os === 'windows' ? 'visual-windows' : 'visual-linux', required: desktop.os === 'windows' ? windowsRequired : linuxRequired,
+        suite: desktop.os === 'windows' ? 'visual-windows' : 'visual-linux', required: desktop.os === 'windows' ? windowsRequired : [...linuxRequired, ...(desktop.stack === 'xrdp' ? ['TRD_TEST_XRDP_USER', 'TRD_TEST_XRDP_PASSWORD'] : [])],
         coverage: 'Real RDP framebuffer, geometry, input, resize, tab return and reconnect' })),
 ])
 export function validateTargets (value) {
@@ -38,7 +39,7 @@ export function targetEnvironment (entry, base, targets = {}) {
     const env = Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('TRD_TEST_')))
     return { ...env, ...targets[entry.id], TRD_TEST_EXPECT_CLIENT: entry.client,
         TRD_TEST_EXPECT_OS: entry.desktop?.os || '', TRD_TEST_EXPECT_VERSION: entry.desktop?.version || '',
-        TRD_TEST_EXPECT_POINT: entry.desktop?.point || '', TRD_TEST_EXPECT_BUILD: entry.desktop?.build || '', TRD_TEST_EXPECT_GNOME: entry.desktop?.gnome || '' }
+        TRD_TEST_EXPECT_POINT: entry.desktop?.point || '', TRD_TEST_EXPECT_BUILD: entry.desktop?.build || '', TRD_TEST_EXPECT_GNOME: entry.desktop?.gnome || '', TRD_TEST_EXPECT_STACK: entry.desktop?.stack || '' }
 }
 export function missingSettings (entry, base, targets = {}) {
     if (entry.client && !Object.hasOwn(targets, entry.id)) return ['Dedicated target configuration']

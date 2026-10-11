@@ -160,6 +160,11 @@ disc in a drive. In an elevated PowerShell on it, after `setup.ps1`:
 
 ### Versioned visual QA matrix
 
+Rocky Linux 9 with Xfce/xrdp is also available using `TEST_DISTRO=rocky9` and
+`TEST_XRDP_PASSWORD_FILE=/private/password`. This uses a dedicated `tabbyxrdp` account and the existing
+`xrdp.sh` provisioner, with EPEL/CRB packages, an Xorg session and a loopback-only listener on 3390.
+Fedora KDE Plasma/KRDP is recorded separately as planned coverage in `docs/VISUAL-QA-PLAN.md`.
+
 The Linux libvirt provisioner also accepts `TEST_DISTRO=debian13` and `TEST_DISTRO=fedora44`; the default remains
 `ubuntu2404`. Each creates a separate guest and refuses an existing VM name. Debian 13.7/GNOME 48 and Fedora 44/GNOME 50
 complement Ubuntu's GNOME 46. Images are checked against their vendor checksum manifests. `TEST_SECURE_BOOT=0` explicitly
