@@ -101,7 +101,7 @@ function makeSandbox (): string {
         }
         execFileSync('npm', ['install', '--no-audit', '--no-fund', '--silent', path.join(dir, tarball)], { cwd: plugins, stdio: 'inherit' })
     } else {
-        fs.symlinkSync(ROOT, path.join(plugins, 'node_modules', 'tabby-rdp'), 'dir')
+        fs.symlinkSync(ROOT, path.join(plugins, 'node_modules', 'tabby-rdp'), process.platform === 'win32' ? 'junction' : 'dir')
     }
     if (smoke) {
         // Install after npm, which prunes unlisted plugins. The host application and its signature stay intact.
@@ -182,6 +182,11 @@ let port = Number(option('--port') || 0)
 if (selected.some(s => s !== 'trd-pty') && !port) {
     sandbox = makeSandbox()
     port = await freePort()
+    let launchLog: number | undefined
+    if (selected.includes('visual-smoke') && process.env.TRD_QA_RUN_DIR) {
+        fs.mkdirSync(process.env.TRD_QA_RUN_DIR, { recursive: true })
+        launchLog = fs.openSync(path.join(process.env.TRD_QA_RUN_DIR, 'tabby-launch.log'), 'a')
+    }
     tabby = spawn(tabbyBinary(), [
         // Unmapped Linux/Windows windows can stop animation frames even with timer throttling disabled.
         // Terminal fit uses those frames. Keep the window mapped there; use Xvfb for unattended Linux runs.
@@ -192,7 +197,8 @@ if (selected.some(s => s !== 'trd-pty') && !port) {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-    ], { env: { ...process.env, TABBY_CONFIG_DIRECTORY: sandbox }, detached: true, stdio: 'ignore' })
+    ], { env: { ...process.env, TABBY_CONFIG_DIRECTORY: sandbox }, detached: true, stdio: launchLog === undefined ? 'ignore' : ['ignore', launchLog, launchLog] })
+    if (launchLog !== undefined) fs.closeSync(launchLog)
     let launched = false
     tabby.on('error', error => { console.error(error); process.exit(1) })
     tabby.on('exit', () => { if (!launched) { console.error('The test Tabby exited before DevTools became ready'); process.exit(1) } })

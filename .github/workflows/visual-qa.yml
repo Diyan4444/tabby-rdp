@@ -37,7 +37,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run typecheck:test
-      - run: npm run test:unit
+      # The full unit suite remains required in ci.yml; these jobs qualify actual native hosts.
       - name: Install pinned official Tabby
         run: node scripts/qa/install-host.mjs
       - name: Linux display dependencies

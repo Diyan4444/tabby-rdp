@@ -25,5 +25,12 @@ else execFileSync('tar',['-xzf',file,'-C',directory])
 const find = folder => fs.readdirSync(folder,{withFileTypes:true}).flatMap(d=>d.isDirectory()?find(path.join(folder,d.name)):d.isFile()?[path.join(folder,d.name)]:[])
 const executable=find(directory).find(f=>process.platform==='darwin'?f.endsWith('/Tabby.app/Contents/MacOS/Tabby'):path.basename(f)===(process.platform==='win32'?'Tabby.exe':'tabby'))
 if(!executable)throw new Error('Tabby executable missing from verified archive')
+if(process.platform==='linux') {
+    // Electron's packaged sandbox helper must have its documented installed ownership/mode.
+    const sandbox=path.join(path.dirname(executable),'chrome-sandbox')
+    if(!fs.existsSync(sandbox))throw new Error('Packaged Chromium sandbox helper missing')
+    execFileSync('sudo',['chown','root:root',sandbox])
+    execFileSync('sudo',['chmod','4755',sandbox])
+}
 fs.appendFileSync(process.env.GITHUB_ENV,`TABBY_BIN=${executable}\nTRD_QA_RUN_DIR=${path.join(process.env.RUNNER_TEMP,'tabby-qa-evidence')}\n`)
 console.log(`Installed official Tabby 1.0.236 (${process.platform}/${process.arch}); SHA-256 verified`)
