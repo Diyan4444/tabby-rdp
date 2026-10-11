@@ -1,8 +1,6 @@
-// The H.264 decoder's cap on surfaces (src/h264.ts) over IronRDP's own decoder as vendored (WebCodecsH264Decoder,
-// patch 0008), the browser's VideoDecoder stood in for: a server that draws on surface after surface has no more than
-// MAX_H264_SURFACES decoders open, a frame that isn't a key frame opens none, and a desktop that draws on one or two
-// surfaces, or moves to new ones as it resizes, decodes as before (security review, finding 3). Runs against the built
-// plugin: npm run build && npm run test:unit
+// The plugin's public decoder options against the actual vendored implementation, with small browser-codec
+// stand-ins. No private decoder maps or counters are accessed: lifecycle notifications and accounting belong to
+// IronRDP. Runs against the built plugin: npm run build && npm run test:unit.
 import { before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
@@ -10,19 +8,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const root = fileURLToPath(new URL('../../', import.meta.url))
-const { cappedH264Decoder, MAX_H264_SURFACES } = require('../../dist/h264.js')
+const { createH264Decoder, MAX_H264_DECODERS } = require('../../dist/h264.js')
 
-/** The browser's decoders, as many as are open, and every one made. */
 const made: FakeVideoDecoder[] = []
 class FakeVideoDecoder {
     state = 'unconfigured'
     readonly chunks: { type: string, timestamp: number }[] = []
+    private flushed: (() => void) | undefined
     constructor (readonly init: { output: (frame: unknown) => void, error: (e: unknown) => void }) { made.push(this) }
     configure () { this.state = 'configured' }
     decode (chunk: { type: string, timestamp: number }) { this.chunks.push(chunk) }
+    flush () { return new Promise<void>(resolve => { this.flushed = resolve }) }
+    finishFlush () { this.flushed?.() }
     close () { this.state = 'closed' }
 }
 const open = () => made.filter(d => d.state !== 'closed').length
+const settled = () => new Promise<void>(resolve => setImmediate(resolve))
 
 let WebCodecsH264Decoder: any
 before(async () => {
@@ -32,157 +33,196 @@ before(async () => {
     ;({ WebCodecsH264Decoder } = await import(pathToFileURL(root + 'vendor/iron-remote-desktop-rdp.js').href))
 })
 
-/** IronRDP's decoder, capped, on a clock of the test's own; what each frame was answered with. */
 function decoder () {
+    made.length = 0
     const clock = { ms: 0 }
     const failures: string[] = []
-    const inner = new WebCodecsH264Decoder({ now: () => clock.ms, stallMs: 3000, onFailure: (reason: string) => failures.push(reason) })
-    const capped = cappedH264Decoder(inner)
+    const instance = createH264Decoder(WebCodecsH264Decoder, {
+        now: () => clock.ms, stallMs: 3000, onFailure: (reason: string) => failures.push(reason),
+    })
     const answers = new Map<number, { pixels: unknown, error?: string }>()
     let id = 0
-    const frame = (surfaceId: number, keyFrame: boolean) => {
+    const frame = (surfaceId: number, keyFrame: boolean, endedSurfaces?: number[]) => {
         const frameId = ++id
-        capped.decode({ id: frameId, surfaceId, keyFrame, data: new Uint8Array([0, 0, 0, 1, keyFrame ? 0x65 : 0x41]), regions: [], destination: { left: 0, top: 0, right: 2, bottom: 1 } },
-            (done: number, pixels: unknown, error?: string) => {
-                assert.ok(!answers.has(done), `frame ${done} answered twice`)
-                answers.set(done, { pixels, error })
-            })
+        instance.decode({
+            id: frameId, surfaceId, keyFrame, endedSurfaces,
+            data: new Uint8Array([0, 0, 0, 1, keyFrame ? 0x65 : 0x41]),
+            regions: [], destination: { left: 0, top: 0, right: 2, bottom: 1 },
+        }, (done: number, pixels: unknown, error?: string) => {
+            assert.ok(!answers.has(done), `frame ${done} answered twice`)
+            answers.set(done, { pixels, error })
+        })
         return frameId
     }
-    return { inner, capped, clock, failures, answers, frame }
+    return { instance, clock, failures, answers, frame }
 }
 
-test('a server that draws on surface after surface has no more decoders open than the cap', t => {
-    made.length = 0
+function picture (timestamp: number) {
+    return {
+        timestamp, codedWidth: 2, codedHeight: 1, closed: false,
+        visibleRect: { x: 0, y: 0, width: 2, height: 1 },
+        close () { this.closed = true },
+    }
+}
+
+test('the factory passes public options and returns the original decoder with all lifecycle hooks', () => {
+    let constructed: PublicDecoder | undefined
+    class PublicDecoder {
+        readonly stats = { pending: 0 }
+        readonly ended: number[] = []
+        constructor (readonly options: object) { constructed = this }
+        endSurfaces (ids: number[]) { this.ended.push(...ids) }
+    }
+    const now = () => 10
+    const onFailure = () => {}
+    const instance = createH264Decoder(PublicDecoder, { now, onFailure, stallMs: 1200 })
+    assert.ok(constructed)
+    assert.equal(instance, constructed)
+    assert.deepEqual(instance.options, { now, onFailure, stallMs: 1200, maxDecoders: 16 })
+    assert.equal(instance.stats, constructed?.stats)
+    instance.endSurfaces([7])
+    assert.deepEqual(constructed?.ended, [7])
+})
+
+test('the seventeenth active decoder fails H.264, settles every frame once and closes codecs', t => {
     const d = decoder()
-    t.after(() => d.capped.close())
-    for (let surface = 0; surface < 2000; surface++) {
+    t.after(() => d.instance.close())
+    for (let surface = 0; surface <= MAX_H264_DECODERS; surface++) {
         d.clock.ms += 10
         d.frame(surface, true)
     }
-    assert.equal(open(), MAX_H264_SURFACES)
-    assert.equal(d.inner.surfaces.size, MAX_H264_SURFACES)
-    assert.equal(d.capped.failed, null)
-    // Every frame of a surface closed before its picture came was answered (dropped), and once only.
-    assert.equal(d.answers.size, 2000 - MAX_H264_SURFACES)
-    assert.ok([...d.answers.values()].every(a => a.pixels === null && !a.error))
-    assert.equal(d.inner.stats.pending, MAX_H264_SURFACES)
+    assert.equal(made.length, MAX_H264_DECODERS)
+    assert.equal(open(), 0)
+    assert.match(d.instance.failed, /more than 16 surfaces/)
+    assert.deepEqual(d.failures, [d.instance.failed])
+    assert.equal(d.instance.reclaimed, false, 'capacity failures use the no-H.264 fallback')
+    assert.equal(d.answers.size, MAX_H264_DECODERS + 1)
+    assert.ok([...d.answers.values()].every(a => a.pixels === null && a.error === d.instance.failed))
+    assert.equal(d.instance.stats.pending, 0)
 })
 
-test('the decoder\'s counts are read through the cap, as the live suites and the connection read them', t => {
-    made.length = 0
+test('deltas open no codecs and the watchdog fails a bounded waiting surface without another frame', t => {
+    t.mock.timers.enable({ apis: ['setInterval'] })
     const d = decoder()
-    t.after(() => d.capped.close())
-    d.frame(1, true)
-    assert.equal(d.capped.stats, d.inner.stats)
-    assert.equal(d.capped.stats.pending, 1)
-})
-
-test('a frame that isn\'t a key frame opens no decoder; a surface that never gets one fails H.264, as the decoder\'s own watchdog does', t => {
-    made.length = 0
-    const d = decoder()
-    t.after(() => d.capped.close())
-    for (let surface = 0; surface < 1000; surface++) {
+    t.after(() => d.instance.close())
+    for (let surface = 0; surface <= MAX_H264_DECODERS; surface++) {
         d.frame(surface, false)
     }
     assert.equal(made.length, 0)
-    assert.equal(d.answers.size, 1000)
-    assert.equal(d.capped.failed, null)
-    // Past the stall time, still without one: H.264 fails, and the connection goes on without it.
-    d.clock.ms += 3001
-    const last = d.frame(0, false)
-    assert.match(d.capped.failed, /no key frame for surface 0/)
-    assert.deepEqual(d.failures, [d.capped.failed])
-    assert.equal(d.answers.get(last)?.error, d.capped.failed)
+    assert.equal(d.answers.size, MAX_H264_DECODERS + 1)
+    assert.equal(d.instance.stats.skipped, MAX_H264_DECODERS + 1)
+    assert.equal(d.instance.failed, null)
+    d.clock.ms = 3001
+    t.mock.timers.tick(250)
+    assert.match(d.instance.failed, /no key frame for 3001 ms/)
+    assert.deepEqual(d.failures, [d.instance.failed])
 })
 
-test('a desktop on one or two surfaces, and one that moves to new surfaces as it resizes, decodes as before', t => {
-    made.length = 0
+test('ending a waiting surface clears its watchdog state without requiring a data frame', t => {
+    t.mock.timers.enable({ apis: ['setInterval'] })
     const d = decoder()
-    t.after(() => d.capped.close())
-    // The main surface and AVC444's second view, a frame each 16 ms: key frames, then deltas.
-    for (let i = 0; i < 100; i++) {
+    t.after(() => d.instance.close())
+    d.frame(9, false)
+    d.instance.endSurfaces([9])
+    d.clock.ms = 3001
+    t.mock.timers.tick(250)
+    assert.equal(d.instance.failed, null)
+    assert.equal(made.length, 0)
+    d.frame(9, true)
+    assert.equal(made.length, 1)
+})
+
+test('standalone surface deletion flushes and settles pending work before releasing its codec', async t => {
+    const d = decoder()
+    t.after(() => d.instance.close())
+    const stats = d.instance.stats
+    const id = d.frame(4, true)
+    d.instance.endSurfaces([4])
+    assert.equal(open(), 1)
+    assert.equal(stats.pending, 1)
+    made[0].finishFlush()
+    await settled()
+    assert.equal(open(), 0)
+    assert.deepEqual(d.answers.get(id), { pixels: null, error: undefined })
+    assert.equal(stats.pending, 0)
+    assert.equal(stats.dropped, 1)
+    d.frame(4, true)
+    assert.equal(open(), 1)
+    assert.equal(d.instance.stats, stats, 'statistics retain their identity')
+    assert.equal(stats.pending, 1)
+    assert.equal(d.instance.failed, null)
+})
+
+test('retiring codecs count against the same sixteen-codec capacity until their flush completes', async t => {
+    const d = decoder()
+    t.after(() => d.instance.close())
+    const ids = Array.from({ length: MAX_H264_DECODERS }, (_, id) => id)
+    for (const id of ids) { d.frame(id, true) }
+    d.instance.endSurfaces(ids)
+    assert.equal(open(), MAX_H264_DECODERS)
+    d.frame(MAX_H264_DECODERS, true)
+    assert.match(d.instance.failed, /more than 16 surfaces/)
+    assert.equal(made.length, MAX_H264_DECODERS)
+    assert.equal(open(), 0)
+    assert.equal(d.answers.size, MAX_H264_DECODERS + 1)
+    for (const codec of made) { codec.finishFlush() }
+    await settled()
+    assert.equal(d.answers.size, MAX_H264_DECODERS + 1, 'late flushes do not complete frames twice')
+    assert.equal(d.instance.stats.pending, 0)
+})
+
+test('embedded surface endings are applied before a same-ID delta and require a fresh key frame', async t => {
+    const d = decoder()
+    t.after(() => d.instance.close())
+    const first = d.frame(2, true)
+    const output = picture(first)
+    made[0].init.output(output)
+    await settled()
+    assert.equal(output.closed, true)
+    assert.equal(d.instance.stats.pending, 0)
+    assert.equal(d.instance.stats.frames, 1)
+    const delta = d.frame(2, false, [2])
+    assert.equal(open(), 0)
+    assert.equal(made.length, 1)
+    assert.deepEqual(d.answers.get(delta), { pixels: null, error: undefined })
+    assert.equal(d.instance.stats.skipped, 1)
+    d.frame(2, true)
+    assert.equal(made.length, 2)
+    assert.equal(open(), 1)
+    assert.equal(d.instance.failed, null)
+})
+
+test('ordinary key frames and deltas on two surfaces preserve order and public statistics', t => {
+    const d = decoder()
+    t.after(() => d.instance.close())
+    const stats = d.instance.stats
+    for (let i = 0; i < 4; i++) {
         d.clock.ms += 16
         d.frame(1, i === 0)
         d.frame(2, i === 0)
     }
     assert.equal(made.length, 2)
-    assert.equal(d.answers.size, 0, 'no frame dropped')
-    assert.equal(made[0].chunks.length, 100)
-    // Resized fifty times, each a surface of its own (the old ones deleted, which the decoder doesn't hear of): the old
-    // ones close, the newest stay open.
-    for (let surface = 3; surface < 53; surface++) {
-        d.clock.ms += 1000
-        d.frame(surface, true)
-        d.frame(surface, false)
-    }
-    assert.equal(open(), MAX_H264_SURFACES)
-    assert.equal(d.capped.failed, null)
-    assert.ok(d.inner.surfaces.has(52) && d.inner.surfaces.has(37) && !d.inner.surfaces.has(36))
-    // The surface in use is the one kept, though it was opened first, and a closed one opens again from a key frame.
-    made.length = 0
-    const busy = new Map<number, number>()
-    for (let i = 0; i < 40; i++) {
-        d.clock.ms += 16
-        busy.set(d.frame(52, false), 52)
-        d.frame(100 + i, true)
-    }
-    assert.ok(d.inner.surfaces.has(52))
-    assert.ok([...busy.keys()].every(id => !d.answers.has(id)), 'the surface in use dropped a frame')
-    d.frame(3, false)
-    assert.ok(!d.inner.surfaces.has(3))
-    d.frame(3, true)
-    assert.ok(d.inner.surfaces.has(3))
+    assert.deepEqual(made[0].chunks.map(c => c.timestamp), [1, 3, 5, 7])
+    assert.deepEqual(made[0].chunks.map(c => c.type), ['key', 'delta', 'delta', 'delta'])
+    assert.equal(d.answers.size, 0)
+    assert.equal(d.instance.stats, stats)
+    assert.equal(stats.pending, 8)
+    assert.equal(stats.keyFrames, 2)
+    assert.equal(d.instance.failed, null)
 })
 
-test('a decoder that doesn\'t keep its surfaces where the cap looks for them fails H.264 past the cap, rather than open more', () => {
-    const decoded: number[] = []
-    const inner = {
-        failed: null as string | null, reclaimed: false,
-        fail (reason: string) { this.failed = reason },
-        decode (frame: { id: number, surfaceId: number }, done: (id: number, pixels: null, error?: string) => void) {
-            if (this.failed) {
-                done(frame.id, null, this.failed)
-                return
-            }
-            decoded.push(frame.surfaceId)
-        },
-        close () { },
-    }
-    const capped = cappedH264Decoder(inner, 4)
-    const errors: (string | undefined)[] = []
-    for (let surface = 0; surface < 6; surface++) {
-        capped.decode({ id: surface, surfaceId: surface, keyFrame: true }, (_id: number, _pixels: null, error?: string) => errors.push(error))
-    }
-    assert.deepEqual(decoded, [0, 1, 2, 3])
-    assert.equal(capped.failed, 'the server drew on more than 4 surfaces')
-    assert.deepEqual(errors, [capped.failed, capped.failed])
-})
-
-test('a decoder that keeps its surfaces without what closing one needs fails H.264 past the cap, rather than throw into IronRDP\'s call', () => {
-    // Another IronRDP's surfaces, kept where the cap looks for them but not as it expects (no frames being decoded, no
-    // browser decoder): a throw here would reach IronRDP's decode call, which ends the session as a decoding error, one
-    // the connection doesn't reconnect without H.264 from.
-    const inner = {
-        failed: null as string | null, reclaimed: false,
-        surfaces: new Map<number, unknown>(),
-        fail (reason: string) { this.failed = reason },
-        decode (frame: { id: number, surfaceId: number }, done: (id: number, pixels: null, error?: string) => void) {
-            if (this.failed) {
-                done(frame.id, null, this.failed)
-                return
-            }
-            this.surfaces.set(frame.surfaceId, {})
-        },
-        close () { },
-    }
-    const capped = cappedH264Decoder(inner, 2)
-    const errors: (string | undefined)[] = []
-    assert.doesNotThrow(() => {
-        for (let surface = 0; surface < 3; surface++) {
-            capped.decode({ id: surface, surfaceId: surface, keyFrame: true }, (_id: number, _pixels: null, error?: string) => errors.push(error))
-        }
-    })
-    assert.equal(capped.failed, 'the server drew on more than 2 surfaces')
-    assert.deepEqual(errors, [capped.failed])
+test('close suppresses late retiring-codec callbacks and closes a late picture', async () => {
+    const d = decoder()
+    const id = d.frame(5, true)
+    d.instance.endSurfaces([5])
+    d.instance.close()
+    made[0].finishFlush()
+    const output = picture(id)
+    made[0].init.output(output)
+    await settled()
+    assert.equal(output.closed, true)
+    assert.equal(d.answers.size, 0, 'a closed session must not call its released WASM callbacks')
+    assert.equal(open(), 0)
+    assert.equal(d.instance.stats.pending, 0)
+    assert.deepEqual(d.failures, [])
 })

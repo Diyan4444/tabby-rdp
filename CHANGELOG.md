@@ -17,9 +17,10 @@ Local release candidate; not published on npm or as a GitHub release.
   reading the client when the server fell behind, so answers piled up uncounted in the window until it crashed. It
   now goes on reading, counts what waits for the server against the room file transfers already keep within, and
   ends the connection once 104 MB waits.
-- **H.264 decoders are held to 16 per desktop**, a surface gets one only with a key frame, and surfaces left behind
-  (by resizes) are closed to make room: a server could have the window open a decoder, with its thread, for every
-  surface it named.
+- **H.264 decoders are held to 16 per desktop**, including decoders still finishing frames after their surfaces end.
+  A surface gets one only with a key frame. IronRDP owns admission, accounting and cleanup through its public decoder
+  configuration; the earlier wrapper that evicted surfaces by editing private decoder state is removed.
+  Exceeding the cap fails H.264 and takes the existing reconnect-without-H.264 path.
 - **A shared folder's listing gives the server at most 10,000 names**, read a few at a time, rather than the whole
   folder for each listing the server asks for. A name past those is still there to open by its path, though not to
   find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
@@ -40,8 +41,18 @@ Local release candidate; not published on npm or as a GitHub release.
   WinRM dependencies and the Electron CI tree are locked, and testbed credential media is privately staged and cleaned.
   The internal-name CI check receives its secret only on protected branch pushes; it is inactive on an unprotected RC.
 
-The broader EGFX/H.264 queue and frame budgets in #88 are not included: they still need integration with the
-16-decoder wrapper. The aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
+**EGFX/H.264 integration** (#88)
+
+- **Graphics work waiting behind asynchronous decoding is bounded by count and bytes.** PDUs are processed
+  incrementally, AVC regions and frames per message are limited, and completions no longer scan the command queue.
+- **Browser decoder input, creation rate, picture readbacks and decoded-pixel events have separate budgets.**
+  Surface deletion/reset closes ended streams even without a later H.264 frame. Failure and close release retained
+  pictures and suppress late readback callbacks. These budgets are per session and add together; they are not one
+  total renderer memory ceiling.
+- **The combined patch series is rebuilt into the shipped JavaScript/WASM**, including the public decoder-cap
+  integration and bounded key-frame admission tests.
+
+The aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
 This batch is not a stable-release sign-off.
 
 ## 0.5.3

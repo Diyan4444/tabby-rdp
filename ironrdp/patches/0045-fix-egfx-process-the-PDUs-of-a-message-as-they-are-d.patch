@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:51:24 -0700
+Subject: [PATCH 45/51] fix(egfx): process the PDUs of a message as they are
+ decoded
+
+GraphicsPipelineClient::process decoded every PDU of a message into a
+Vec before processing the first. A message decompresses to up to
+256 MiB, and the smallest PDUs (EvictCacheEntry) take 10 bytes in it
+but 40 decoded (48 on 64-bit targets): a server sending a message of
+them had the client hold 26 million decoded PDUs, 1 GiB, and up to
+1.9 GiB while the Vec grew, in the WebAssembly memory that all of a
+page's sessions share.
+
+Each PDU is now processed as soon as it is decoded: nothing of a
+message is held decoded but the PDUs that wait for an external H.264
+decoder, which are bounded. In a native test, processing such a
+message peaked at 2.1 to 2.9 GB of memory and now peaks at 0.8 GB (the
+copies of the message itself), and takes a little less time. A PDU
+that does not decode still fails the message, but the PDUs before it
+have been processed by then; the session ends either way.
+---
+ crates/ironrdp-egfx/src/client.rs             | 30 ++++++++-----------
+ .../tests/egfx/client.rs                      | 12 ++++++++
+ 2 files changed, 25 insertions(+), 17 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 25abeb17..98ada52d 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -1610,31 +1610,27 @@ impl DvcProcessor for GraphicsPipelineClient {
+     }
+ 
+     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+-        // ZGFX decompress
+-        self.decompressed_buffer.clear();
+-        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
++        // ZGFX decompress, into the buffer taken out of `self` while its PDUs are processed (after an error, the next
++        // payload starts a new one)
++        let mut decompressed = core::mem::take(&mut self.decompressed_buffer);
++        decompressed.clear();
++        decompressed.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
+         self.decompressor
+-            .decompress(payload, &mut self.decompressed_buffer)
++            .decompress(payload, &mut decompressed)
+             .map_err(|e| decode_err!(e))?;
+ 
+-        // Decode all PDUs first (cursor borrows decompressed_buffer)
+-        let mut pdus = Vec::new();
+-        {
+-            let mut cursor = ReadCursor::new(self.decompressed_buffer.as_slice());
+-            while !cursor.is_empty() {
+-                let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
+-                pdus.push(pdu);
+-            }
+-        }
+-
+-        // Process decoded PDUs, in order behind any H.264 frame still being decoded outside, checking what waits as
+-        // it grows (a payload holds up to 256 MiB of PDUs)
++        // Process each PDU as it is decoded, not all decoded first: a payload holds up to 256 MiB of PDUs, and decoded
++        // they take several times that (the smallest PDU is 10 bytes, a decoded one 40 or more). In order behind any
++        // H.264 frame still being decoded outside, checking what waits as it grows.
+         let mut responses = Vec::new();
+-        for pdu in pdus {
++        let mut cursor = ReadCursor::new(decompressed.as_slice());
++        while !cursor.is_empty() {
++            let pdu: GfxPdu = decode_cursor(&mut cursor).map_err(|e| decode_err!(e))?;
+             self.enqueue(pdu)?;
+             responses.extend(self.process_queue()?);
+             self.check_held()?;
+         }
++        self.decompressed_buffer = decompressed;
+         Ok(responses)
+     }
+ }
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index 9e4ff6b1..ca033b42 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -458,6 +458,18 @@ fn client_rejects_wire_to_unknown_surface() {
+     assert!(result.is_err(), "should reject write to nonexistent surface");
+ }
+ 
++#[test]
++fn client_processes_the_pdus_of_a_message_as_it_decodes_them() {
++    // Not all decoded first: decoded, the PDUs of a message can take several times its size (a 256 MiB message of
++    // 10-byte EvictCacheEntry PDUs is 26 million of them). Seen in a message whose end does not decode: the PDUs
++    // before it were processed.
++    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
++    let mut message = encode_pdu(&GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }));
++    message.extend_from_slice(&[0xff; 8]); // An unknown command
++    assert!(client.process(0, &wrap_uncompressed(&message)).is_err());
++    assert_eq!(client.total_frames_decoded(), 1);
++}
++
+ #[test]
+ fn client_rejects_invalid_rectangle_ordering() {
+     let mut client = setup_active_client_with_surface(None, 1, 100, 100);

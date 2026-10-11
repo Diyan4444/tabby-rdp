@@ -327,9 +327,9 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
 
 - **Order:** the web client hands each H.264 frame to the decoder as it arrives, and applies the decoded pixels (the
   frame's region rectangles, read back as RGBA) to the EGFX surface in the order the server sent them. Commands after
-  a frame wait for it, and so does its frame acknowledgement: the server paces what it sends by those, so the queue
-  stays short and the picture never runs ahead of what was drawn. Everything after decoding (surfaces, caches,
-  ResetGraphics on resize, device pixels for Retina) is the same path as for the other codecs.
+  a frame wait for it, and so does its frame acknowledgement. Command and byte budgets bound this queue even if the
+  server ignores acknowledgements; the picture never runs ahead of what was drawn. Everything after decoding
+  (surfaces, caches, ResetGraphics on resize, device pixels for Retina) is the same path as for the other codecs.
 - **Latency:** without a VUI `bitstream_restriction` in the stream, conformant decoders (Chromium's among them) hold
   every picture until their buffer is full, so the SPS is amended to declare no reordering, as WebRTC does. Colors
   are decoded as full-range BT.709 whatever the stream signals, as MS-RDPEGFX specifies.
@@ -337,12 +337,19 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
   reconnects by itself without H.264 for that desktop (until Tabby restarts, or the setting is turned on again). A
   decoder the browser takes back (`QuotaExceededError`: an idle one, in a hidden window) reconnects with H.264, as a new
   stream starts with a key frame; taken back again within ten minutes, it counts as a failure like the others.
-- **Surfaces:** IronRDP's decoder opens a `VideoDecoder` (a thread and its buffers) for each surface the server draws
-  on and closes none until the session ends, so the plugin holds it to 16 (`src/h264.ts`): a new surface past that
-  closes the one longest without a frame (the surfaces a resize leaves behind; a desktop draws on one or two), and a
-  surface gets a decoder only with a key frame. The plugin waits on as many surfaces without one as it may have open;
-  a surface among those still without a key frame after 3 s fails H.264, as above, while frames for any further ones
-  are dropped without being waited on (they cost nothing, so none is kept of them).
+- **Surfaces:** the plugin sets IronRDP's public `maxDecoders` option to 16 (`src/h264.ts`), counting active and
+  retiring `VideoDecoder`s together. The original decoder instance handles surface deletion, reuse and graphics
+  reset notifications, including when no later video frame arrives. A retiring decoder flushes outstanding work
+  before closing. A new surface gets a decoder only with a key frame; a bounded set waiting for one is checked by
+  the 3 s watchdog. Deltas for further unknown surfaces are dropped without retaining their data or opening codecs.
+  Exceeding decoder capacity fails H.264 and uses the fallback above, rather than evicting a live stream. The plugin
+  does not inspect private decoder state or update its counters: lifecycle, byte accounting and statistics stay
+  with the vendor implementation.
+- **Budgets:** EGFX messages are processed incrementally with limits on frames, AVC rectangles and queued commands.
+  H.264 independently bounds pending access units, decoder construction rate, concurrent readbacks, readback output
+  bytes and the full decoded pictures retained during asynchronous copies. Rust also bounds queued pixel callbacks.
+  These are per-session limits on separate allocations, not a single ceiling on renderer memory; multiple sessions
+  and browser codec internals consume additional resources.
 - **GNOME** sends H.264 only with a hardware encoder (VA-API or NVENC on the remote); otherwise RemoteFX, as before.
 - **Windows** gets the graphics pipeline only with H.264. It streams H.264 only to EGFX 10 and later (to 8.1 it
   confirms the version without AVC420), and only for what it takes for video: areas of natural picture that keep

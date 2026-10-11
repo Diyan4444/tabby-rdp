@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 15:57:08 -0700
+Subject: [PATCH 50/51] fix(web): find the bounding box of H.264 regions
+ without spreading them
+
+WebCodecsH264Decoder found the bounding box of a frame's regions by
+spreading them into Math.min and Math.max, an argument per region. In
+V8 that overflows the stack somewhere between 100,000 and 200,000
+regions: reading the picture failed with a RangeError, which ended the
+session. ironrdp-egfx hands out at most 256 regions a frame, so its
+frames no longer come near that, but the decoder is exported and takes
+frames from any caller. The box is now found in a loop over the
+regions.
+---
+ .../src/H264Decoder.test.ts                   | 17 +++++++++++++++++
+ .../src/H264Decoder.ts                        | 19 ++++++++++---------
+ 2 files changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index 86355006..aef65ebf 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -223,6 +223,23 @@ describe('WebCodecsH264Decoder', () => {
+         expect(Array.from(done.mock.calls[0][1] as Uint8Array)).toEqual([0, 0, 0, 255, 3839 & 255, 2159 & 255, 0, 255]);
+     });
+ 
++    it('reads a frame with very many regions', async () => {
++        // 200,000 one-pixel regions covering a 1000x200 picture, row by row: spread into Math.min and Math.max (one
++        // argument each), they would overflow the stack.
++        const regions = Array.from({ length: 200_000 }, (_, i) => {
++            const [x, y] = [i % 1000, Math.floor(i / 1000)];
++            return { left: x, top: y, right: x + 1, bottom: y + 1 };
++        });
++        decoder.decode(frame(0, true, regions), done);
++        const picture = FakeDecoder.instances[0].emit(0, 1000, 200);
++        await flush();
++        expect(decoder.failed).toBeNull();
++        expect(picture.copied).toEqual([{ x: 0, y: 0, width: 1000, height: 200 }]);
++        const pixels = done.mock.calls[0][1] as Uint8Array;
++        // The last region's pixel: (999, 199).
++        expect(Array.from(pixels.subarray(-4))).toEqual([999 & 255, 199, 0, 255]);
++    });
++
+     it('takes a picture the size of a destination elsewhere on the surface as starting there', async () => {
+         const offset: H264Frame = {
+             ...frame(0, true, [{ left: 105, top: 51, right: 106, bottom: 52 }]),
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index f6171f5f..04ff439b 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -418,15 +418,16 @@ export class WebCodecsH264Decoder {
+         }
+         // One readback for all regions, their bounding box, when that is mostly what changed: one call rather than
+         // one per region. Regions far apart (a clock in one corner, a cursor in another) would make the box most of
+-        // the picture, megabytes read for a few pixels: those are read one by one, each straight into its place.
+-        const left = Math.min(...rects.map((r) => r.x));
+-        const top = Math.min(...rects.map((r) => r.y));
+-        const box = {
+-            x: left,
+-            y: top,
+-            width: Math.max(...rects.map((r) => r.x + r.width)) - left,
+-            height: Math.max(...rects.map((r) => r.y + r.height)) - top,
+-        };
++        // the picture, megabytes read for a few pixels: those are read one by one, each straight into its place. (The
++        // box is found in a loop: spread into Math.min and Math.max, a long list of regions overflows the stack.)
++        let [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity];
++        for (const r of rects) {
++            left = Math.min(left, r.x);
++            top = Math.min(top, r.y);
++            right = Math.max(right, r.x + r.width);
++            bottom = Math.max(bottom, r.y + r.height);
++        }
++        const box = { x: left, y: top, width: right - left, height: bottom - top };
+         if (rects.length === 1) {
+             await this.readBox(picture, visible, box, out);
+             return out;

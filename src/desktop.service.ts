@@ -11,7 +11,7 @@ import { DesktopPane, desktopPaneOf, isRDPTab, NestedSSH, RDP_PROFILE_TYPE, Remo
 import { consoleScript, DeskGate, deskKeyDigest, DeskRequest, MACHINE_ID_COMMAND } from './deskScript'
 import { AudioPlayer } from './audio'
 import { IronRDPLoader } from './ironrdp'
-import { cappedH264Decoder } from './h264'
+import { createH264Decoder } from './h264'
 import { CLIPBOARD_LABELS, ClipboardMode, clipboardSetting, ClipboardWays, clipboardWays, narrowest, ownClipboard, setUpClipboard, splitPaste } from './clipboard'
 import { ConnectionStatus, STYLE as STATS_STYLE } from './connectionStatus'
 import { Microphone } from './microphone'
@@ -3987,9 +3987,9 @@ export class RemoteDesktopService {
                 return { connected: false }
             }
             if (h264) {
-                // Held to a few surfaces: the server says how many it draws on, and each would have a decoder of the
-                // window's own (see h264.ts).
-                session.h264 = cappedH264Decoder(new rdp.WebCodecsH264Decoder({ onFailure: (reason: string) => session.log.push(`h264: failed: ${reason}`) }))
+                // The vendor owns surface retirement and all resource accounting; its public option bounds the
+                // browser decoders without wrapping away lifecycle notifications (see h264.ts).
+                session.h264 = createH264Decoder(rdp.WebCodecsH264Decoder, { onFailure: (reason: string) => session.log.push(`h264: failed: ${reason}`) })
                 config.withExtension(rdp.h264Decoder(session.h264))
             }
             // GNOME Remote Desktop requires the graphics pipeline. Windows (and xrdp) do better with bitmaps than with

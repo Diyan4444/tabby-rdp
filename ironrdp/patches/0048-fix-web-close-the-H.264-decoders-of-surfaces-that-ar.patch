@@ -1,0 +1,501 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:28:35 -0700
+Subject: [PATCH 48/51] fix(web): close the H.264 decoders of surfaces that are
+ gone, and bound them
+
+WebCodecsH264Decoder opened a VideoDecoder for every surface a frame
+named, and closed none until the session ended: nothing told it that a
+surface was deleted, and a reset destroys them all. A server could name
+as many surfaces as it liked (surface ids are 16 bits), with a small
+CreateSurface and frame each, and every one kept a decoder, with its
+memory and, where the platform has one, a hardware decoder: resources
+the browser has for all of a page's sessions together. A server that
+gives each new surface a new id left a decoder behind with every
+surface it replaced.
+
+ironrdp-egfx now tells which surfaces' streams ended: each H264Frame
+names the surfaces deleted, created again or destroyed by a reset since
+the frame before it (ended_surfaces), and the web client passes them on
+to the decoder (endedSurfaces). The decoder of such a surface closes
+once the frames given to it are out: a flush brings out what it still
+holds, and a frame that does not come out then never will. Until then,
+the stall check watches it as before.
+
+At most 32 decoders are open at once. Servers stream H.264 to a surface
+per monitor, a session has 16 monitors at most (MS-RDPBCGR 2.2.1.3.6),
+and after a reset the decoders of the surfaces it destroyed may still be
+finishing their frames while those of the new ones start. A frame for a
+33rd surface fails the decoder, which ends the session as a decoder
+error does.
+---
+ crates/ironrdp-egfx/README.md                 |  7 +-
+ crates/ironrdp-egfx/src/client.rs             | 31 ++++++-
+ .../tests/egfx/external_h264.rs               | 48 +++++++++-
+ crates/ironrdp-web/src/h264.rs                | 16 +++-
+ .../src/H264Decoder.test.ts                   | 91 +++++++++++++++++++
+ .../src/H264Decoder.ts                        | 72 +++++++++++++--
+ 6 files changed, 249 insertions(+), 16 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/README.md b/crates/ironrdp-egfx/README.md
+index d99bbd7f..84b4c2ce 100644
+--- a/crates/ironrdp-egfx/README.md
++++ b/crates/ironrdp-egfx/README.md
+@@ -10,9 +10,10 @@ Channel Extension, including H.264/AVC420 and AVC444 video streaming support.
+ A client can also decode AVC420 outside the channel processor, with a decoder that is asynchronous or lives
+ elsewhere (a browser's WebCodecs `VideoDecoder`, a hardware decoder): `GraphicsPipelineClient::with_external_h264`
+ hands each frame out (`take_h264_frames`) and applies its pixels, in order, when they come back
+-(`complete_h264_frame`); commands after it and its frame acknowledgement wait until then. AVC444 is handed out as
+-its YUV420 main view (the auxiliary view is decoded but not shown), so such a client can advertise the V10
+-capability sets, the only ones Windows streams H.264 to. The `h264` module prepares
++(`complete_h264_frame`); commands after it and its frame acknowledgement wait until then. Each surface carries its own
++stream, and a frame names the surfaces whose streams ended before it, so that a decoder kept per surface can be let go.
++AVC444 is handed out as its YUV420 main view (the auxiliary view is decoded but not shown), so such a client can
++advertise the V10 capability sets, the only ones Windows streams H.264 to. The `h264` module prepares
+ the bitstream for such decoders (Annex B, and an SPS that declares output in decoding order, without which conformant
+ decoders hold every picture back).
+ 
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index c6439cef..60c00774 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -53,7 +53,7 @@
+ //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
+ //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
+ 
+-use std::collections::{BTreeMap, VecDeque};
++use std::collections::{BTreeMap, BTreeSet, VecDeque};
+ 
+ use ironrdp_core::{Decode as _, Encode as _, ReadCursor, impl_as_any};
+ use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
+@@ -253,6 +253,10 @@ pub struct H264Frame {
+     pub data: Vec<u8>,
+     /// Whether the access unit holds an IDR picture, which a new decoder can start from.
+     pub key_frame: bool,
++    /// Surfaces whose H.264 streams ended after the previous frame was handed out and before this one: deleted,
++    /// created again, or destroyed by `ResetGraphics`. A decoder kept for one of them is done once the frames handed
++    /// out before this one are; a frame for a surface that is created again starts a new stream.
++    pub ended_surfaces: Vec<u16>,
+ }
+ 
+ /// A command waiting to be applied, in the order the server sent it.
+@@ -529,4 +533,8 @@ pub struct GraphicsPipelineClient {
+     received_surfaces: BTreeMap<u16, (u16, u16)>,
++    /// Surfaces frames were handed out for since they were created, as of the commands received so far.
++    h264_surfaces: BTreeSet<u16>,
++    /// Surfaces whose H.264 streams ended since the last frame was handed out (see [`H264Frame::ended_surfaces`]).
++    ended_h264_surfaces: Vec<u16>,
+ }
+ 
+ impl GraphicsPipelineClient {
+@@ -564,6 +572,8 @@ impl GraphicsPipelineClient {
+             held_bytes: 0,
+             queued_frame_ends: 0,
+             received_surfaces: BTreeMap::new(),
++            h264_surfaces: BTreeSet::new(),
++            ended_h264_surfaces: Vec::new(),
+         }
+     }
+ 
+@@ -576,7 +586,9 @@ impl GraphicsPipelineClient {
+     /// handler may advertise capability sets from V10 on, which imply it. Commands after it, including its `EndFrame` and so its `FrameAcknowledge`,
+     /// wait until then: surface commands read and write the pixels the frame produces, and the acknowledgement
+     /// tells the server the frame was shown, which paces what it sends. Frames can be decoded ahead (all taken
+-    /// frames can be in flight at once); their pixels are applied in order.
++    /// frames can be in flight at once); their pixels are applied in order. Each surface carries its own stream, and
++    /// a frame names the surfaces whose streams ended before it ([`H264Frame::ended_surfaces`]), so that a decoder
++    /// kept for one can be let go.
+     ///
+     /// What waits is bounded at all times: it is checked as each command is queued and each frame completes, and
+     /// the command or completion that takes it past 65,536 commands (frames included), or past 512 MiB of them and
+@@ -690,4 +702,5 @@ impl GraphicsPipelineClient {
+     /// Queues a decoded PDU; with an external H.264 decoder, an AVC420 frame is handed out right away, so that
+     /// decoding overlaps with receiving what follows.
+     fn enqueue(&mut self, pdu: GfxPdu) -> PduResult<()> {
++        // The H.264 stream of a surface ends with the surface, or when it is created again.
+         match &pdu {
+@@ -702,9 +715,19 @@ impl GraphicsPipelineClient {
++                if self.h264_surfaces.remove(&create.surface_id) {
++                    self.ended_h264_surfaces.push(create.surface_id);
++                }
+             }
+             GfxPdu::DeleteSurface(delete) => {
+                 self.received_surfaces.remove(&delete.surface_id);
++                if self.h264_surfaces.remove(&delete.surface_id) {
++                    self.ended_h264_surfaces.push(delete.surface_id);
++                }
+             }
+             // ResetGraphics implicitly destroys all surfaces (see `handle_reset_graphics`).
+-            GfxPdu::ResetGraphics(_) => self.received_surfaces.clear(),
++            GfxPdu::ResetGraphics(_) => {
++                self.received_surfaces.clear();
++                self.ended_h264_surfaces
++                    .extend(core::mem::take(&mut self.h264_surfaces));
++            }
+             _ => {}
+         }
+         let pdu = match pdu {
+@@ -859,6 +882,7 @@ impl GraphicsPipelineClient {
+                 "H.264 access unit handed out"
+             );
+             self.held_bytes = self.held_bytes.saturating_add(data.len());
++            self.h264_surfaces.insert(pdu.surface_id);
+             self.h264_frames.push(H264Frame {
+                 id,
+                 surface_id: pdu.surface_id,
+@@ -866,6 +890,7 @@ impl GraphicsPipelineClient {
+                 regions: regions.clone(),
+                 data,
+                 key_frame,
++                ended_surfaces: core::mem::take(&mut self.ended_h264_surfaces),
+             });
+             queued.push(Queued::H264 {
+                 id,
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+index 2a7ef301..b6d2a968 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+@@ -7,8 +7,8 @@ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+ use ironrdp_egfx::pdu::{
+     Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CapabilitiesConfirmPdu, CapabilitiesV8Flags,
+     CapabilitiesV81Flags, CapabilitiesV107Flags, CapabilitySet, CapabilityVersion, Codec1Type, Color, CreateSurfacePdu,
+-    Encoding, EndFramePdu, EvictCacheEntryPdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu,
+-    SolidFillPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
++    DeleteSurfacePdu, Encoding, EndFramePdu, EvictCacheEntryPdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat,
++    ResetGraphicsPdu, SolidFillPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+ };
+ use ironrdp_graphics::zgfx::wrap_uncompressed;
+ use ironrdp_pdu::geometry::ExclusiveRectangle;
+@@ -701,3 +701,47 @@ fn completions_for_frames_not_pending_are_ignored() {
+     // Applied already.
+     assert!(client.complete_h264_frame(frame.id, None).expect("ignored").is_empty());
+ }
++
++#[test]
++fn a_frame_names_the_surfaces_whose_streams_ended_before_it() {
++    let mut client = client();
++    let create = |surface_id| {
++        GfxPdu::CreateSurface(CreateSurfacePdu {
++            surface_id,
++            width: 16,
++            height: 8,
++            pixel_format: PixelFormat::XRgb,
++        })
++    };
++    let delete = |surface_id| GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id });
++    let frame = |surface_id| avc420_to(surface_id, rect(0, 0, 16, 8), &[Avc420Region::full_frame(16, 8, 22)]);
++    let reset = GfxPdu::ResetGraphics(ResetGraphicsPdu {
++        width: 16,
++        height: 8,
++        monitors: vec![],
++    });
++    process_all(
++        &mut client,
++        &[
++            create(2),
++            create(3),
++            frame(1),
++            frame(2),
++            // Surface 1 deleted and surface 2 created again end their streams; surface 3 had none.
++            delete(1),
++            create(2),
++            delete(3),
++            frame(2),
++            // A reset destroys every surface: surface 2's new stream ends too.
++            reset,
++            create(4),
++            frame(4),
++        ],
++    );
++    let ended: Vec<(u16, Vec<u16>)> = client
++        .take_h264_frames()
++        .into_iter()
++        .map(|frame| (frame.surface_id, frame.ended_surfaces))
++        .collect();
++    assert_eq!(ended, [(1, vec![]), (2, vec![]), (2, vec![1, 2]), (4, vec![2])]);
++}
+diff --git a/crates/ironrdp-web/src/h264.rs b/crates/ironrdp-web/src/h264.rs
+index e9a2f5e7..1318ff0b 100644
+--- a/crates/ironrdp-web/src/h264.rs
++++ b/crates/ironrdp-web/src/h264.rs
+@@ -7,8 +7,9 @@
+ //!
+ //! The decoder object has `decode(frame, done)` and optionally `close()`. `frame` is `{ id, surfaceId, keyFrame,
+ //! data: Uint8Array, destination: { left, top, right, bottom }, regions: [{ left, top, right, bottom }] }`
+-//! (Annex B; rectangles in surface coordinates, exclusive right/bottom). `done(id, pixels, error)` takes the RGBA of
+-//! each region in turn as one `Uint8Array`, or `null` for a frame that was not decoded; an `error` string ends the
++//! (Annex B; rectangles in surface coordinates, exclusive right/bottom), and `endedSurfaces: [surfaceId]` when the
++//! streams of surfaces ended before it (see [`H264Frame::ended_surfaces`]). `done(id, pixels, error)` takes the RGBA
++//! of each region in turn as one `Uint8Array`, or `null` for a frame that was not decoded; an `error` string ends the
+ //! session.
+ //!
+ //! [`GraphicsPipelineClient::with_external_h264`]: ironrdp_egfx::client::GraphicsPipelineClient::with_external_h264
+@@ -62,6 +63,17 @@ impl JsH264Decoder {
+             "regions",
+             frame.regions.iter().map(rectangle).collect::<js_sys::Array>().into(),
+         );
++        if !frame.ended_surfaces.is_empty() {
++            set(
++                "endedSurfaces",
++                frame
++                    .ended_surfaces
++                    .iter()
++                    .map(|&surface_id| JsValue::from(surface_id))
++                    .collect::<js_sys::Array>()
++                    .into(),
++            );
++        }
+         self.decode
+             .call2(&self.decoder, &object, self.done.as_ref())
+             .map_err(|error| anyhow::anyhow!("H.264 decoder: {error:?}"))?;
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index 875aed79..c819dcf3 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -75,6 +75,19 @@ class FakeDecoder {
+     decode(chunk: FakeChunk): void {
+         this.chunks.push(chunk);
+     }
++    /** Flushes asked for; each completes on `finishFlush`. */
++    flushes = 0;
++    private flushing: (() => void) | null = null;
++    flush(): Promise<void> {
++        this.flushes++;
++        return new Promise((resolve) => {
++            this.flushing = resolve;
++        });
++    }
++    finishFlush(): void {
++        this.flushing?.();
++        this.flushing = null;
++    }
+     close(): void {
+         this.state = 'closed';
+     }
+@@ -408,6 +421,84 @@ describe('WebCodecsH264Decoder', () => {
+         decoder.close();
+         expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
+     });
++
++    it('closes the decoder of a surface whose stream ended once its frames are out', async () => {
++        decoder.decode(frame(0, true), done);
++        const ended = FakeDecoder.instances[0];
++        // Surface 1 deleted and created again: a new stream, in a new decoder.
++        decoder.decode({ ...frame(1, true), endedSurfaces: [1] }, done);
++        expect(FakeDecoder.instances.length).toBe(2);
++        expect(FakeDecoder.instances[1].chunks.map((c) => c.timestamp)).toEqual([1]);
++        expect(ended.flushes).toBe(1);
++        expect(ended.state).toBe('configured');
++        // Frame 0 still comes out of the decoder it was given to.
++        ended.emit(0);
++        ended.finishFlush();
++        await flush();
++        expect(ended.state).toBe('closed');
++        expect(done).toHaveBeenCalledWith(0, expect.any(Uint8Array));
++        expect(decoder.stats.pending).toBe(1);
++    });
++
++    it('closes the decoder of a surface whose stream ended at once when no frames are in it', async () => {
++        decoder.decode(frame(0, true), done);
++        FakeDecoder.instances[0].emit(0);
++        await flush();
++        decoder.decode({ ...frame(1, true), surfaceId: 2, endedSurfaces: [1] }, done);
++        expect(FakeDecoder.instances[0].state).toBe('closed');
++        expect(FakeDecoder.instances[0].flushes).toBe(0);
++    });
++
++    it('completes the frames a closing decoder never puts out without pixels', async () => {
++        decoder.decode(frame(0, true), done);
++        decoder.decode({ ...frame(1, true), surfaceId: 2, endedSurfaces: [1] }, done);
++        FakeDecoder.instances[0].finishFlush();
++        await flush();
++        expect(done).toHaveBeenCalledWith(0, null);
++        expect(decoder.stats.dropped).toBe(1);
++        expect(decoder.stats.pending).toBe(1);
++        expect(FakeDecoder.instances[0].state).toBe('closed');
++    });
++
++    it('fails when a closing decoder does not bring its frames out in time', () => {
++        vi.useFakeTimers();
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ stallMs: 1000, now: () => clock });
++        decoder.decode(frame(0, true), done);
++        decoder.decode({ ...frame(1, true), surfaceId: 2, endedSurfaces: [1] }, done);
++        FakeDecoder.instances[1].emit(1);
++        clock = 1100;
++        vi.advanceTimersByTime(300);
++        expect(decoder.failed).toMatch(/no picture from the decoder/);
++        expect(done).toHaveBeenCalledWith(0, null, decoder.failed);
++        expect(FakeDecoder.instances[0].state).toBe('closed');
++    });
++
++    it('keeps no decoder for the surfaces whose streams ended', async () => {
++        // A server that gives every new surface a new id, as on each resize.
++        for (let id = 0; id < 100; id++) {
++            decoder.decode({ ...frame(id, true), surfaceId: id, endedSurfaces: id > 0 ? [id - 1] : [] }, done);
++            FakeDecoder.instances[id].emit(id);
++            await flush();
++        }
++        expect(decoder.failed).toBeNull();
++        expect(FakeDecoder.instances.filter((d) => d.state !== 'closed').length).toBe(1);
++    });
++
++    it('fails on H.264 for more surfaces at once than a session has monitors', () => {
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        for (let surfaceId = 1; surfaceId <= 32; surfaceId++) {
++            decoder.decode({ ...frame(surfaceId, true), surfaceId }, done);
++        }
++        expect(decoder.failed).toBeNull();
++        decoder.decode({ ...frame(33, true), surfaceId: 33 }, done);
++        expect(failures).toEqual(['H.264 for more than 32 surfaces at once']);
++        expect(FakeDecoder.instances.length).toBe(32);
++        expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
++        expect(done).toHaveBeenLastCalledWith(33, null, 'H.264 for more than 32 surfaces at once');
++    });
+ });
+ 
+ describe('h264Supported', () => {
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index a18e338b..9263ceb6 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -7,7 +7,8 @@
+  * its graphics frame (which paces the server), wait for it. So a frame that never comes out of the decoder would
+  * freeze the picture: after `stallMs` without output, or on any decoder error, the decoder fails, which ends the
+  * session with an error. Reconnecting without H.264 is the way out. A server that has the decoders hold more than
+- * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all) fails them the same way.
++ * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all), or streams to more surfaces than a
++ * session has monitors, fails them the same way.
+  */
+ 
+ export interface H264Rectangle {
+@@ -36,6 +37,11 @@ export interface H264Frame {
+      * auxiliary (chroma) view, which is decoded to keep the stream whole but not shown.
+      */
+     regions: H264Rectangle[];
++    /**
++     * Surfaces whose streams ended before this frame: deleted, created again, or destroyed by a reset. Their decoders
++     * close once the frames given to them are out.
++     */
++    endedSurfaces?: number[];
+ }
+ 
+ /**
+@@ -143,6 +149,8 @@ export class WebCodecsH264Decoder {
+     reclaimed = false;
+ 
+     private readonly surfaces = new Map<number, Surface>();
++    /** Decoders of surfaces whose streams ended, bringing out the frames given to them before they close. */
++    private readonly retiring = new Set<Surface>();
+     /** The bytes of H.264 in the decoders: the access units of the pending frames. */
+     private pendingBytes = 0;
+     private readonly stallMs: number;
+@@ -162,7 +170,18 @@ export class WebCodecsH264Decoder {
+             return;
+         }
+         this.watchdog ??= setInterval(() => this.checkStalls(), Math.min(250, this.stallMs));
+-        const surface = this.surfaces.get(frame.surfaceId) ?? this.open(frame.surfaceId);
++        for (const surfaceId of frame.endedSurfaces ?? []) {
++            this.retire(surfaceId);
++        }
++        let surface = this.surfaces.get(frame.surfaceId);
++        if (surface === undefined) {
++            if (this.surfaces.size + this.retiring.size >= WebCodecsH264Decoder.MAX_DECODERS) {
++                this.fail(`H.264 for more than ${WebCodecsH264Decoder.MAX_DECODERS} surfaces at once`);
++                done(frame.id, null, this.failed ?? undefined);
++                return;
++            }
++            surface = this.open(frame.surfaceId);
++        }
+         if (surface.needKey && !frame.keyFrame) {
+             // Deltas mean nothing to a decoder that hasn't seen the picture they refer to.
+             this.stats.skipped++;
+@@ -211,14 +230,22 @@ export class WebCodecsH264Decoder {
+     close(): void {
+         this.closed = true;
+         this.stopWatchdog();
+-        for (const surface of this.surfaces.values()) {
++        for (const surface of [...this.surfaces.values(), ...this.retiring]) {
+             closeDecoder(surface.decoder);
+         }
+         this.surfaces.clear();
++        this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+     }
+ 
++    /**
++     * The most decoders at once. Servers stream H.264 to a surface per monitor, and a session has 16 monitors at most
++     * (MS-RDPBCGR 2.2.1.3.6); after a reset, the decoders of the surfaces it destroyed may still be finishing their
++     * frames while those of the new ones start.
++     */
++    private static readonly MAX_DECODERS = 32;
++
+     /**
+      * The most frames one decoder may hold. A decoder keeps up with its stream, so frames wait in it about as long as
+      * one takes to decode, and the server stops at its unacknowledged frames: 256 is over two seconds of 60 Hz AVC444
+@@ -250,6 +277,37 @@ export class WebCodecsH264Decoder {
+         return surface;
+     }
+ 
++    /** The server is done with a surface: its decoder closes once the frames given to it are out. */
++    private retire(surfaceId: number): void {
++        const surface = this.surfaces.get(surfaceId);
++        if (surface === undefined) {
++            return;
++        }
++        this.surfaces.delete(surfaceId);
++        if (surface.pending.size === 0) {
++            closeDecoder(surface.decoder);
++            return;
++        }
++        this.retiring.add(surface);
++        // A flush brings out what the decoder still holds: a frame that has not come out by then never will.
++        const finish = () => {
++            if (!this.retiring.delete(surface)) {
++                return; // Failed or closed meanwhile.
++            }
++            for (const pending of [...surface.pending.values()]) {
++                this.settle(surface, pending);
++                this.stats.dropped++;
++                pending.done(pending.frame.id, null);
++            }
++            closeDecoder(surface.decoder);
++        };
++        try {
++            surface.decoder.flush().then(finish, finish);
++        } catch {
++            finish();
++        }
++    }
++
+     private output(surface: Surface, picture: VideoFrame): void {
+         const id = picture.timestamp;
+         const pending = surface.pending.get(id);
+@@ -423,7 +481,7 @@ export class WebCodecsH264Decoder {
+             return;
+         }
+         const now = this.now();
+-        for (const surface of this.surfaces.values()) {
++        for (const surface of [...this.surfaces.values(), ...this.retiring]) {
+             if (surface.waitingSince !== null && now - surface.waitingSince > this.stallMs) {
+                 this.fail(`no key frame for ${Math.round(now - surface.waitingSince)} ms`);
+                 return;
+@@ -444,11 +502,13 @@ export class WebCodecsH264Decoder {
+         }
+         this.failed = reason;
+         this.stopWatchdog();
+-        const pending = [...this.surfaces.values()].flatMap((surface) => [...surface.pending.values()]);
+-        for (const surface of this.surfaces.values()) {
++        const decoders = [...this.surfaces.values(), ...this.retiring];
++        const pending = decoders.flatMap((surface) => [...surface.pending.values()]);
++        for (const surface of decoders) {
+             closeDecoder(surface.decoder);
+         }
+         this.surfaces.clear();
++        this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+         this.options.onFailure?.(reason);

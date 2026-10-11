@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:07:46 -0700
+Subject: [PATCH 43/51] fix(egfx): bound the region rectangles of an H.264
+ frame
+
+An AVC420 metablock counts its region rectangles in 32 bits, and nothing
+bounded how many a frame kept: only what they add up to was, against the
+surface's area and the 256 MiB readback limit. Non-overlapping one-pixel
+regions pass both, at 10 bytes each on the wire, so a server could send
+a frame with a million regions in 10 MB. The client decoded and copied
+every one, and the web client built a JavaScript object for each, on the
+page's thread, before the decoder saw the frame: a million regions held
+the page for about a second, a larger PDU longer; with fewer (below
+about 100,000), regions far apart were then read back one by one, and
+with more, reading the picture failed with a RangeError.
+
+Two limits:
+
+- An AVC420 bitmap stream (each view of AVC444 is one) with more than
+  65,535 region rectangles no longer decodes, so decoding the regions
+  takes under a megabyte whatever the size of the PDU. The specification
+  sets no limit; this one matches the 16-bit counts of the surface
+  commands' rectangles and points (SolidFill, SurfaceToSurface,
+  CacheToSurface).
+- A frame for an external decoder hands out at most 256 regions. With
+  more, their bounding box is read back instead, as already for regions
+  that add up to more than their surface. Regions say what changed in
+  the picture, and servers describe that in a few rectangles: even
+  damage tracked in 64x64 tiles, every other tile of a 1920x1080 screen,
+  is 255 of them.
+---
+ crates/ironrdp-egfx/src/client.rs             | 24 ++++++---
+ crates/ironrdp-egfx/src/pdu/avc.rs            | 13 +++--
+ .../ironrdp-testsuite-core/tests/egfx/avc.rs  | 15 ++++++
+ .../tests/egfx/external_h264.rs               | 52 +++++++++++++++++++
+ 4 files changed, 93 insertions(+), 11 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 418b0214..ff022586 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -1581,6 +1581,14 @@ fn rgba_len(rect: &ExclusiveRectangle) -> usize {
+ /// The most RGBA bytes one externally decoded frame is read back into: as much as the compositor holds in all.
+ const MAX_H264_REGION_BYTES: u64 = 256 * 1024 * 1024;
+ 
++/// The most regions an externally decoded frame hands out: a frame with more is read back as their bounding box.
++///
++/// Regions say what changed in the picture, and servers describe that in a few rectangles: even damage tracked in
++/// 64x64 tiles, every other tile of a 1920x1080 screen, is 255 of them. A region costs the server 10 bytes, but the
++/// client an object built for the decoder on the page's thread, and possibly a readback of its own: a frame with a
++/// million of them held the page for about a second.
++const MAX_H264_REGIONS: usize = 256;
++
+ fn area(rect: &ExclusiveRectangle) -> u64 {
+     u64::from(rect.right.saturating_sub(rect.left)) * u64::from(rect.bottom.saturating_sub(rect.top))
+ }
+@@ -1588,11 +1596,12 @@ fn area(rect: &ExclusiveRectangle) -> u64 {
+ /// Bounds what an externally decoded frame's regions ask the decoder to read back.
+ ///
+ /// The regions are already clipped to the destination and the surface, but each can still cover all of it, and a
+-/// region count costs the server a few bytes each: overlapping copies of the whole surface would have the decoder
+-/// read the same picture into memory over and over. When the regions add up to more than the surface, their
+-/// bounding box (within the surface, so at most the surface once) covers the same pixels instead. A surface too
+-/// large for the compositor to hold gets no regions: the access unit is still decoded, which keeps the stream
+-/// whole, but nothing is read back.
++/// region costs the server a few bytes: overlapping copies of the whole surface would have the decoder read the same
++/// picture into memory over and over, and many small regions would each be handed out, and read back, on their own.
++/// When the regions add up to more than the surface, or are more than [`MAX_H264_REGIONS`], their bounding box
++/// (within the surface, so at most the surface once) is read back instead: it holds the pixels of every region, and
++/// the decoded picture between them. A surface too large for the compositor to hold gets no regions: the access unit
++/// is still decoded, which keeps the stream whole, but nothing is read back.
+ fn bound_regions(
+     regions: Vec<ExclusiveRectangle>,
+     surface_id: u16,
+@@ -1600,12 +1609,13 @@ fn bound_regions(
+     surface_height: u16,
+ ) -> Vec<ExclusiveRectangle> {
+     let total = regions.iter().map(area).fold(0u64, u64::saturating_add);
+-    let regions = if total > u64::from(surface_width) * u64::from(surface_height) {
++    let surface_area = u64::from(surface_width) * u64::from(surface_height);
++    let regions = if MAX_H264_REGIONS < regions.len() || surface_area < total {
+         warn!(
+             surface_id,
+             count = regions.len(),
+             total,
+-            "H.264 regions cover more than their surface; reading back their bounding box"
++            "H.264 regions are too many or cover more than their surface; reading back their bounding box"
+         );
+         let bounding = regions.into_iter().reduce(|b, r| ExclusiveRectangle {
+             left: b.left.min(r.left),
+diff --git a/crates/ironrdp-egfx/src/pdu/avc.rs b/crates/ironrdp-egfx/src/pdu/avc.rs
+index 67088c2d..38e5b8d5 100644
+--- a/crates/ironrdp-egfx/src/pdu/avc.rs
++++ b/crates/ironrdp-egfx/src/pdu/avc.rs
+@@ -132,16 +132,21 @@ impl<'de> Decode<'de> for Avc420BitmapStream<'de> {
+     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+         ensure_fixed_part_size!(in: src);
+ 
+-        let num_regions = src.read_u32();
+-        #[expect(clippy::as_conversions, reason = "num_regions bounded by practical limits")]
+-        let num_regions_usize = num_regions as usize;
++        // `numRegionRects` is 32 bits wide, but more than 65,535 regions are refused, an implementation limit the
++        // specification does not set: the surface commands count their rectangles and points in 16 bits (SolidFill,
++        // SurfaceToSurface, CacheToSurface), and regions only mark what changed in the picture, which encoders
++        // describe in a few rectangles. Without it, only the size of the PDU bounds the count, at 10 bytes a region:
++        // 100 MB of metablock would decode into 10 million rectangles.
++        let num_regions = u16::try_from(src.read_u32())
++            .map_err(|_| invalid_field_err!("numRegionRects", "more than 65,535 region rectangles", in: src))?;
++        let num_regions = usize::from(num_regions);
+         // Cap pre-allocation against the remaining buffer to avoid OOM from a
+         // malicious num_regions: each region needs at least one rectangle
+         // (8 bytes) plus one QuantQuality entry (2 bytes). The actual read
+         // loop will fail with NotEnoughBytes if num_regions is bogus.
+         let per_region = ExclusiveRectangle::ENCODED_SIZE + QuantQuality::FIXED_PART_SIZE;
+         let max_possible = src.len() / per_region;
+-        let bounded_capacity = num_regions_usize.min(max_possible);
++        let bounded_capacity = num_regions.min(max_possible);
+         let mut rectangles = Vec::with_capacity(bounded_capacity);
+         let mut quant_qual_vals = Vec::with_capacity(bounded_capacity);
+         for _ in 0..num_regions {
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/avc.rs b/crates/ironrdp-testsuite-core/tests/egfx/avc.rs
+index 6540b1f4..b80b4ed8 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/avc.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/avc.rs
+@@ -84,3 +84,18 @@ fn encode_avc420_bitmap_stream_round_trips_through_decode() {
+     assert_eq!(decoded.quant_qual_vals.len(), 1);
+     assert_eq!(decoded.data, &h264_data);
+ }
++
++#[test]
++fn a_bitmap_stream_with_more_than_65535_region_rectangles_is_refused() {
++    let regions = vec![Avc420Region::new(0, 0, 1, 1, 22, 100); 65_536];
++    let h264_data = [0x00, 0x00, 0x00, 0x01, 0x65];
++
++    // All 65,536 rectangles and quality values are there: only their number is refused.
++    let encoded = encode_avc420_bitmap_stream(&regions, &h264_data);
++    assert!(Avc420BitmapStream::decode(&mut ReadCursor::new(&encoded)).is_err());
++
++    let encoded = encode_avc420_bitmap_stream(&regions[..65_535], &h264_data);
++    let decoded = Avc420BitmapStream::decode(&mut ReadCursor::new(&encoded)).expect("65,535 regions decode");
++    assert_eq!(decoded.rectangles.len(), 65_535);
++    assert_eq!(decoded.data, &h264_data);
++}
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+index cdd55431..b19610fe 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+@@ -448,6 +448,58 @@ fn overlapping_regions_are_read_back_once() {
+     assert_eq!(acks(&sent), [(1, 0)]);
+ }
+ 
++/// A 64x64 surface 2 next to `client()`'s surface 1, for frames with many regions.
++fn surface_64x64() -> GfxPdu {
++    GfxPdu::CreateSurface(CreateSurfacePdu {
++        surface_id: 2,
++        width: 64,
++        height: 64,
++        pixel_format: PixelFormat::XRgb,
++    })
++}
++
++/// `count` one-pixel regions, row by row on a 64-pixel-wide surface: apart, so they add up to less than it.
++fn pixels(count: u16) -> Vec<Avc420Region> {
++    (0..count)
++        .map(|i| Avc420Region::new(i % 64, i / 64, i % 64 + 1, i / 64 + 1, 22, 100))
++        .collect()
++}
++
++#[test]
++fn a_frame_with_more_regions_than_servers_send_is_read_back_as_their_bounding_box() {
++    let mut client = client();
++    // 1,000 regions: each an object built for the decoder on the page's thread, and maybe a readback of its own.
++    let pdu = avc420_to(2, rect(0, 0, 64, 64), &pixels(1000));
++    process_all(&mut client, &[surface_64x64(), start(1), pdu, end(1)]);
++    let frame = client.take_h264_frames().remove(0);
++    // Rows 0 to 15 of the 64x64 surface (1,000 = 15 x 64 + 40).
++    assert_eq!(frame.regions, [rect(0, 0, 64, 16)]);
++    let sent = client
++        .complete_h264_frame(frame.id, Some(solid(1, rect(0, 0, 64, 16))))
++        .expect("complete");
++    assert_eq!(acks(&sent), [(1, 0)]);
++}
++
++#[test]
++fn up_to_256_regions_are_read_back_as_they_are() {
++    let mut client = client();
++    let pdu = avc420_to(2, rect(0, 0, 64, 64), &pixels(256));
++    process_all(&mut client, &[surface_64x64(), start(1), pdu, end(1)]);
++    let frame = client.take_h264_frames().remove(0);
++    assert_eq!(frame.regions.len(), 256);
++    assert_eq!(frame.regions[255], rect(63, 3, 64, 4));
++}
++
++#[test]
++fn a_frame_with_more_than_65535_regions_is_an_error() {
++    let mut client = client();
++    let regions = vec![Avc420Region::new(0, 0, 1, 1, 22, 100); 65_536];
++    let pdu = avc420_to(1, rect(0, 0, 16, 8), &regions);
++    assert!(client.process(0, &wire(&start(1))).is_ok());
++    assert!(client.process(0, &wire(&pdu)).is_err());
++    assert!(client.take_h264_frames().is_empty());
++}
++
+ #[test]
+ fn regions_are_clipped_to_the_surface() {
+     let mut client = client();
