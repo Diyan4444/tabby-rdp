@@ -583,7 +583,7 @@ Update it after each completed phase.
 | 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
-| 4. AI Visual Intelligence | Complete | Phase 4 implementation (recorded below) | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
+| 4. AI Visual Intelligence | Complete | `c9b87f9` | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
 | 5. Full Automation | Pending | — | — |
 
 Valid statuses:
@@ -1078,7 +1078,7 @@ no baseline writes or tolerance changes. The initial OS desktop and deterministi
 
 ### Phase 4 — completed 2026-10-11
 
-**Implementation:** `scripts/qa/ai{,-codex,-evidence}.mjs`, authenticated serialized review/cancellation in the
+**Implementation commit: `c9b87f9`.** `scripts/qa/ai{,-codex,-evidence}.mjs`, authenticated serialized review/cancellation in the
 existing server, findings/regions/history in the dashboard, and `scripts/qa/ai-acceptance.mjs`. The Codex provider
 uses the user's Pro-backed ChatGPT sign-in; optional Responses uses separately billed API credentials. Operations,
 limits, isolation, cache/recovery and reproduction are documented in [visual-qa.md](visual-qa.md#ai-visual-review-phase-4).
@@ -1140,7 +1140,12 @@ Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI
   this ledger. These are local accounting figures, not remaining Pro allowance or a complete billing statement.
   No dollar estimate is assigned to subscription usage. The request cap remains 100; all repeated acceptance reviews
   use the local cache. The dashboard stays on <http://127.0.0.1:4317>; 73 source test runs remain retained.
-- Secret scan of **6,338 artifact files and 19,812 ZIP members** found no actual test passwords/private-key material.
+- All six browser review/cache workflows were repeated on clean **`c9b87f9`** after implementation commit; source
+  status, findings, image loading and mobile checks passed with **zero additional provider requests**. These clean
+  reviews explicitly reuse the earlier model evaluations rather than claiming fresh inference. Receipt:
+  `.qa/phase4-clean-cache-acceptance.json`. Final dashboard totals are 67 reviewed observations, 32/39 defects detected
+  and 0/24 labeled-control false positives; the primary comparable subset remains 39/12 above.
+- Secret scan of **6,350 artifact files and 19,812 ZIP members** found no actual test passwords/private-key material.
   Runtime reviews/cache/receipts are ignored and need separate backup. No test run or AI request remains active at handoff.
 
 **Limitations and next-phase handoff:**
