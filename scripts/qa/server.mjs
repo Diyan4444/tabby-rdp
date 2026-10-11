@@ -1,4 +1,7 @@
 import { mutations, validateCampaign, effectiveness } from './mutations.mjs'
+import { VisualReviewer, configuration, detector } from './ai.mjs'
+import { CodexReviewer } from './ai-codex.mjs'
+import { reviewCases, loadEvidence, evidenceReceipt, aiMetrics } from './ai-evidence.mjs'
 import { targetEnvironment, missingSettings, validateTargets } from './matrix.mjs'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -43,6 +46,52 @@ let loginAttempts = []
 let active = null
 let stopping = false
 recoverRuns(runsDir)
+const aiConfig = configuration()
+const reviewer = aiConfig.provider === 'codex' ? new CodexReviewer(path.join(data, 'ai-codex'), aiConfig) : new VisualReviewer(path.join(data, 'ai'), aiConfig)
+let aiActive = null
+const aiFile = id => path.join(runsDir, id, 'ai-review.json')
+for (const run of loadRuns(runsDir)) {
+    try {
+        const review = readJSON(aiFile(run.id))
+        if (review.status === 'running') {
+            review.status = 'interrupted'; review.reason = 'Dashboard stopped during AI review; unresolved request cost remains reserved.'
+            review.finishedAt = new Date().toISOString()
+            writeJSON(aiFile(run.id), review)
+            writeJSON(path.join(runsDir, run.id, 'ai-reviews', review.id + '.json'), review)
+        }
+    } catch {}
+}
+async function executeReview(run, review, controller) {
+    const directory = path.join(runsDir, run.id)
+    const persist = () => {
+        review.metrics = aiMetrics(review.cases)
+        writeJSON(aiFile(run.id), review)
+        writeJSON(path.join(directory, 'ai-reviews', review.id + '.json'), review)
+    }
+    try {
+        persist()
+        for (const item of review.cases) {
+            if (item.excluded) continue
+            if (controller.signal.aborted) throw new Error('AI review cancelled')
+            try {
+                const evidence = loadEvidence(item, directory)
+                item.evidence = evidenceReceipt(evidence)
+                item.review = await reviewer.evaluate(evidence, controller.signal)
+                item.status = 'completed'
+            } catch (error) {
+                item.status = 'failed'; item.reason = error.message
+                // Stop on first provider/evidence failure: no silent retries or partial success.
+                throw error
+            } finally { persist() }
+        }
+        review.status = 'completed'
+    } catch (error) {
+        review.status = controller.signal.aborted ? 'cancelled' : 'infrastructure-failed'
+        review.reason = error.message
+    } finally {
+        review.finishedAt = new Date().toISOString(); persist(); aiActive = null
+    }
+}
 
 function equal (a, b) {
     return typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
@@ -73,9 +122,14 @@ function signalChild (child, signal) {
 }
 function command (run, args) {
     return new Promise(resolve => {
+        const childEnvironment = { ...targetEnvironment(catalog.find(item => item.id === run.test), process.env, targets) }
+        // AI credentials belong only to the dashboard process, never Tabby/test subprocesses.
+        delete childEnvironment.OPENAI_API_KEY
+        delete childEnvironment.CODEX_API_KEY
+        delete childEnvironment.TRD_QA_OPENAI_KEY_FILE
         // No caller-provided executable, arguments, environment or shell. Baseline updates are always disabled.
         const child = spawn(process.execPath, args, { cwd: root, detached: process.platform !== 'win32', env: {
-            ...targetEnvironment(catalog.find(item => item.id === run.test), process.env, targets), TRD_QA_RUN_DIR: path.join(runsDir, run.id), TRD_QA_UPDATE_BASELINES: '0',
+            ...childEnvironment, TRD_QA_RUN_DIR: path.join(runsDir, run.id), TRD_QA_UPDATE_BASELINES: '0',
             TRD_QA_PARENT_PID: String(process.pid), PLAYWRIGHT_HTML_OPEN: 'never',
             TRD_QA_MUTATIONS: run.mutations ? JSON.stringify(run.mutations) : '',
         }, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -189,21 +243,59 @@ const server = http.createServer(async (req, res) => {
         if (!authorized(req)) return json(res, 401, { error: 'Sign in to view results and execute tests' })
         if (req.method === 'GET' && url.pathname === '/api/runs') {
             const runs = loadRuns(runsDir)
+            for (const run of runs) {
+                try { run.ai = readJSON(aiFile(run.id)) } catch {}
+                try {
+                    run.aiHistory = fs.readdirSync(path.join(runsDir, run.id, 'ai-reviews')).filter(f => /^[a-f0-9-]+\.json$/.test(f)).map(f => {
+                        const r = readJSON(path.join(runsDir, run.id, 'ai-reviews', f))
+                        return { id: r.id, status: r.status, startedAt: r.startedAt, detector: r.detector, metrics: r.metrics }
+                    }).sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+                } catch {}
+            }
             const completedTrials = runs.filter(r=>r.stage==='finished').flatMap(r=>r.experiments || [])
             if (active?.run.mutations) {
                 const current = runs.find(r=>r.id===active.run.id)
                 try { current.experiments = readJSON(path.join(runsDir, current.id, 'mutation-results.json')).trials } catch {}
             }
             return json(res, 200, { catalog: availableCatalog(process.env, targets), mutations, runs, active: active?.run.id || null,
+                ai: { ...reviewer.status(), active: aiActive?.runId || null,
+                    metrics: aiMetrics(runs.flatMap(r => r.ai?.cases || [])) },
                 effectiveness: effectiveness(completedTrials),
                 trends: runs.filter(r=>r.mutations).map(r=>({ id:r.id, commit:r.commit, startedAt:r.startedAt, status:r.status, effectiveness:r.effectiveness || null })) })
+        }
+        if (req.method === 'POST' && url.pathname === '/api/ai/reviews') {
+            const input = await body(req)
+            if (!input || Object.keys(input).join(',') !== 'runId' || typeof input.runId !== 'string') return json(res, 400, { error: 'Select an existing run' })
+            const run = loadRuns(runsDir).find(r => r.id === input.runId)
+            if (!run || run.stage !== 'finished') return json(res, 400, { error: 'Select a finished run' })
+            if (active || aiActive || stopping) return json(res, 409, { error: 'A test or AI review is already active' })
+            if (!reviewer.status().configured) return json(res, 409, { error: aiConfig.provider === 'codex' ? 'Codex ChatGPT sign-in required; run codex login locally and restart the dashboard' : 'OpenAI API key not configured; set a private key file and restart the dashboard' })
+            const cases = reviewCases(run, path.join(runsDir, run.id))
+            if (!cases.some(c => !c.excluded)) return json(res, 400, { error: 'No eligible screenshot evidence' })
+            const history = path.join(runsDir, run.id, 'ai-reviews')
+            fs.mkdirSync(history, { recursive: true, mode: 0o700 })
+            if (fs.readdirSync(history).length >= 20) return json(res, 409, { error: '20-review capacity reached for this run; archive old reviews' })
+            const review = { id: crypto.randomUUID(), runId: run.id, status: 'running', startedAt: new Date().toISOString(),
+                detector: reviewer.detector || detector, advisory: true, sourceCommit: run.commit, evaluatorCommit: git('rev-parse', 'HEAD'), evaluatorDirty: !!git('status', '--porcelain'),
+                sourceStatus: run.status, cases }
+            const controller = new AbortController()
+            aiActive = { runId: run.id, controller }
+            const job = aiActive
+            job.promise = executeReview(run, review, controller)
+            return json(res, 202, review)
+        }
+        if (req.method === 'POST' && url.pathname === '/api/ai/cancel') {
+            await body(req)
+            if (!aiActive) return json(res, 409, { error: 'No active AI review' })
+            aiActive.controller.abort()
+            return json(res, 202, { ok: true })
         }
         if (req.method === 'POST' && ['/api/runs', '/api/campaigns'].includes(url.pathname)) {
             const input = await body(req)
             const campaign = url.pathname === '/api/campaigns'
             const requestedMutations = campaign ? validateCampaign(input, catalog.find(item=>item.id===input.test)) : null
             if (!campaign && (Object.keys(input).length !== 1 || !catalog.some(item => item.id === input.test))) return json(res, 400, { error: 'Select an available test' })
-            if (active || stopping) return json(res, 409, { error: 'A run is already active or the server is stopping' })
+            if (active || aiActive || stopping) return json(res, 409, { error: 'A test or AI review is already active or the server is stopping' })
             // A bounded, explicit capacity avoids silently deleting failure evidence in this first phase.
             if (loadRuns(runsDir).length >= 100) return json(res, 409, { error: '100-run capacity reached; archive old run directories before continuing' })
             const entry = catalog.find(item => item.id === input.test)
@@ -234,6 +326,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
     if (stopping) return
     stopping = true
     server.close()
+    if (aiActive) { const job = aiActive; job.controller.abort(); await job.promise }
     if (active) { active.cancelled = true; stopActive(); await active.promise }
     process.exit(0)
 })

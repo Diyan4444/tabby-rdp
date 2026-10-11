@@ -18,7 +18,7 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     await new Promise(r => socket.close(r))
     let child
     const start = async (environment = {}) => {
-        child = spawn(process.execPath, ['scripts/qa/server.mjs'], { cwd: root, env: { ...process.env, TRD_QA_PORT: String(port), TRD_QA_DATA: dir, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] })
+        child = spawn(process.execPath, ['scripts/qa/server.mjs'], { cwd: root, env: { ...process.env, TRD_QA_AI_PROVIDER: 'responses', OPENAI_API_KEY: '', TRD_QA_OPENAI_KEY_FILE: '', TRD_QA_AI_BUDGET_USD: '2', TRD_QA_PORT: String(port), TRD_QA_DATA: dir, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] })
         await once(child.stdout, 'data')
     }
     const stop = async () => { const done = once(child, 'exit'); child.kill('SIGTERM'); await done }
@@ -36,6 +36,11 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     assert.equal(invalidHost, 403)
     assert.equal((await request('/api/runs', { test: 'visual-host', command: 'ignored' })).status, 400)
     assert.equal((await request('/api/runs', { test: 'unknown' })).status, 400)
+    assert.equal((await request('/api/ai/reviews', { runId: 'unknown' }, false)).status, 401)
+    assert.equal((await request('/api/ai/reviews', { runId: 'unknown' }, true, { Origin: 'https://example.com' })).status, 403)
+    assert.equal((await request('/api/ai/reviews', { runId: '../token' })).status, 400)
+    assert.equal((await request('/api/ai/reviews', { runId: 'unknown', model: 'arbitrary' })).status, 400)
+    assert.equal((await request('/api/ai/cancel', {})).status, 409)
     assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]},false)).status,401)
     assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]},true,{Origin:'https://example.com'})).status,403)
     assert.equal((await request('/api/campaigns', {test:'visual-host',mutations:[{id:'crop',value:20}]})).status,400)
@@ -57,15 +62,27 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     }
     assert.equal(state.runs[0].status, 'cancelled')
     assert.equal(state.runs[0].tests[0].status, 'not-run')
+    assert.equal(state.ai.configured, false)
+    assert.equal(state.ai.metrics.evaluated, 0)
+    const missingAI = await request('/api/ai/reviews', { runId: run.id })
+    assert.equal(missingAI.status, 409)
+    assert.match((await missingAI.json()).error, /API key not configured/)
+    assert.equal(fs.existsSync(path.join(dir, 'runs', run.id, 'ai-review.json')), false)
     fs.writeFileSync(path.join(dir, 'runs', run.id, 'sample.png'), 'evidence')
     assert.equal((await request(`/runs/${run.id}/sample.png`, undefined, false)).status, 401)
     assert.equal((await request(`/runs/${run.id}/sample.png`)).status, 200)
     fs.symlinkSync(path.join(dir, 'token'), path.join(dir, 'runs', run.id, 'escape'))
     assert.equal((await request(`/runs/${run.id}/escape`)).status, 404)
+    const interruptedReview = { id: 'test-review', status: 'running', cases: [] }
+    fs.mkdirSync(path.join(dir, 'runs', run.id, 'ai-reviews'))
+    fs.writeFileSync(path.join(dir, 'runs', run.id, 'ai-review.json'), JSON.stringify(interruptedReview))
+    fs.writeFileSync(path.join(dir, 'runs', run.id, 'ai-reviews/test-review.json'), JSON.stringify(interruptedReview))
     await stop(); await start()
     const restored = await (await request('/api/runs')).json()
     assert.equal(restored.runs[0].id, run.id)
     assert.equal(restored.runs[0].status, 'cancelled')
+    assert.equal(restored.runs[0].ai.status, 'interrupted')
+    assert.equal(restored.ai.metrics.evaluated, 0)
     assert.equal((await request(`/runs/${run.id}/sample.png`)).status, 200)
     // Node is an existing executable but cannot launch Tabby: verify an actual launcher failure, not a fixture result.
     await stop(); await start({ TABBY_BIN: process.execPath })

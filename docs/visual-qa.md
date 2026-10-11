@@ -1,4 +1,4 @@
-# Visual QA operations (Phases 1–3)
+# Visual QA operations (Phases 1–4)
 
 The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD and Xfce/xrdp desktops through IronRDP**, plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
 
@@ -22,7 +22,8 @@ any run to see its status, source commit/dirty flag, duration, actual/expected s
 log, and Playwright HTML report. Open a test in the report and select its trace thumbnail to use the locally hosted
 trace viewer. Downloadable `trace.zip` also works with `npx playwright show-trace <file>`.
 
-The dashboard and all evidence are served locally. No screenshots or traces are uploaded to a third-party service.
+The dashboard and all evidence are served locally. Explicit **AI review** sends selected PNGs and independent fixture
+sequence values to OpenAI; ordinary tests do not upload evidence. Logs, traces and mutation labels remain local.
 DOM replay of Electron `file://` pages can have missing local fonts/icons and a checkerboard canvas placeholder; use the actual PNG and trace filmstrip
 for pixel evidence. The trace still records real actions, timings, assertions, source and DOM snapshots.
 
@@ -41,6 +42,8 @@ operator-controlled environment, never request parameters:
 | `TRD_QA_PORT` | `4317` | Loopback HTTP port |
 | `TRD_QA_DATA` | `.qa` in this checkout | Persistent run history and token |
 | `TRD_QA_ENV_FILE` | unset | Private operator JSON containing string `TRD_TEST_*` settings |
+| `TRD_QA_OPENAI_KEY_FILE` | unset | Absolute path to a private, mode-600 OpenAI API key file; takes precedence over `OPENAI_API_KEY` |
+| `TRD_QA_AI_BUDGET_USD` | `2` | Lifetime estimated API spend plus unresolved reservations; persists across restarts |
 | `TABBY_BIN` | Existing runner's platform default | Tabby executable |
 
 Use an SSH tunnel to access a central host: `ssh -N -L 4317:127.0.0.1:4317 <qa-host>`, then open the same localhost URL.
@@ -447,3 +450,99 @@ before/after all three campaigns. Dashboard reproduction and the 40-pixel crop p
 run IDs, encoder refinement, validation and remaining limitations are in the [Phase 3 handoff](VISUAL-QA-PLAN.md#phase-3--completed-2026-10-11).
 Other matrix cells and alternative severity values are not all mutation-qualified. Historical aggregate metrics
 include development runs and repeats; use the recorded commits and run IDs when comparing results.
+
+## AI visual review (Phase 4)
+
+Select a finished run and click **Review screenshots with AI**. Campaigns review independently manifested defects
+and healthy controls; ordinary runs review available initial/fixture/failure screenshots. The dashboard displays
+structured findings, confidence, affected regions, observations, hypotheses, limitations, cache status and detector
+version. AI is **advisory**: the original test result does not change. Review may find a visible dialog in a Passed
+run whose OS desktop was only evidence, or find no visible explanation for a failed infrastructure check.
+
+### Subscription authentication (default)
+
+The default provider is `codex`, using the operator's existing **ChatGPT sign-in and Codex allowance**, including Pro.
+It does not require an OpenAI API key or extract/forward a subscription token to an API. Install the supported Codex
+CLI and sign in interactively with `codex login` if needed, then start the dashboard as that same OS user. The
+implementation was exercised with `codex-cli 0.162.1`. A newer CLI changing config/events must pass these checks again.
+
+```sh
+TRD_QA_AI_PROVIDER=codex npm run qa
+# Preserve existing TRD_QA_ENV_FILE / TRD_QA_TARGETS_FILE settings on your configured host.
+```
+
+Additional operator settings:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `TRD_QA_AI_PROVIDER` | `codex` | `codex` subscription sign-in or `responses` API key |
+| `TRD_QA_CODEX_BIN` | `codex` on PATH | Operator-owned CLI executable |
+| `TRD_QA_AI_MAX_REQUESTS` | `100` | Persistent subscription review attempt cap, 1–1000 |
+
+The provider uses `codex exec --image --output-schema`, low reasoning, an ephemeral read-only session and a private
+temporary directory. It ignores user config and project instructions, omits skills, disables memory, shell, apps,
+plugins, hooks, computer use, delegation and the code-mode host, and rejects any tool event or unexpected error.
+The installed CLI reports intentional code-mode/skills isolation as notices; only those exact notice classes are
+allowed. Test passwords, API keys and the calling Codex thread ID are absent from the child environment. The CLI
+itself handles sign-in/refresh through its normal credential store. Existing Codex threads are not resumed or changed.
+
+Each request has a 60-second deadline; cancellation terminates only its process group, escalating after two seconds.
+No application retry is automatic; the CLI's own bounded transport behavior remains within that deadline. Temporary
+images/schema/output are removed on normal exit. Forced host termination can leave an OS temporary directory.
+Sign-in expiry, quota limits, timeouts, invalid output and tool attempts are failed reviews, never healthy results.
+Requests consume the same Codex allowance as other work; the dashboard reports attempts/tokens, not a fabricated
+subscription dollar price or remaining plan quota. Manage actual allowance/credits in ChatGPT/Codex Usage settings.
+
+### Optional direct Responses API
+
+Set `TRD_QA_AI_PROVIDER=responses` and `TRD_QA_OPENAI_KEY_FILE=/absolute/private/key-file` (mode 600), or provide
+`OPENAI_API_KEY` to the dashboard process. Never commit a key or enter it in the browser. The dashboard does not pass
+these credentials to test/Tabby children. The endpoint/model are fixed; HTTP callers cannot choose URLs, commands,
+files, models or spending limits. Direct API usage has separate billing from ChatGPT Pro.
+
+The implementation follows the official [Responses structured output](https://developers.openai.com/api/docs/guides/structured-outputs)
+and [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) contracts. It sends inline PNGs with
+`store:false`, standard service tier, low reasoning and at most 4096 output tokens. No logs/traces are uploaded.
+`store:false` is not a claim of zero provider retention; the account's data controls still apply.
+
+Verified [standard pricing](https://developers.openai.com/api/docs/pricing) on 2026-10-11: short-context input
+$0.10/M, cache writes $0.125/M, output $0.50/M; long-context cache writes $0.25/M and output $0.75/M. The ledger
+conservatively uses cache-write input prices without assuming discounts. Each request reserves $0.30, greater than
+the model's entire allowed context/output charge at these rates; known usage replaces the reservation. Timeout,
+restart, missing usage and HTTP errors keep the reservation because the charge is unresolved. The default $2 lifetime
+limit includes reservations. Reconcile unresolved charges with actual billing while the service is stopped before
+manually changing the ledger; restarting does not reset it. Recheck prices before changing models/rates. The API
+transport is contract-tested; acceptance uses the subscription provider unless explicitly stated otherwise.
+
+### Evidence, metrics and recovery
+
+Only role-labeled PNG bytes and neutral independent fixture sequence enter the detector. Mutation IDs, expected
+failures, parameters, manifestation labels, category/layer truth and other detectors' answers are joined afterward.
+Images are bounded to three per case, 4 megapixels, 4096 pixels per edge and 4 MB each; batches have at most 20 cases. No single static screenshot
+can establish frozen rendering. Temporal cases include a later capture and independent expected sequence. The two
+additional native-input controls ensure legitimate sequence advancement is represented in the benchmark.
+
+Detection/false-negative rates cover completed reviews of independently manifested defects. False-positive rates
+cover completed reviews of verified controls. Uncertain reviews are abstentions and count as misses for defects;
+provider failures remain outside model-effectiveness denominators and have their own pending/failed count. Category,
+layer, detector, escaped IDs, unique evaluations and uncached request latency are retained. Totals use each run's
+latest review and may include repeated/cached examples; they are not independent samples. Confidence is not calibrated.
+
+A run holds `ai-review.json` (latest) and `ai-reviews/<review-id>.json` (up to 20 retained reviews). The latter records
+source/evaluator commits, input SHA-256 receipts, model/CLI/detector version, findings, usage and metrics. Protected
+links expose current and previous JSON evidence. Caches and ledgers are in `.qa/ai-codex/` or `.qa/ai/`, separate by
+provider. A restart marks unfinished reviews Interrupted; source test results remain untouched. A manual rerun reuses
+successful cached evaluations and retries failed work within the remaining budget. Archive review history/cache/ledger
+with the original evidence; never clear the ledger just to make a failing budget check pass.
+
+Run the live browser demonstration against retained run IDs:
+
+```sh
+TRD_QA_BROWSER=/path/to/chrome node scripts/qa/ai-acceptance.mjs <run-id> [<run-id> ...]
+```
+
+This signs in, requests actual reviews, waits for terminal completion, inspects images, verifies unchanged source test
+status and mobile layout, then repeats each review to verify local cache hits with no extra provider requests. It
+records measured outcomes, including misses and false positives; it does not require or manufacture 100% detection.
+`--unconfigured` tests only the missing-API-key path with the Responses provider. Unit/HTTP tests use isolated synthetic
+contract responses and cannot establish AI effectiveness. Keep those receipts separate from live-provider acceptance.

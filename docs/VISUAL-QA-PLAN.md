@@ -583,7 +583,7 @@ Update it after each completed phase.
 | 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
-| 4. AI Visual Intelligence | Pending | — | — |
+| 4. AI Visual Intelligence | Complete | Phase 4 implementation (recorded below) | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
 | 5. Full Automation | Pending | — | — |
 
 Valid statuses:
@@ -687,6 +687,33 @@ A phase may only be marked **Complete** when its acceptance criteria have been d
 
 Record significant decisions here.
 
+**Phase 4 decisions (2026-10-11):**
+
+1. Verified the [Decisions guide](https://developers.openai.com/api/docs/guides/decisions): public beta, typed
+   predicates/choices/scores and image inputs; it is not an arbitrary JSON/explanation generator. The guide recommends
+   [Responses structured output](https://developers.openai.com/api/docs/guides/structured-outputs) for custom findings.
+   One structured review supplies categories, severity, uncalibrated confidence, observed regions, facts, hypotheses
+   and limitations. No second classifier call, model voting, new SDK or service is required.
+2. At the user's request, default to the installed **Codex CLI with ChatGPT sign-in**, using their Pro allowance.
+   [Codex authentication](https://learn.chatgpt.com/docs/auth) and [non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode)
+   document saved subscription authentication and JSON-schema output. This is local operator execution, not credential
+   export, a private API, or subscription-authenticated public CI. No auth token is read/copied by the dashboard.
+   Direct Responses remains an explicit optional provider with separate API billing; Pro does not supply API credits.
+3. Use `gpt-6-luna`, low reasoning, a fixed versioned prompt/schema and one serial review at a time. Codex gets only
+   opaque image roles and independently observed fixture sequence; a temporary directory holds only those PNGs and
+   the schema. Ignore user config, project instructions and memories; disable shell, apps, plugins, hooks, computer
+   use, delegation and the code-mode host. Any tool event or unexpected CLI error excludes the result. Do not load
+   campaign truth, filenames, detector messages, source logs, private crash payloads or causal commit claims into AI.
+4. Join ground truth only after evaluation. Include the two static campaign controls and two successful native-input
+   checkpoints per campaign. Temporal pairs use independently read remote sequence plus captures; sequence advancement
+   alone is not a defect. Unknown initial OS desktops are reviewed without assigning truth from the run's Passed status.
+   AI remains advisory and never rewrites test status, baselines or historical evidence. Uncertain defect reviews count
+   as misses with separate abstention counts; provider failures, incomplete trials and nonmanifestation stay distinct.
+5. Cache by image bytes, independent state, model, detector version, schema/prompt and CLI options/version. Keep
+   per-run review history, source/evaluator commits, usage and latency. Subscription reviews have a persistent request
+   cap; direct API reviews have a persistent dollar reservation ledger. No automatic application retry, scheduling,
+   VM change, GitHub publication or Phase 5 investigation pipeline. Runtime artifacts still require separate backup.
+
 For each decision, document:
 
 - Decision made.
@@ -712,7 +739,8 @@ Prefer concise entries over lengthy architectural essays.
 - Dashboard runs the current working tree (commit + dirty flag), not a frozen checkout. Use a dedicated checkout;
   do not edit it or run competing desktop suites during execution. The single-run guard covers this server only.
 - The dashboard exposes three legacy visual entries plus the native-client/distro matrix, not the full CDP catalog. Legacy-suite ingestion,
-  VM lifecycle controls, long-term trends, scheduled runs and AI remain later-phase work. Phase 3 adds bounded mutation campaigns and their per-run history.
+  VM lifecycle controls, long-term trends and scheduled runs remain later-phase work. Phase 3 adds bounded mutation campaigns;
+  Phase 4 adds manual advisory AI reviews and measured detector effectiveness, with the limitations recorded below.
 - Runtime evidence is in ignored `.qa/`; back it up separately. Capacity is bounded; automatic retention and remote
   service-manager deployment are documented/deferred. The existing development-only Angular audit advisory predates
   this change; runtime dependency audit reported zero vulnerabilities. No dependency upgrade outside this phase.
@@ -1047,6 +1075,90 @@ no baseline writes or tolerance changes. The initial OS desktop and deterministi
   a temporary directory/session requiring operator cleanup. Normal accepted runs verified full cleanup. Historical
   metrics include development/repeated campaigns; use commit and run IDs for comparable subsets. The 100-run capacity
   and separate runtime-evidence backup requirement remain in force.
+
+### Phase 4 — completed 2026-10-11
+
+**Implementation:** `scripts/qa/ai{,-codex,-evidence}.mjs`, authenticated serialized review/cancellation in the
+existing server, findings/regions/history in the dashboard, and `scripts/qa/ai-acceptance.mjs`. The Codex provider
+uses the user's Pro-backed ChatGPT sign-in; optional Responses uses separately billed API credentials. Operations,
+limits, isolation, cache/recovery and reproduction are documented in [visual-qa.md](visual-qa.md#ai-visual-review-phase-4).
+
+**Actual acceptance:** browser sign-in → select retained real-RDP campaign → request AI review → inspect completed
+findings and images → desktop/mobile layout → repeat review → verify local cache reuse with no additional provider
+requests. Three ARM64 native clients, 13 manifested mutations plus two static and two native-input controls each.
+No RDP VM/session was restarted or modified, and original tests, baseline tolerances and statuses remain unchanged.
+Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI **`0.162.1`**.
+
+| Native client / server | Source run | First accepted AI review | Detected | Healthy false positives | Escapes |
+|---|---|---|---:|---:|---|
+| macOS / Ubuntu GNOME 46 | `2026-10-11T11-47-45.076Z-02f16623` | `7295fad8-059e-4822-98a2-e91e143e1007` | 12/13 | 0/4 | crop |
+| Windows / Windows 11 | `2026-10-11T11-34-19.751Z-45ecb868` | `9c73a1ed-ed4a-4e90-9f35-2d725fabcb12` | 10/13 | 0/4 | crop, offset, missing |
+| Linux / Rocky Xfce/xrdp | `2026-10-11T11-46-15.498Z-63277147` | `a36733f9-ed69-432e-aa85-6dfd4420dd0e` | 10/13 | 0/4 | crop, missing, alignment |
+
+- **32/39 detected (82.05%), 7/39 missed (17.95%), 0/12 control false positives**, zero abstentions, no incomplete or
+  nonmanifested cases in this subset. These 51 labeled observations represent **45 unique AI inputs**, because static
+  controls repeat and freeze/stale can yield identical image/state evidence. Each first campaign review reused two
+  within-campaign cache entries; its uncached mean request latency was **4.47 / 4.43 / 4.57 seconds**, respectively.
+  Reproduction used cache for all 51 observations. No detector/prompt tuning or answer substitution was used to hide misses.
+- Per-category detection: crop **0/3**, offset **2/3**, missing UI **1/3**, alignment **2/3**; remaining nine catalog
+  categories **3/3** each. Layer totals: framebuffer **12/15**, frontend **16/18**, remote environment **1/3**,
+  screenshot/evaluator **3/3**. The last measures screenshot sensitivity, not live RDP rendering. Deterministic Phase 3
+  detectors caught all seven AI escapes, so the two approaches remain complementary rather than interchangeable.
+- The historical user-linked initial desktop in `2026-10-11T10-46-41.888Z-bf325b96` was classified **overlay / high /
+  0.99 confidence**, with a region over the real crash dialog. Its original Passed status is preserved. The failed
+  preflight run `2026-10-11T11-19-50.552Z-ea2fab57` received completed initial-desktop and full-window anomaly reviews
+  while remaining Infrastructure failure. Later clean Ubuntu desktop `2026-10-11T11-31-14.082Z-307405fc` was **healthy**.
+  Those three OS classifications were separately checked against human-reviewed screenshots; the two positive views
+  are the same stale incident, not independent production regressions. The two ordinary passed runs also contributed
+  twelve healthy fixture/input observations, all correctly unflagged; these are outside the primary 39/12 benchmark.
+- Supplementary accepted review IDs: historical dialog **`fe22f02d-979a-419b-b051-9e610a6dfd98`**, failed preflight
+  **`b2ca68cb-1e1d-47b0-97ba-f87a3cb2a918`**, clean desktop **`515e5e78-dd7d-4817-b5c9-183592c7e961`**.
+  All three browser workflows also verified repeat-cache behavior, unchanged source status and mobile layout.
+
+**Validation and retained evidence:**
+
+- **21 QA tests passed**, including subscription subprocess cancellation, credential-environment isolation, fail-closed
+  tool-event handling, schema/refusal validation, cache identity, API spending reservations, ground-truth separation,
+  evidence containment, HTTP authorization, persistence/recovery and effectiveness denominators. Synthetic contract
+  replies run only in isolated temporary test data; they are not model-quality evidence. Typechecking passed;
+  **581 unit tests passed, 3 skipped, 0 failed**. No dependency or production plugin change.
+- `.qa/phase4-mutation-ai-acceptance.json`, `phase4-os-ai-acceptance.json`, `phase4-validation.json`, corresponding
+  `ai-<run-id>{,-mobile}.png`, and `phase4-{dialog,initial-desktop}-findings{,-mobile}.png` retain browser/independent
+  receipts and visually inspected real region overlays. Every evaluated image's SHA-256 matches retained source
+  evidence. `.qa/runs/<id>/ai-reviews/` preserves original and repeated reviews; latest summaries point to cached repeats.
+- Initial missing-key browser checks and `phase4-ui-contract*` are explicitly labeled negative/contract-only evidence.
+  A direct API credential was unavailable; the user requested Pro authentication, which was then validated through
+  supported Codex CLI sign-in. No direct paid API request was made. The direct Responses transport remains
+  **contract-tested, not live account-qualified**.
+- Development validation caught unsupported installed-CLI config keys, benign isolation notices emitted as error
+  items, a long environment-selector mobile overflow and a 2200×1700 HiDPI failure screenshot rejected by the original
+  per-edge limit. Fixed using verified CLI options, a narrow isolation-notice allowlist, constrained flex sizing, and
+  the same four-megapixel budget with a 4096-pixel edge cap. The interrupted/failed review record remains retained;
+  a subsequent full browser workflow completed. No screenshot was resized or baseline relaxed to make review succeed.
+- Local subscription ledger at acceptance: **55 attempts**, **52 cached evaluations**, **605,034 reported tokens**.
+  Three early development attempts failed configuration/output validation; a separate CLI diagnostic is outside
+  this ledger. These are local accounting figures, not remaining Pro allowance or a complete billing statement.
+  No dollar estimate is assigned to subscription usage. The request cap remains 100; all repeated acceptance reviews
+  use the local cache. The dashboard stays on <http://127.0.0.1:4317>; 73 source test runs remain retained.
+- Secret scan of **6,338 artifact files and 19,812 ZIP members** found no actual test passwords/private-key material.
+  Runtime reviews/cache/receipts are ignored and need separate backup. No test run or AI request remains active at handoff.
+
+**Limitations and next-phase handoff:**
+
+- AI misses subtle crop/offset/alignment and some missing controls. High self-reported confidence does not imply
+  correctness; some temporal state disagreements were labeled text/geometry instead of render-state. Binary detection
+  effectiveness is measured; classification accuracy and region precision are not calibrated. Freeze/stale evidence
+  establishes state/presentation disagreement, not a causal diagnosis or the ability to distinguish those mechanisms.
+- This is a finite catalog/default-strength dataset, not a held-out generalization benchmark. Windows uses retained
+  pre-ICC-refinement Phase 3 text evidence; do not treat its AI result as isolated color-management/text qualification.
+  Other matrix cells, H.264, x86_64, KDE/KRDP and broader visual scenarios remain unqualified as previously documented.
+- Initial OS review detected this crash dialog; it does not prove general shell/dialog coverage or establish crash
+  timing/root cause. Failed-test analysis is screenshot-grounded and manual-triggered. Logs/traces are linked locally;
+  automatic multi-artifact investigation, scheduling, CI/PR automation and retention work remain **Phase 5**.
+- Codex model access, sign-in and shared subscription allowance are operator dependencies. Use a private trusted local
+  service account/session; do not export personal authentication to public CI. A model alias can evolve; bump detector
+  version/invalidate cache deliberately when requalifying behavior. Preserve misses, independent controls and source
+  truth separation, and use disjoint evidence when tuning before considering blocking AI judgments.
 
 ## 17. Execution Instructions for Codex / Astra High
 
