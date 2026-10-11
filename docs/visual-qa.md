@@ -440,3 +440,10 @@ isolated QA guest; no report was submitted or application relaunched from the di
 check, not general screenshot understanding. Arbitrary unexpected initial OS dialogs—including Windows dialogs—still
 need broader deterministic shell checks or Phase 4 visual review. The synthetic dialog mutation qualifies overlay
 detection inside the measured fixture viewport, not generic OS-dialog recognition.
+
+Phase 3 acceptance completed on native macOS→Ubuntu, Windows→Windows and Linux→Rocky/Xfce/xrdp: **39/39** default
+mutations manifested and were detected, **0/6** internal healthy-control false positives, and healthy lifecycles
+before/after all three campaigns. Dashboard reproduction and the 40-pixel crop parameter also passed. Exact commits,
+run IDs, encoder refinement, validation and remaining limitations are in the [Phase 3 handoff](VISUAL-QA-PLAN.md#phase-3--completed-2026-10-11).
+Other matrix cells and alternative severity values are not all mutation-qualified. Historical aggregate metrics
+include development runs and repeats; use the recorded commits and run IDs when comparing results.

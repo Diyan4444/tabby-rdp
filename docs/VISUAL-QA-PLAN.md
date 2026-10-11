@@ -582,7 +582,7 @@ Update it after each completed phase.
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
 | 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
-| 3. Defect Injection | In Progress | — | Implementing dashboard campaigns, independent manifestation checks and controls. |
+| 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
 
@@ -660,6 +660,31 @@ A phase may only be marked **Complete** when its acceptance criteria have been d
    RDP baselines per environment; detailed report metadata records guest versions, scale, fixture state and sampled
    transitions. Add per-environment status/preview and an expandable filmstrip to the existing dashboard.
 
+**Phase 3 decisions (2026-10-11):**
+
+1. Extend the existing real-RDP lifecycle, fixtures, Playwright baselines, result store and authenticated dashboard.
+   One campaign is one serialized run; no alternate launcher, queue, service or production plugin hook. Normal
+   environment health excludes mutation campaigns. Fixed IDs and enumerated numeric values are the only new HTTP input.
+2. Supply all twelve starter categories plus a synthetic error dialog across four explicitly labeled layers:
+   owned decoded-canvas `putImageData` hooks, owned frontend transforms/overlays, remote fixture state, and captured-PNG
+   text degradation. The last is evaluator sensitivity only. Normal cleanup restores every trial; canvas/frontend and
+   remote-control mutations have independent 30-second expiry. The campaign fixture lifetime is bounded to 20 minutes.
+3. Verify manifestation from before/after RGBA differences and changed-region bounds, or independent remote sequence
+   advancement plus two unchanged later captures for temporal cases. Do not accept the injection flag as manifestation.
+   Detection gets pixels, the existing baseline name and the normal frame/state assertion, with no mutation metadata.
+   Buffer comparison reuses Playwright's comparator; fixed-viewport capture prevents following a displaced canvas.
+   This is observational evidence, not a general classifier proving every changed pixel's cause.
+4. Keep nonmanifested, incomplete and not-executed experiments out of detection denominators. Retain individual
+   detector results, restoration status, controls, escapes, parameters, timings and commit/dirty flag. Report observation
+   latency including transport/capture/assertion costs, not precise rendering latency. Historical reproduction uses the
+   current checkout with original values, rather than silently changing source commits.
+5. User review exposed a gap in evidence-only initial OS captures: a stale Ubuntu Tabby crash dialog was covered by
+   the fullscreen fixture. Preserve that accepted historical run and qualify its meaning. A real negative run now
+   fails preparation on known same-account crash-reporter processes. This is not general OS-dialog recognition.
+6. Visual review caught lost ICC metadata when encoding the screenshot-only text mutation. `e9c106e` copies the source
+   PNG color-profile chunks without changing mutation RGBA bytes; a property test and fresh Linux/macOS captures verify
+   the correction. No baseline, tolerance, retry or production plugin bytes changed. AI and scheduling remain pending.
+
 Record significant decisions here.
 
 For each decision, document:
@@ -687,7 +712,7 @@ Prefer concise entries over lengthy architectural essays.
 - Dashboard runs the current working tree (commit + dirty flag), not a frozen checkout. Use a dedicated checkout;
   do not edit it or run competing desktop suites during execution. The single-run guard covers this server only.
 - The dashboard exposes three legacy visual entries plus the native-client/distro matrix, not the full CDP catalog. Legacy-suite ingestion,
-  VM lifecycle controls, long-term trends, scheduled runs, AI and mutations remain later-phase work.
+  VM lifecycle controls, long-term trends, scheduled runs and AI remain later-phase work. Phase 3 adds bounded mutation campaigns and their per-run history.
 - Runtime evidence is in ignored `.qa/`; back it up separately. Capacity is bounded; automatic retention and remote
   service-manager deployment are documented/deferred. The existing development-only Angular audit advisory predates
   this change; runtime dependency audit reported zero vulnerabilities. No dependency upgrade outside this phase.
@@ -928,6 +953,100 @@ raw and visible frames, guest evidence where available, reports and traces. Meas
 before selecting comparison tolerances; do not copy the current non-H.264 baselines or relax them to admit KRDP.
 Report unsupported operations and infrastructure failures explicitly. This planned coverage does not resolve the
 other thread's H.264 resize failure. No KDE VM or passing KRDP cell is claimed by this plan entry.
+
+### Phase 3 — completed 2026-10-11
+
+**Implementation:** `scripts/qa/mutations.{json,mjs}`, campaign execution in `server.mjs`, Test the Tests UI,
+`test/visual/mutations.ts` / `png.ts`, existing RDP test/fixtures, and `scripts/qa/mutation-acceptance.mjs`.
+Commits **`8049878`** and **`e9c106e`** implement the phase; this final handoff commit records acceptance and strengthens
+missing-environment campaign contract assertions. Operational details are in [visual-qa.md](visual-qa.md#test-the-tests-phase-3).
+
+**Executed acceptance:** all three browser workflows signed in, selected a native-client/remote-desktop cell,
+ran a healthy lifecycle, selected all 13 default mutations, observed a completed campaign, opened actual/expected
+images and the local report/trace viewer, checked mobile layout, and ran a healthy lifecycle again. Each campaign
+independently witnessed all 13 defects, restored each one, and passed both internal healthy controls. Zero retries;
+no baseline writes or tolerance changes. The initial OS desktop and deterministic fixture are separate evidence.
+
+| Native client / server | Step | Clean run ID | Commit |
+|---|---|---|---|
+| macOS / Ubuntu GNOME 46 | Healthy before | `2026-10-11T11-30-23.179Z-7e766176` | `8049878` |
+| macOS / Ubuntu GNOME 46 | 13-mutation campaign | `2026-10-11T11-30-39.612Z-0faf2fe8` | `8049878` |
+| macOS / Ubuntu GNOME 46 | Healthy after | `2026-10-11T11-31-14.082Z-307405fc` | `8049878` |
+| Windows / Windows 11 | Healthy before | `2026-10-11T11-31-37.038Z-fbd8ec0d` | `8049878` |
+| Windows / Windows 11 | 13-mutation campaign | `2026-10-11T11-34-19.751Z-45ecb868` | `8049878` |
+| Windows / Windows 11 | Healthy after | `2026-10-11T11-42-09.877Z-51089dd8` | `8049878` |
+| Linux / Rocky Xfce/xrdp | Healthy before | `2026-10-11T11-45-55.031Z-107273e6` | `e9c106e` |
+| Linux / Rocky Xfce/xrdp | 13-mutation campaign | `2026-10-11T11-46-15.498Z-63277147` | `e9c106e` |
+| Linux / Rocky Xfce/xrdp | Healthy after | `2026-10-11T11-47-08.544Z-080b5635` | `e9c106e` |
+
+- The three campaigns detected **39/39** manifested mutations, with **0/6** healthy controls falsely flagged.
+  Screenshot comparison detected **33/39**; frame-state samples detected **12/39** (overlap on color/blank). Freeze and
+  stale-frame cases escaped single-frame baseline comparison but were detected by remote-state/pixel disagreement.
+  At their tested values, crop/offset/scale/missing-control/overlay/alignment/text/geometry/dialog escaped the five
+  point samples and were detected by screenshots. This measures this finite catalog, not arbitrary visual defects.
+- Whole campaign durations: macOS **31.9 s**, Windows **468.7 s**, Linux **49.4 s**. Mean detection observation latency:
+  **0.85 s**, **6.57 s**, **1.02 s**, respectively. Windows' serial WinRM work accounts for much of the difference;
+  these are not exact repaint times or algorithm-only latency.
+- Clicked **Reproduce campaign** for the original macOS campaign on clean `e9c106e`: run
+  **`2026-10-11T11-47-45.076Z-02f16623`**, **13/13** detected, all restored, both controls healthy, ordinary RDP checks
+  passed. Original parameters were reproduced exactly; the new source commit is explicit. The Linux campaign and this
+  macOS reproduction retain ICC profiles and were checked for unchanged RGBA outside the text-mutation band.
+- Selected **40** in the crop parameter dropdown and executed from the dashboard on `e9c106e`: run
+  **`2026-10-11T11-50-09.836Z-cd255271`** detected/restored the stronger crop with healthy controls. Other alternative
+  severity values are supported by the fixed catalog but were not acceptance-qualified. Original defaults remain recorded.
+- Windows' full 13-mutation workflow is on `8049878`; it was not repeated after the PNG metadata/UI/evidence-accounting
+  refinement in `e9c106e`. The refinement changes no mutation pixel bytes, baselines, production plugin or detector
+  tolerances. The corrected encoder has property coverage plus actual Linux/macOS qualification; earlier artifacts
+  retain their original bytes and provenance rather than being rewritten.
+- The user-provided historical initial desktop contains a visible, partly offscreen crash dialog. Ubuntu's saved
+  report predates the run (09:39:12, signal 5; Tabby restarted at 09:40:40). Actual negative run
+  **`2026-10-11T11-19-50.552Z-ea2fab57`** failed the new preflight before fixture startup. Crash evidence was archived
+  privately, the stale reporter closed, and later healthy OS captures reviewed. No crash report was sent and no root
+  cause or crash during the historical test is claimed. Arbitrary initial OS dialogs still need further coverage.
+- Earlier development crop/campaign runs remain in history. One development browser check looked for a synchronous
+  `toMatchSnapshot` call in a context-only trace; that API call is not recorded there. The test itself passed. The
+  final browser helper verifies recorded locator screenshot checks, while buffer comparison findings are retained in
+  the HTML report and mutation JSON. Dashboard screenshot anchors were corrected after lazy images shifted the page.
+
+**Evidence and validation:**
+
+- `.qa/runs/<IDs above>/` retains PNGs, independent manifestation diffs, before/restored controls, temporal captures,
+  detector messages, remote state, report, trace and environment metadata. The three main campaigns have **490**
+  attachments; the final macOS reproduction adds **161**. Empty diagnostic logs are valid; all PNGs/traces are nonempty.
+- `.qa/visual-<target>-mutation-acceptance.json`, matching `*-mutations*.png`, `*-mutation-evidence.png`,
+  `*-mutation-trace.png`, `.qa/phase3-*-review-*.png`, `.qa/phase3-reproduction.json`, `.qa/phase3-parameter.json` and
+  `.qa/phase3-validation.json` retain browser and independent verification receipts. Runtime artifacts are ignored;
+  back them up separately. The dashboard remains at <http://127.0.0.1:4317> with its existing private configuration.
+- Final checks: **581 unit tests passed, 3 skipped, 0 failed**; **9 QA contract tests passed**; plugin/test typecheck,
+  syntax and diff checks passed. Contract coverage includes authenticated/origin-protected campaigns, fixed values,
+  concurrency/cancellation, missing-environment experiments explicitly Not executed, and exclusion/false-positive metrics.
+- Cleanup: zero fixture directories on all four Linux QA guests; no leftover test Xfce session; zero Windows fixture
+  tasks/directories; zero owned panes, mutation hooks/overlays or sizing styles on native Windows/Linux clients.
+  All test/browser processes completed. Dedicated native clients, tunnels and dashboard remain intentionally available.
+- Scanned **6,317 artifact files and 19,812 ZIP members** for actual guest/admin passwords and private-key content,
+  including UTF-16/base64 forms: **zero matches**. Final dashboard state: **active null**, **73** retained runs.
+  Aggregate development-plus-acceptance history has 67/67 detections and 0/14 control false positives; this includes
+  repeated experiments, not 67 distinct defect categories. The comparable three-client acceptance subset is 39/39 above.
+
+**Handoff / remaining scope:**
+
+- Phase 3 mutation acceptance covers three ARM64 cells: native macOS→Ubuntu/GNOME, Windows→Windows, and Linux→Rocky/xrdp.
+  Other Phase 2 cells remain configured and retain their Phase 2 evidence; they were not all rerun as mutation campaigns.
+  H.264, x86_64, KDE/KRDP, independent Linux guest pixels and broader Phase 2 scenarios remain unqualified as previously
+  documented. No other thread's VM or live session was changed.
+- A known-process crash preflight is not a visual classifier. Synthetic dialog detection is limited to the measured
+  fixture viewport. Generic initial OS-dialog understanding remains a gap. PNG profile preservation avoids adding an
+  unintended presentation change, but this does not establish comprehensive color-management correctness.
+- Spatial manifestation observes changed pixels/bounds; temporal manifestation observes a controlled remote state
+  advance and unchanged presentation. Neither independently attributes a production failure's cause. Missing baseline,
+  disconnected transport, incomplete execution and nonmanifested injection must remain distinct from a detection.
+- Keep controls and mutation metadata separate from future AI evaluator inputs. Phase 4 should use these retained
+  healthy/mutated images and temporal pairs to measure sensitivity/false positives before making AI judgments blocking.
+  No Decisions/Responses integration, automated investigation, scheduler, PR automation or KDE provisioning was added.
+- Forced termination relies on the 30-second mutation expiry and bounded fixture lifetime; a hard kill can still leave
+  a temporary directory/session requiring operator cleanup. Normal accepted runs verified full cleanup. Historical
+  metrics include development/repeated campaigns; use commit and run IDs for comparable subsets. The 100-run capacity
+  and separate runtime-evidence backup requirement remain in force.
 
 ## 17. Execution Instructions for Codex / Astra High
 

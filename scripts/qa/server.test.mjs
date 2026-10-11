@@ -88,5 +88,13 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     assert.equal(unavailable.tests[0].status, 'not-run')
     assert.match(unavailable.reason, /TRD_TEST_HOST/)
     assert.equal(fs.existsSync(path.join(dir, 'runs', missing.id, 'results.json')), false)
+    const campaignRun = await (await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]})).json()
+    const campaignState = (await (await request('/api/runs')).json()).runs.find(r=>r.id===campaignRun.id)
+    assert.equal(campaignState.status,'infrastructure-failed')
+    assert.equal(campaignState.experiments[0].classification,'not-executed')
+    assert.equal(campaignState.effectiveness.manifested,0)
+    assert.equal(campaignState.effectiveness.excluded,1)
+    assert.equal(campaignState.effectiveness.detectionRate,null)
+
 
 })
