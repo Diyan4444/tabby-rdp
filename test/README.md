@@ -15,7 +15,7 @@ npm test -- hyperv                # Hyper-V VMs on a Windows host (TRD_TEST_HYPE
 npm test -- gateway               # desktops behind an RD Gateway (TRD_TEST_GATEWAY)
 npm test -- xrdp                  # the xrdp suite (TRD_TEST_XRDP_*)
 npm test -- direct                # a desktop reached directly, not through SSH (TRD_TEST_DIRECT_*, else the test host)
-npm test -- --packed e2e          # with the plugin installed as npm would install it (npm pack)
+npm test -- --packed e2e          # with the plugin installed as npm would install it (the release packer)
 npm test -- --keep e2e            # leave the test Tabby open afterwards
 npm test -- --port 9334 e2e       # use a Tabby already running with --remote-debugging-port=9334
 npm test -- screenshots           # regenerate docs/images from the test machines
@@ -43,7 +43,7 @@ npm run test:smoke -- --tabby /path/to/Tabby --expect-xterm 6 --require-rdp
 ```
 
 On macOS, pass the executable inside the app: `/path/to/Tabby.app/Contents/MacOS/Tabby`.
-The command installs a local `npm pack` tarball in a fresh profile, runs `smoke-host` and
+The command installs a local `npm run pack:release` tarball in a fresh profile, runs `smoke-host` and
 `smoke-rdp`, then closes the host and removes the profile. The credential guard is a profile-local test plugin;
 it does not change the application bundle or signature. These checks do not read or write the native keychain or
 use the system clipboard. Run them against a dedicated test desktop: the RDP suite sends a few harmless keystrokes.

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.5
+
+**Fixed**
+- **The development Angular dependency is updated to 21.2.25**, replacing the vulnerable 15.2.10 pin. The complete
+  locked dependency tree passes the npm advisory audit, including the seven Angular advisories reported against
+  0.5.4. This updates the plugin's build dependency; Tabby's bundled Angular remains controlled by Tabby.
+- **Published dependency metadata includes only the plugin's runtime dependencies.** Build/test dependencies and
+  build scripts stay in the source checkout. The published shrinkwrap retains exact runtime versions, download URLs
+  and integrity hashes, and omits development-only entries. Playwright's browser installer helpers no longer belong
+  to the published plugin's dependency graph.
+- **Publication checks verify the exact metadata transformation against the tagged source**, and still compare all
+  other packaged source files and vendor binaries. CI audits all development dependencies and tests the packed plugin
+  in native Tabby on macOS, Windows and Linux.
+
+Version 0.5.4 was deprecated and unpublished from npm while these findings were addressed; its GitHub release was
+returned to draft. The scanner's separate warning about the presence of a shrinkwrap remains an intentional packaging
+tradeoff; this release retains the reviewed runtime lock.
+
 ## 0.5.4
 
 Expanded Linux desktop qualification, cross-platform visual QA and RDP security hardening.

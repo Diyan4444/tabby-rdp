@@ -1070,7 +1070,7 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
         try {
             const { NgbModal } = require('@ng-bootstrap/ng-bootstrap')
             const { EditProfileModalComponent } = require('tabby-settings')
-            return this.zone.run(() => this.injector.get(NgbModal).open(EditProfileModalComponent, { size: 'lg' }))
+            return this.zone.run(() => this.injector.get<{ open: (component: unknown, options: { size: string }) => any }>(NgbModal).open(EditProfileModalComponent, { size: 'lg' }))
         } catch {
             return null
         }

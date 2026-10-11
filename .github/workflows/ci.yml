@@ -23,6 +23,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Audit all locked dependencies, including build and QA tools
+        run: npm audit --audit-level=low
       - run: npm run build
       - name: Type check the tests
         run: npm run typecheck:test
@@ -34,7 +36,7 @@ jobs:
         run: npm run test:qa
       - name: Package contents
         run: |
-          npm pack --dry-run 2>&1 | tee pack.txt
+          node scripts/pack.mjs --dry-run 2>&1 | tee pack.txt
           grep -q 'dist/index.js' pack.txt
           grep -q 'vendor/iron-remote-desktop-rdp.js' pack.txt
           grep -q 'vendor/ironrdp_web_bg.wasm' pack.txt
@@ -49,7 +51,7 @@ jobs:
         # committed (scripts/check-vendor.mjs).
         run: |
           mkdir -p "$RUNNER_TEMP/package"
-          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/package"
+          node scripts/pack.mjs --pack-destination "$RUNNER_TEMP/package"
           node scripts/check-vendor.mjs package "$RUNNER_TEMP"/package/tabby-rdp-*.tgz HEAD
       - name: No inlined assets in vendor/
         # The WebAssembly ships as its own file (scripts/build-ironrdp.sh), not as a base64 data URL in the bundle.

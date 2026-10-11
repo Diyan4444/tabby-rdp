@@ -637,6 +637,7 @@ npm ci --ignore-scripts
 npm run build                # TypeScript to dist/
 npm run typecheck            # plugin and test TypeScript
 npm run test:unit            # standard unit suite; no remote machine needed
+npm run pack:release         # publishable package with runtime-only dependency metadata
 scripts/sandbox.sh           # a separate Tabby with this plugin linked in (macOS), DevTools on port 9334
 npm test                     # end-to-end suites against a test machine: see test/README.md
 npm run build:ironrdp        # rebuild vendor/ from IronRDP and ironrdp/patches: see ironrdp/README.md

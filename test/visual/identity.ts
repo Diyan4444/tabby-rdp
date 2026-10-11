@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { expect } from '@playwright/test'
+import { runtimeMetadata } from '../../scripts/package-metadata.mjs'
 
 export interface ClientIdentity { platform: string, arch: string, release: string, pluginSha256: string }
 
@@ -13,6 +14,10 @@ export async function clientIdentity (ev: (script: string) => Promise<unknown>):
     // A remote CDP session must exercise this checkout's built plugin, not yesterday's installation.
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
     const files: string[] = ['package.json']
+    const metadata = process.env.TRD_TEST_PACKED === '1'
+        ? runtimeMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
+            JSON.parse(fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8'))) : null
+    if (metadata) files.push('npm-shrinkwrap.json')
     const walk = (dir: string) => { for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
         const file = `${dir}/${entry.name}`
         if (entry.isDirectory()) walk(file)
@@ -21,7 +26,10 @@ export async function clientIdentity (ev: (script: string) => Promise<unknown>):
     for (const directory of ['dist', 'remote', 'vendor']) walk(directory)
     files.sort()
     const hash = crypto.createHash('sha256')
-    for (const file of files) { hash.update(file); hash.update(fs.readFileSync(path.join(root, file))) }
+    for (const file of files) {
+        hash.update(file)
+        hash.update(metadata && file in metadata ? metadata[file as keyof typeof metadata] : fs.readFileSync(path.join(root, file)))
+    }
     const expected = hash.digest('hex')
     const digest = await ev(`const fs=require('fs'),p=require('path'),root=p.join(process.env.TABBY_CONFIG_DIRECTORY,'plugins','node_modules','tabby-rdp'),h=require('crypto').createHash('sha256');
         for(const f of ${JSON.stringify(files)}) {h.update(f);h.update(fs.readFileSync(p.join(root,f)))} return h.digest('hex')`)
