@@ -66,6 +66,35 @@ test('paths are the drive\'s: backslashes, the root, and nothing outside the fol
     assert.equal(await code(() => drives.list(2, '\\')), 'ENOENT')
 })
 
+test('a folder\'s listing gives the server no more than MAX_LISTED names, and says so once (security review, finding 4)', async () => {
+    const { dir } = sandbox()
+    const { MAX_LISTED } = require('../../dist/drives.js')
+    fs.mkdirSync(path.join(dir, 'many'))
+    for (let i = 0; i < MAX_LISTED + 25; i++) {
+        fs.writeFileSync(path.join(dir, 'many', `f${i}`), '')
+    }
+    const log: string[] = []
+    const drives = new SharedDrives([{ path: dir, name: 'Share', readOnly: true }], (m: string) => log.push(m))
+    for (let i = 0; i < 3; i++) {
+        const names = await drives.list(1, '\\many')
+        assert.equal(names.length, MAX_LISTED)
+        assert.equal(new Set(names).size, MAX_LISTED)
+    }
+    assert.deepEqual(log, [`drives: a folder of more than ${MAX_LISTED} names was listed: the remote gets ${MAX_LISTED} of them, in no particular order (the rest are still there to open by path)`])
+    // A name left out is still there to open by its path (not to find by a query of the folder: see MAX_LISTED).
+    const listed = new Set(await drives.list(1, '\\many'))
+    const left = [...Array(MAX_LISTED + 25).keys()].map(i => `f${i}`).find(n => !listed.has(n))!
+    assert.equal((await drives.stat(1, `\\many\\${left}`)).size, 0)
+    // A folder of exactly that many is listed whole, without a word.
+    fs.rmSync(path.join(dir, 'many', left))
+    for (const extra of [...Array(MAX_LISTED + 25).keys()].map(i => `f${i}`).filter(n => n !== left).slice(0, 24)) {
+        fs.rmSync(path.join(dir, 'many', extra))
+    }
+    const quiet: string[] = []
+    assert.equal((await new SharedDrives([{ path: dir, name: 'Share', readOnly: true }], (m: string) => quiet.push(m)).list(1, '\\many')).length, MAX_LISTED)
+    assert.deepEqual(quiet, [])
+})
+
 test('a read waits while the connection has no room, takes room for what it reads, and gives back what it didn\'t read', async () => {
     const { dir } = sandbox()
     // The desktop's proxy on its server (see ServerFlow): what was handed to the connection, and isn't read from it
