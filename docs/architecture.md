@@ -330,6 +330,12 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
   reconnects by itself without H.264 for that desktop (until Tabby restarts, or the setting is turned on again). A
   decoder the browser takes back (`QuotaExceededError`: an idle one, in a hidden window) reconnects with H.264, as a new
   stream starts with a key frame; taken back again within ten minutes, it counts as a failure like the others.
+- **Surfaces:** IronRDP's decoder opens a `VideoDecoder` (a thread and its buffers) for each surface the server draws
+  on and closes none until the session ends, so the plugin holds it to 16 (`src/h264.ts`): a new surface past that
+  closes the one longest without a frame (the surfaces a resize leaves behind; a desktop draws on one or two), and a
+  surface gets a decoder only with a key frame. The plugin waits on as many surfaces without one as it may have open;
+  a surface among those still without a key frame after 3 s fails H.264, as above, while frames for any further ones
+  are dropped without being waited on (they cost nothing, so none is kept of them).
 - **GNOME** sends H.264 only with a hardware encoder (VA-API or NVENC on the remote); otherwise RemoteFX, as before.
 - **Windows** gets the graphics pipeline only with H.264. It streams H.264 only to EGFX 10 and later (to 8.1 it
   confirms the version without AVC420), and only for what it takes for video: areas of natural picture that keep
