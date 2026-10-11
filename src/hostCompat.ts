@@ -10,9 +10,6 @@ export interface HostInfo {
     readonly xtermMajor: number | null
 }
 
-type ModalStyle = Pick<CSSStyleDeclaration, 'content' | 'display' | 'height' | 'getPropertyValue'>
-type StyleReader = (element: Element, pseudo: string) => ModalStyle
-
 /** Reads are independent: an unavailable optional module must not prevent the plugin from loading. */
 export interface HostSources {
     name?: () => unknown
@@ -21,13 +18,10 @@ export interface HostSources {
     electron?: unknown
     node?: unknown
     terminalPackage?: () => unknown
-    modalStyle?: StyleReader
 }
 
 export interface HostSnapshot extends HostInfo {
     readonly capabilities: {
-        /** Last observed modal. Null means no modal has been examined yet. */
-        readonly nativeModalDragRegion: boolean | null
         /** The supplied pane's input. Null means no pane was supplied. */
         readonly terminalInput: boolean | null
     }
@@ -56,8 +50,6 @@ export function terminalInputs (container: ParentNode): HTMLTextAreaElement[] {
 /** An Angular factory provides one instance per plugin window; this module itself needs no Angular runtime. */
 export class HostCompatibility {
     readonly info: Readonly<HostInfo>
-    private nativeModalDragRegion: boolean | null = null
-    private readonly modalStyle: StyleReader
 
     constructor (sources: HostSources) {
         const xtermDeclaration = text(read(() => {
@@ -71,26 +63,12 @@ export class HostCompatibility {
             electron: text(sources.electron), node: text(sources.node), xtermDeclaration,
             xtermMajor: declaredMajor(xtermDeclaration),
         })
-        this.modalStyle = sources.modalStyle ?? ((element, pseudo) => getComputedStyle(element, pseudo))
-    }
-
-    /** Probe each modal; themes and UI scale can change while the application is running. */
-    hasNativeModalDragRegion (modal: Element): boolean {
-        let supported = false
-        try {
-            const style = this.modalStyle(modal, '::before')
-            supported = style.content !== 'none' && style.content !== 'normal' && style.display !== 'none' &&
-                style.getPropertyValue('-webkit-app-region') === 'drag' && parseFloat(style.height) > 0
-        } catch { }
-        this.nativeModalDragRegion = supported
-        return supported
     }
 
     snapshot (pane?: ParentNode): HostSnapshot {
         return {
             ...this.info,
             capabilities: {
-                nativeModalDragRegion: this.nativeModalDragRegion,
                 terminalInput: pane ? terminalInputs(pane).length > 0 : null,
             },
         }
@@ -99,14 +77,13 @@ export class HostCompatibility {
     /** Local build information and observed capabilities only; no config, accounts, paths or connection details. */
     diagnosticLines (pane?: ParentNode): string[] {
         const info = this.snapshot(pane)
-        const { nativeModalDragRegion, terminalInput } = info.capabilities
-        const drag = nativeModalDragRegion === null ? 'unobserved' : nativeModalDragRegion ? 'host' : 'plugin fallback'
+        const { terminalInput } = info.capabilities
         const input = terminalInput === null ? 'unobserved' : terminalInput ? 'available' : 'unavailable'
         return [
             `Host: ${info.name ?? 'unknown'} ${info.version ?? 'unknown'} on ${info.platform ?? 'unknown'}`,
             `Runtime: Electron ${info.electron ?? 'unknown'}, Node ${info.node ?? 'unknown'}`,
             `Terminal: xterm ${info.xtermDeclaration ?? 'unknown'} (host declaration)`,
-            `Compatibility: modal drag region ${drag}; terminal input ${input}`,
+            `Compatibility: terminal input ${input}`,
         ]
     }
 }

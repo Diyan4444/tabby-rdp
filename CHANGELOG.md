@@ -4,6 +4,12 @@
 
 Local release candidate; not published on npm or as a GitHub release.
 
+**Changed**
+- **Standard dialogs use Tabby's own window drag region**, available in Tabby 1.0.238
+  ([upstream #11766](https://github.com/Eugeny/tabby/pull/11766)). The plugin no longer adds a fallback to host dialogs.
+  Older Tabby versions still work, but need updating to move the window while a standard dialog is open.
+  The plugin's custom settings overlays retain their own drag strips.
+
 **Security** (the rest of the review of 0.5.3-rc.1; all of these were in 0.5.2 too)
 - **The RD Gateway's NTLM sign-in is always bound to its TLS connection.** A challenge without the target information
   or the time that the binding goes with is refused, rather than answered without the binding and the integrity code.
