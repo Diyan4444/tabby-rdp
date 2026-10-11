@@ -23,7 +23,7 @@ log, and Playwright HTML report. Open a test in the report and select its trace 
 trace viewer. Downloadable `trace.zip` also works with `npx playwright show-trace <file>`.
 
 The dashboard and all evidence are served locally. No screenshots or traces are uploaded to a third-party service.
-DOM replay of Electron `file://` pages can have missing local fonts/icons; use the actual PNG and trace filmstrip
+DOM replay of Electron `file://` pages can have missing local fonts/icons and a checkerboard canvas placeholder; use the actual PNG and trace filmstrip
 for pixel evidence. The trace still records real actions, timings, assertions, source and DOM snapshots.
 
 The runner uses its existing credential guard and temporary profile; it disables update checks. Only one dashboard
@@ -164,7 +164,7 @@ references, text and input marker. Independent remote JSON reports sequence, inp
 The real client framebuffer must agree with this state, four corner markers and the sequence tile. RDP mouse and
 keyboard input must change both remote state and visible pixels. Baselines cover initial 800×600, tab return at
 800×600, resize to 900×650 and reconnect. Device/remote scale is 1; H.264, clipboard, audio and microphone are off.
-The OS shell at initial connection is captured as evidence but is not a stable regression baseline.
+The first decoded frame (which can still show the Windows sign-in transition) is captured as connection evidence, not a stable regression baseline.
 
 Each checkpoint retains decoded raw canvas and final visible canvas screenshots; Windows also captures the guest
 screen using CopyFromScreen in the same interactive RDP session. Ubuntu Wayland currently has independent fixture
@@ -176,7 +176,7 @@ keep the fixture running indefinitely.
 Resize additionally records twelve bounded observations, targeting 500 ms spacing (guest-oracle calls can extend it), including raw/visible filmstrips,
 remote state, geometry, sampled RGBA and client monotonic timestamps/capture cost. A Windows guest-screen capture is also retained midway through the transition. The final four samples must be
 correct; a later invalid sample after the first correct repaint fails. Transient settling is retained explicitly.
-The five point samples do not quantify whole-frame damage area or prove all text remains readable; screenshot
+Measured clean runs: Linux collected twelve observations over 5.5 s; Windows took 39 s because each WinRM state read costs about 2.4 s and the guest-image observation cost 11.9 s. These are bounded observations, not exact repaint timing or high-frequency Windows coverage. The five point samples do not quantify whole-frame damage area or prove all text remains readable; screenshot
 comparison supplies broader spatial coverage at settled checkpoints. These observations do not infer presentation
 from decoder counters or equate remote and local clocks. Every lifecycle has zero retries.
 

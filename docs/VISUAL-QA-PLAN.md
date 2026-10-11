@@ -579,7 +579,7 @@ Update it after each completed phase.
 | Phase | Status | Commit | Acceptance |
 |---|---|---|---|
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
-| 2. Real RDP Validation | In Progress | — | Both dedicated RDP lifecycles executed; clean-commit dashboard acceptance is the final validation step. |
+| 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
@@ -678,8 +678,8 @@ Prefer concise entries over lengthy architectural essays.
 - Phase 1 had no real RDP coverage. Phase 2 now provisions dedicated Windows/Ubuntu desktops; see its handoff for
   actual acceptance records and the disclosed Windows installer provenance limitation. Only the listed scenarios
   and non-H.264 path are covered; broader Section 5 coverage remains outstanding.
-- Trace DOM replay can miss fonts/icons from Electron's local `file://` resources; the captured actual PNG and
-  filmstrip are the pixel evidence. Actions, assertions, timings and DOM snapshots are available in the local viewer.
+- Trace DOM replay can miss fonts/icons from Electron's local `file://` resources and shows a placeholder for the
+  live canvas bitmap; the captured actual PNG and filmstrip are the pixel evidence. Actions, assertions, timings and DOM snapshots are available in the local viewer.
 - Dashboard runs the current working tree (commit + dirty flag), not a frozen checkout. Use a dedicated checkout;
   do not edit it or run competing desktop suites during execution. The single-run guard covers this server only.
 - The dashboard exposes three visual catalog entries, not the full existing CDP catalog. Legacy-suite ingestion,
@@ -736,7 +736,7 @@ Do not represent incomplete work as complete.
   reuse the existing RDP suites/runner, and expand the fixed catalog and structured results deliberately. Do not
   count the Phase 1 settings baseline as end-to-end RDP validation. AI/mutation/scheduling work remains out of scope.
 
-**Phase 2 — implementation ready; final clean-commit acceptance pending**
+**Phase 2 — completed 2026-10-10 PDT (2026-10-11 UTC)**
 
 - Added `visual-linux` and `visual-windows`, native fixtures, remote JSON state checks, four reviewed baselines per
   guest and bounded resize filmstrips. Guest-side Windows screen captures independently validate visible corner
@@ -747,11 +747,35 @@ Do not represent incomplete work as complete.
   and removed; signed driver validation and setup completion receipts are retained privately. Operations, image
   provenance (including the inherited `.UNVERIFIED` Windows ISO discrepancy), scope and restart steps are in
   [visual-qa.md](visual-qa.md); private host/credential/tunnel receipts are in ignored `.qa/private/`.
-- Validation so far: build/typecheck passed, unit suite **578 passed / 3 skipped / 0 failed**, existing `smoke-host`
+- Validation: build/typecheck passed, unit suite **578 passed / 3 skipped / 0 failed**, existing `smoke-host`
   and `smoke-rdp` **ALL PASSED**, four QA tests passed including missing-environment Not executed/Infrastructure
   failure and secret-free configuration reporting. Linux browser acceptance passed in runs
   `2026-10-11T06-06-48.238Z-c71d47be` and `2026-10-11T06-11-36.480Z-8a7d3255` (development working tree).
-  Windows baseline lifecycle passed in **197 seconds**, with no retries; normal baseline comparison is next.
+  Windows baseline lifecycle passed in **197 seconds**, with no retries.
+- Final acceptance on **clean implementation commit `439d9d0`**, baseline updates disabled and zero retries:
+  **Windows** `2026-10-11T06-24-23.606Z-fce937db` (204.0 s, 56 attachments), **Ubuntu**
+  `2026-10-11T06-28-30.439Z-dc8135b6` (15.4 s, 48 attachments), and **local settings**
+  `2026-10-11T06-29-13.243Z-342c0196`. Every workflow signed in through the browser, selected the environment,
+  clicked Run, verified the new run passed, loaded its PNGs, opened the report and found recorded screenshot
+  assertions in the self-hosted trace viewer; mobile layout passed too. Dashboard screenshots, baseline images,
+  the Windows guest oracle and trace viewer were visually inspected. This subsequent documentation commit records
+  completion; no implementation changed after these clean-commit tests.
+- Final environment receipts: Ubuntu **24.04.5**, GNOME Shell **46.0-0ubuntu6~24.04.15**, GNOME Remote Desktop
+  **46.3-0ubuntu1.2**, DejaVu **2.37-8**; Windows **Professional, 26H2, build 26300, UBR 9457**.
+  The common client is macOS arm64 / Tabby **1.0.236** / Electron **43.7.0**, remote/device scale 1, H.264 off.
+- Evidence: `.qa/runs/<IDs above>/` contains reports, expected/actual PNGs, raw-canvas images, guest images for Windows,
+  resize timelines, environment/fixture/RDP logs and trace ZIPs. `.qa/visual-{windows,linux,host}-acceptance.json`,
+  matching dashboard/mobile/trace PNGs and `.qa/windows-dashboard-viewport.png` retain the browser demonstration.
+  Runtime artifacts are intentionally untracked. The dashboard remains at <http://127.0.0.1:4317>; token `.qa/token`,
+  configuration `.qa/private/environments.json`, operational VM/tunnel receipt `.qa/private/phase2-infrastructure.md`.
+- Cleanup verified after acceptance: **zero** Windows fixture tasks/directories and **zero** Linux fixture directories.
+  Scanned all **222** files from the three clean runs, including ZIP members, for the new guest passwords: no matches.
+  The isolated guests and dashboard remain available for future tests; no other thread's guest was stopped or changed.
+- Temporal results: Linux retained one unsettled observation then consistent markers/geometry, first correct sample
+  at **550 ms**, twelve observations over **5.5 s**. Windows retained twelve correct observations over **39 s**;
+  first observed correct frame at **2.43 s**, typical collection cost **2.4 s**, and **11.9 s** for the observation
+  including a guest screen capture. These are observation times, not exact repaint latency. Windows cannot establish
+  high-frequency transition correctness with this WinRM sampling cadence; that instrumentation limit is explicit.
 - Setup failures were preserved: missing GI/Cairo prevented Ubuntu fixture startup; Windows' first-login Start menu
   obscured the fixture, independently confirmed by guest screen capture. Installed the required Cairo bridge and
   explicitly dismiss the first-login menu/activate the fixture. Baselines were reviewed only after those fixes;
