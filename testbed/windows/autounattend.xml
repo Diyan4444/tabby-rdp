@@ -84,7 +84,7 @@
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
           <Description>Remote Desktop, WinRM and the test account (setup.ps1, from the config disc)</Description>
-          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\setup.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\setup.ps1 -UserName @@TEST_USER@@ -Password "@@TEST_PASSWORD@@" &gt; C:\Windows\Temp\tabby-rdp-setup.log 2&gt;&amp;1</CommandLine>
+          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\setup.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\setup.ps1 -UserName @@TEST_USER@@ -PasswordFile %d:\test-password.txt &gt; C:\Windows\Temp\tabby-rdp-setup.log 2&gt;&amp;1</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>3</Order>

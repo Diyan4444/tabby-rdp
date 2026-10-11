@@ -50,8 +50,44 @@ for measurements, checks and remaining live tests.
 | 15 | **feat(web): drive redirection through a JavaScript file system** | The web client had no drive redirection. A `driveRedirection(fs)` extension shares folders as drives (MS-RDPEFS): `fs` is a file system the host provides (`stat`, `list`, `open`, `read`, `write`, `truncate`, `close`, `mkdir`, `remove`, `rename`, `volume`, each returning its result or a promise), with the server's paths relative to each drive; Node-style error codes become NT statuses. The SVC processor only queues requests: a worker task serves them one at a time, awaiting the file system, and hands the responses to the session's event loop, so slow file operations don't hold up the page. Directory patterns (the server's) are matched in bounded time. Serves create (every disposition), read, write, directory listing with patterns, basic/standard/volume information, rename, delete and resize. Drive names go to the server as ANSI, which is how Windows reads them (IronRDP sent UTF-16, and Windows showed the first letter). The virtual printer can't share the session with it. | Not submitted yet |
 | 16 | **fix(svc): send chunked messages without CHANNEL_FLAG_SHOW_PROTOCOL** | Static-channel messages over one chunk (1600 bytes) were flagged `SHOW_PROTOCOL`, which asks the receiver to hand the channel header to the application; Windows' drive redirector doesn't expect that and dropped the channel on the first chunked read response. mstsc sets the flag only for channels opened with `CHANNEL_OPTION_SHOW_PROTOCOL`; chunks now carry only the flags the message asks for. | Not submitted yet |
 | 17 | **perf(web): read H.264 regions that are far apart one by one** | The decoder read a frame's regions back as their bounding box in one call; two small regions in opposite corners made that the whole picture (33 MB for a 4K frame, for eight bytes). When the box holds more than twice what the regions do, each is read on its own, straight into place. | Not submitted yet: builds on patches 8 and 14 |
+| 18 | **fix(svc): bound all static channel reassembly paths** | Limit declared and buffered message sizes before allocating, including compressed and unfragmented compatibility messages; grow buffers fallibly and release them on errors. | Not submitted yet |
+| 19 | **fix(dvc): bound per-channel and aggregate reassembly** | Reserve each incomplete message's declared size against one aggregate budget, enforce channel-specific limits, and release the reservation on completion, replacement, or close. | Not submitted yet |
+| 20 | **fix(web): bound queued drive requests and bytes** | Limit queued and in-flight drive I/O to 1,024 requests and 64 MiB, including an oversized first request; return `STATUS_INSUFFICIENT_RESOURCES` when full. | Not submitted yet |
+| 27 | **fix(cliprdr): cap clipboard formats and format names** | Accept at most 1,024 formats and 1,024 code units per name; answer rejected lists with `CB_RESPONSE_FAIL` while allowing the next clipboard update. | Not submitted yet |
+| 28 | **fix(web): select clipboard formats in one pass** | Select one text, HTML, and image format in one pass, preserve format preferences, and deduplicate requests. | Not submitted yet |
 
-The release security follow-up also applies patches 43–51 and 53:
+Static channels default to 64 MiB per message; clipboard permits 256 MiB and audio/DRDYNVC permit 1 MiB. Dynamic channels default to 64 MiB, with graphics permitting 256 MiB and display/audio-input control permitting 1 MiB. All incomplete dynamic messages together may reserve at most the largest limit of a channel opened in that session. Exceeding a channel or reassembly limit returns a protocol error and ends the session.
+
+Security patch **25 — require nonce-bound CredSSP version 5 or later** rejects legacy server TSRequests before
+NTLM AUTHENTICATE or public-key binding is generated, addressing CVE-2018-0886. There is no legacy override.
+Offline protocol tests cover versions 2–6. Adapted from the local security candidate; not submitted upstream.
+
+Security patches keep their original candidate numbers so separate release fixes can be combined without renumbering.
+Servers offering only CredSSP versions 2–4 must be updated before connecting; TLS certificate acceptance does not bypass this requirement.
+
+Clipboard format lists are limited independently of clipboard content size. Repeated supported formats no longer trigger repeated full-list scans; supported format preference remains MIME HTML over Windows HTML, and PNG over MIME PNG, DIBv5, then DIB.
+
+Drive queue limits include the request currently waiting for the asynchronous filesystem. Dropping a request, completing it, or dropping the queue returns its reservation. Byte accounting uses encoded request size and bounds payloads and paths; fixed per-request overhead is bounded by the request count. A refused close leaves its handle open until session cleanup.
+
+The release security follow-up also applies patches 31–42 and 52:
+
+| # | Patch | Effect |
+|---|---|---|
+| 31 | Bound Planar images and validate compressed size | At most 8192 pixels per edge; allocate planes and output fallibly after validating the input. |
+| 32 | Stream ClearCodec bands | Decode one V-bar at a time without expanding an intermediate object list. |
+| 33–34 | Bound pointer decoding and caching | At most 384×384 pixels and the advertised 32 cache slots. |
+| 35–37 | Budget Progressive state and stream its blocks | Bound retained contexts/references and decoded tiles; avoid collecting a whole message. |
+| 38–41 | Bound ClearCodec working memory and paint work | Fallible image allocation, in-place channel conversion, incremental residual/RLEX/subcodec decoding, row-sized NSCodec buffers, and a cumulative paint budget. |
+| 42 | Keep oversized surfaces out of client state | Reject unsupported dimensions before recording them or decoding their content. |
+| 52 | Tighten Progressive history and allocation failures | A 512 MiB retained-history budget; fallible pointer and tile-grid buffers with allocation-failure tests. |
+
+These limits reject or skip graphics that exceed the client's supported resource budget.
+The Progressive history budget supports one 8K or four 4K displays; larger combinations can exceed it.
+The limits apply per session, so opening several sessions still adds their memory use.
+The focused tests cover boundary acceptance/rejection, cache replacement and cleanup, bounded peak allocations,
+and injected allocation failures without a live server.
+
+The release security follow-up also applies patches 43–51 and 53–54:
 
 | # | Patch | Effect |
 |---|---|---|
@@ -63,8 +99,15 @@ The release security follow-up also applies patches 43–51 and 53:
 | 49–50 | Bound picture readbacks | At most 512 MiB of requested pixels in concurrent readbacks; iterative rectangle bounds. |
 | 51 | Limit decoder creation rate | Per-surface and aggregate token buckets prevent repeated construction from monopolizing the renderer. |
 | 53 | Complete lifecycle and callback budgets | At most 64 concurrent readbacks, 64 Mi pixels per decoded picture, 128 Mi coded pixels retained across asynchronous readbacks and 256 MiB of decoded pixel events before copying to WASM; close retained pictures on failure/close and ignore late callbacks; immediately deliver stream endings without waiting for another frame; keep the fallback canvas sized to its current rectangle. |
+| 54 | Integrate the host's decoder policy | A validated public `maxDecoders` option counts active and retiring decoders together; Tabby sets 16. Delta frames cannot construct a decoder; a bounded first-key-frame wait map is cleared on stream endings, failure and close. |
 
-Exceeding a decoder budget ends that session with an error.
+The plugin passes the original decoder object through to IronRDP, including its `endSurfaces` method and statistics.
+It no longer evicts surfaces or changes the decoder's private queues and counters. Exceeding a decoder budget ends
+that session with an error and allows the plugin's existing reconnect-without-H.264 path; it does not silently evict
+an active or retiring stream to admit another. The maximum in patch 48 remains 32 by default for other consumers;
+the plugin's configured limit is 16 including retirement.
+If all 16 slots are still draining during a reset, admitting a replacement before they finish also reaches the cap
+and takes that fallback path; the limit is not a promise of 16 displays plus additional retiring streams.
 Readback byte accounting covers requested pixel buffers independently of the full decoded pictures retained during
 asynchronous copying. The coded-picture limit is 512 MiB at four bytes per pixel; it is not a total renderer limit.
 The picture, output-buffer, Rust event and command budgets are independently additive; bounded temporary copies and

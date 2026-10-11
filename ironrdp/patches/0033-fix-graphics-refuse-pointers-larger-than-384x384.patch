@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:11:32 -0700
+Subject: [PATCH 33/51] fix(graphics): refuse pointers larger than 384x384
+
+DecodedPointer accepted any width and height up to 65535 and decoded
+the pointer into 4 bytes per pixel. No pointer update may be larger than
+384x384, the maximum of a Fast-Path Large Pointer Update (MS-RDPBCGR
+2.2.9.1.2.1.11; Color and New Pointer Updates stop at 96x96). A server
+could send a 1024x1024 Large Pointer Update with 1 bpp masks and an
+empty AND mask: 128 KiB on the wire, 4 MiB decoded, and kept in the
+pointer cache. In the WebAssembly build, where usize has 32 bits, the
+mask sizes also wrapped around: for a 32769x32768 pointer at 32 bpp,
+a 128 KiB XOR mask passed the size check, the decoder allocated a
+134 MB default AND mask, and then panicked slicing the XOR mask.
+
+The decoder now refuses a pointer wider or taller than 384 pixels with
+PointerError::DimensionsTooLarge before allocating anything, and the
+session shows the default pointer instead, as for other pointers it
+can't decode. Within the cap, the sizes fit a 32-bit usize and a
+decoded pointer takes at most 576 KiB.
+---
+ crates/ironrdp-graphics/src/pointer.rs  | 74 ++++++++++++++++++++++++-
+ crates/ironrdp-session/src/fast_path.rs |  1 +
+ 2 files changed, 74 insertions(+), 1 deletion(-)
+
+diff --git a/crates/ironrdp-graphics/src/pointer.rs b/crates/ironrdp-graphics/src/pointer.rs
+index 34686b0a..14fe3a68 100644
+--- a/crates/ironrdp-graphics/src/pointer.rs
++++ b/crates/ironrdp-graphics/src/pointer.rs
+@@ -26,11 +26,21 @@ use crate::color_conversion::rdp_16bit_to_rgb;
+ 
+ const SUPPORTED_COLOR_BPP: [u16; 6] = [1, 4, 8, 16, 24, 32];
+ 
++/// Largest pointer width or height the decoder accepts, in pixels.
++///
++/// 384 is the most any pointer update may use: the maximum width and height of a Fast-Path Large
++/// Pointer Update ([MS-RDPBCGR] 2.2.9.1.2.1.11), sent to clients that advertise
++/// LARGE_POINTER_FLAG_384x384. Color and New Pointer Updates are limited to 96x96 (2.2.9.1.1.4.4).
++///
++/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
++const MAX_POINTER_DIM: u16 = 384;
++
+ #[derive(Debug)]
+ pub enum PointerError {
+     InvalidXorMaskSize { expected: usize, actual: usize },
+     InvalidAndMaskSize { expected: usize, actual: usize },
+     NotSupportedBpp { bpp: u16 },
++    DimensionsTooLarge { width: u16, height: u16 },
+     Pdu(ironrdp_pdu::PduError),
+ }
+ 
+@@ -52,6 +62,12 @@ impl core::fmt::Display for PointerError {
+             PointerError::NotSupportedBpp { bpp } => {
+                 write!(f, "not supported pointer bpp: {bpp}")
+             }
++            PointerError::DimensionsTooLarge { width, height } => {
++                write!(
++                    f,
++                    "pointer dimensions {width}x{height} exceed {MAX_POINTER_DIM}x{MAX_POINTER_DIM}"
++                )
++            }
+             PointerError::Pdu(err) => err.fmt(f),
+         }
+     }
+@@ -63,6 +79,7 @@ impl core::error::Error for PointerError {
+             PointerError::InvalidXorMaskSize { .. } => None,
+             PointerError::InvalidAndMaskSize { .. } => None,
+             PointerError::NotSupportedBpp { .. } => None,
++            PointerError::DimensionsTooLarge { .. } => None,
+             PointerError::Pdu(error) => error.source(),
+         }
+     }
+@@ -210,6 +227,15 @@ impl DecodedPointer {
+             return Ok(Self::new_invisible());
+         }
+ 
++        // INVARIANT: width <= MAX_POINTER_DIM && height <= MAX_POINTER_DIM, so the masks and the
++        // bitmap sized from them below are at most 384 * 384 * 4 bytes.
++        if data.width > MAX_POINTER_DIM || data.height > MAX_POINTER_DIM {
++            return Err(PointerError::DimensionsTooLarge {
++                width: data.width,
++                height: data.height,
++            });
++        }
++
+         if !SUPPORTED_COLOR_BPP.contains(&data.xor_bpp) {
+             return Err(PointerError::NotSupportedBpp { bpp: data.xor_bpp });
+         }
+@@ -237,7 +263,7 @@ impl DecodedPointer {
+             });
+         }
+ 
+-        let mut bitmap_data = Vec::new();
++        let mut bitmap_data = Vec::with_capacity(usize::from(data.width) * usize::from(data.height) * 4);
+ 
+         for row_idx in 0..data.height {
+             // For non-monochrome cursors we read strides from bottom to top
+@@ -577,4 +603,50 @@ mod tests {
+             vec![0x10, 0x20, 0x30, 0xff, 0x40, 0x50, 0x60, 0xff, 0x70, 0x80, 0x90, 0xff,],
+         );
+     }
++
++    fn monochrome_large_pointer(width: u16, height: u16, masks: &[u8]) -> LargePointerAttribute<'_> {
++        LargePointerAttribute {
++            xor_bpp: 1,
++            cache_index: 0,
++            hot_spot: Point16 { x: 0, y: 0 },
++            width,
++            height,
++            xor_mask: masks,
++            and_mask: masks,
++        }
++    }
++
++    #[test]
++    fn decodes_pointers_up_to_384x384() {
++        // 1bpp scanlines of 384 pixels are 48 bytes long.
++        let masks = vec![0; 48 * 384];
++
++        let pointer = DecodedPointer::decode_large_pointer_attribute(
++            &monochrome_large_pointer(384, 384, &masks),
++            PointerBitmapTarget::Software,
++        )
++        .expect("a 384x384 pointer should decode");
++
++        assert_eq!(pointer.bitmap_data.len(), 384 * 384 * 4);
++    }
++
++    #[test]
++    fn refuses_pointers_wider_or_taller_than_384() {
++        // 1bpp scanlines of 385 pixels are 50 bytes long, and of one pixel 2 bytes long.
++        let wide_masks = vec![0; 50];
++        let tall_masks = vec![0; 2 * 385];
++
++        for (width, height, masks) in [(385, 1, &wide_masks), (1, 385, &tall_masks)] {
++            let error = DecodedPointer::decode_large_pointer_attribute(
++                &monochrome_large_pointer(width, height, masks),
++                PointerBitmapTarget::Software,
++            )
++            .expect_err("a pointer past 384 pixels should be refused");
++
++            assert!(
++                matches!(error, PointerError::DimensionsTooLarge { width: w, height: h } if (w, h) == (width, height)),
++                "{error:?}"
++            );
++        }
++    }
+ }
+diff --git a/crates/ironrdp-session/src/fast_path.rs b/crates/ironrdp-session/src/fast_path.rs
+index 93b51181..0daa7abb 100644
+--- a/crates/ironrdp-session/src/fast_path.rs
++++ b/crates/ironrdp-session/src/fast_path.rs
+@@ -689,6 +689,7 @@ impl Processor {
+             PointerError::InvalidXorMaskSize { .. } => "InvalidXorMaskSize",
+             PointerError::InvalidAndMaskSize { .. } => "InvalidAndMaskSize",
+             PointerError::NotSupportedBpp { .. } => "NotSupportedBpp",
++            PointerError::DimensionsTooLarge { .. } => "DimensionsTooLarge",
+             PointerError::Pdu(_) => "Pdu",
+         };
+         warn!(pointer_error = error_kind, "Ignoring unsupported pointer update");

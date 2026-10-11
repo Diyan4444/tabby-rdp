@@ -2,7 +2,7 @@
 // of a stand-in RDP server that reads what it is sent slowly, or not at all, or at once; a WebSocket client standing in
 // for the connection the proxy relays; and what answers the remote's requests, FileTransfer over IronRDP's own provider
 // (src/fileTransfer.ts) and SharedDrives (src/drives.ts), each answer sent through that client. What they hand the
-// connection stays within FLOW_WINDOW, and one answer more, of what the proxy has read from it, however much the remote
+// connection and the server hasn't taken yet stays within FLOW_WINDOW, and one answer more, however much the remote
 // asks for; and a paste or a shared folder's copy still goes through. Runs against the built plugin: npm run build &&
 // npm run test:unit
 import { after, before, test } from 'node:test'
@@ -151,7 +151,10 @@ async function connection (t: any, step: number, period = 100) {
     const link = {
         proxy, ws, handed: 0,
         get serverRead () { return read.bytes },
-        /** The most handed to the connection and not read from it by the proxy, and what the client held unsent. */
+        /**
+         * The most handed to the connection and not passed on to the server: not read from it by the proxy yet, or
+         * waiting in the proxy for the server (its backlog). And the most the client held unsent.
+         */
         most: 0, buffered: 0,
         /** An answer, sent through the connection as the client would, a megabyte at a time. */
         hand (data: Uint8Array) {
@@ -162,7 +165,7 @@ async function connection (t: any, step: number, period = 100) {
             link.sample()
         },
         sample () {
-            link.most = Math.max(link.most, link.handed - proxy.stats.bytesOut)
+            link.most = Math.max(link.most, link.handed - proxy.stats.bytesOut + proxy.backlog)
             link.buffered = Math.max(link.buffered, ws.bufferedAmount)
         },
     }
@@ -201,7 +204,7 @@ function transfer (link: Awaited<ReturnType<typeof connection>>) {
 
 /**
  * The remote keeps asking for parts of 16 MB of the file offered, four every 50 ms, each on a stream of its own, for
- * `ms`: what was handed to the connection and not read from it never passes the room and a part more.
+ * `ms`: what was handed to the connection and not passed on to the server never passes the room and a part more.
  */
 async function keepAsking (link: Awaited<ReturnType<typeof connection>>, c: ReturnType<typeof transfer>, ms: number): Promise<void> {
     for (const end = Date.now() + ms; Date.now() < end && link.most <= WINDOW + MAX_RANGE;) {
@@ -215,7 +218,7 @@ async function keepAsking (link: Awaited<ReturnType<typeof connection>>, c: Retu
 
 /** What the tests check of every run: the bound, in what was handed and what the client held. */
 function withinRoom (link: Awaited<ReturnType<typeof connection>>, what: string, answer = MAX_RANGE): void {
-    assert.ok(link.most <= WINDOW + answer, `${what}: ${(link.most / MB).toFixed(0)} MB handed to the connection and not read from it`)
+    assert.ok(link.most <= WINDOW + answer, `${what}: ${(link.most / MB).toFixed(0)} MB handed to the connection and not passed on to the server`)
     // Node's WebSocket counts what it is still writing whole, so it can say twice as much.
     assert.ok(link.buffered <= 2 * (WINDOW + answer), `${what}: the client held ${(link.buffered / MB).toFixed(0)} MB`)
 }
@@ -244,7 +247,7 @@ test('a server that reads nothing at all gets the room and a part, and no more',
     withinRoom(link, 'never read')
 })
 
-test('the connection\'s other messages make room as the proxy reads them: what waits grows past the room by no more than they are', { skip: !certificate, timeout: 30000 }, async t => {
+test('the connection\'s other messages take room while they wait for the server: what waits grows past the room by no more than they are', { skip: !certificate, timeout: 30000 }, async t => {
     const { file } = onDisk(4 * MAX_RANGE)
     const link = await connection(t, 2 * MB)
     const c = transfer(link)
@@ -266,8 +269,9 @@ test('the connection\'s other messages make room as the proxy reads them: what w
             c.ask(i * MAX_RANGE, MAX_RANGE)
         }
         await soon(50)
-        // All that was handed to the connection and not read from it yet: the room and a part, and those messages.
-        const waiting = link.handed + other - link.proxy.stats.bytesOut
+        // All that was handed to the connection and not passed on to the server yet: the room and a part, and those
+        // messages.
+        const waiting = link.handed + other - link.proxy.stats.bytesOut + link.proxy.backlog
         assert.ok(waiting <= WINDOW + MAX_RANGE + other, `${(waiting / MB).toFixed(0)} MB waits, of which ${(other / MB).toFixed(0)} MB was sent besides answers`)
     }
     clearInterval(timer)

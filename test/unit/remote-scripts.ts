@@ -18,11 +18,12 @@ const { consoleScript, takeDeskMessages } = require('../../dist/deskScript.js')
 const { shutDownWhenIdle } = require('../../dist/wake.js')
 
 const SH = process.env.TRD_TEST_SH || '/bin/sh'
+const MACHINE = '11111111111111111111111111111111'
 const HOOK = '[ -f "$HOME/.local/share/tabby-rdp/login.sh" ] && . "$HOME/.local/share/tabby-rdp/login.sh"  # tabby-rdp'
 
 /** Commands the scripts run that any Unix has: the real ones, behind a wrapper that logs. */
 const REAL = ['awk', 'base64', 'cat', 'chmod', 'cp', 'date', 'grep', 'head', 'hostname', 'id', 'ln', 'ls', 'mkdir', 'mktemp', 'mv',
-    'od', 'readlink', 'rm', 'sed', 'sort', 'tail', 'tr', 'uname', 'wc']
+    'od', 'readlink', 'rm', 'rmdir', 'sed', 'sort', 'tail', 'tr', 'uname', 'wc']
 
 // Each command's arguments, one line, and its environment (what /proc/<pid>/environ would hold) to a second log.
 const logLine = (name: string) => String.raw`{ printf '%s' '` + name + String.raw`'; for a; do printf ' %s' "$a"; done; printf '\n'; } >> "$ARGV_LOG"; export -p >> "$ARGV_LOG.env"`
@@ -64,15 +65,19 @@ esac`,
     busctl: 'exit 0',
     'systemd-run': 'exit 0',
     'dbus-update-activation-environment': 'exit 0',
-    openssl: String.raw`case $1 in
-req) while [ $# -gt 0 ]; do case $1 in -keyout) echo key > "$2"; shift ;; -out) echo cert > "$2"; shift ;; esac; shift; done ;;
-x509) echo 'sha256 Fingerprint=00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF' ;;
+    openssl: String.raw`[ -z "$FAKE_OPENSSL_FAIL" ] || exit 1
+case $1 in
+req) printf '%s\n' certificate >> "$FAKE_ROOT/credential-generations"
+    while [ $# -gt 0 ]; do case $1 in -keyout) printf 'key:%s\n' "$FAKE_MACHINE_ID" > "$2"; shift ;; -out) printf 'cert:%s\n' "$FAKE_MACHINE_ID" > "$2"; shift ;; esac; shift; done ;;
+x509) printf 'sha256 Fingerprint=%s%s\n' "$FAKE_MACHINE_ID" "$FAKE_MACHINE_ID" ;;
 esac`,
     // FAKE_CAT_CUT: a file whose path starts so is copied only in part, then the copy fails (as on a disk filling up).
-    cat: String.raw`if [ -n "$FAKE_CAT_CUT" ]; then case $1 in "$FAKE_CAT_CUT"*) head -c 8 "$1"; exit 1 ;; esac; fi
+    cat: String.raw`if [ "$1" = /etc/machine-id ]; then [ -z "$FAKE_MACHINE_ID_MISSING" ] || exit 1; printf '%s\n' "$FAKE_MACHINE_ID"; exit 0; fi
+if [ -n "$FAKE_CAT_CUT" ]; then case $1 in "$FAKE_CAT_CUT"*) head -c 8 "$1"; exit 1 ;; esac; fi
 for d in /usr/bin /bin; do [ -x "$d/cat" ] && exec "$d/cat" "$@"; done`,
     // FAKE_OD_DELAY: random bytes take a while, so that two setups at once both get to make a key.
     od: String.raw`[ -z "$FAKE_OD_DELAY" ] || sleep "$FAKE_OD_DELAY"
+case "$*" in '-An -N18 -tx1 /dev/urandom') printf '%s\n' password >> "$FAKE_ROOT/credential-generations" ;; esac
 for d in /usr/bin /bin; do [ -x "$d/od" ] && exec "$d/od" "$@"; done`,
     'gnome-terminal': 'exit 0',
     tmux: String.raw`case $* in *list-clients*) echo client ;; esac`,
@@ -80,6 +85,7 @@ for d in /usr/bin /bin; do [ -x "$d/od" ] && exec "$d/od" "$@"; done`,
     getent: 'exit 2',
     // FAKE_NO_CHMOD: it fails, as on a file system that keeps no modes.
     chmod: String.raw`[ -z "$FAKE_NO_CHMOD" ] || exit 1
+[ -z "$FAKE_CHMOD_PATH" ] || [ "$2" != "$FAKE_CHMOD_PATH" ] || exit 1
 for d in /usr/bin /bin /usr/sbin /sbin; do [ -x "$d/chmod" ] && exec "$d/chmod" "$@"; done`,
     // FAKE_UID: the user id the host says, for a folder in /tmp of a name no real user's has.
     id: String.raw`[ -n "$FAKE_UID" ] && [ "$1" = -u ] && { echo "$FAKE_UID"; exit 0; }
@@ -109,15 +115,15 @@ fs.mkdirSync(timeoutBin)
 write('timeout', 'shift; exec "$@"', timeoutBin)
 
 /** A fake host in a temporary folder (see above). `target(env)` is a RemoteTarget that runs scripts there. */
-function host () {
+function host (sharedHome?: string, machine = MACHINE) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'trd-host-')))
-    const home = path.join(root, 'home'), log = path.join(root, 'argv.log')
+    const home = sharedHome ?? path.join(root, 'home'), log = path.join(root, 'argv.log')
     for (const dir of [home, path.join(root, 'run')]) {
-        fs.mkdirSync(dir, { mode: 0o700 })
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { mode: 0o700 })
     }
     const env = (extra: Record<string, string>) => ({
         HOME: home, PATH: extra.FAKE_NO_TIMEOUT ? bin : `${bin}:${timeoutBin}`, ARGV_LOG: log, FAKE_ROOT: root,
-        XDG_RUNTIME_DIR: path.join(root, 'run'), LC_ALL: 'C', ...extra,
+        XDG_RUNTIME_DIR: path.join(root, 'run'), LC_ALL: 'C', FAKE_MACHINE_ID: machine, ...extra,
     })
     // stderr: in the error when a script fails, quiet otherwise (no GNOME Shell runs here to read /proc of).
     const sh = (script: string, extra: Record<string, string> = {}) => execFileSync(SH, ['-s'], {
@@ -126,6 +132,7 @@ function host () {
     return {
         root, home, log, sh,
         D: path.join(home, '.local/share/tabby-rdp'),
+        S: path.join(home, '.local/share/tabby-rdp/hosts', machine),
         target: (extra: Record<string, string> = {}) => ({
             key: 'u@host:22', label: 'host',
             exec: async (command: string, stdin: string) => {
@@ -156,7 +163,7 @@ test('setup: the password and desk\'s key never go on a command line; the key co
     try {
         const t = h.target({ FAKE_GRD_PROMPT: '1' })
         const first = await prepareRemoteDesktop(t, true, 'native', 'pane1')
-        const password = fs.readFileSync(path.join(h.D, 'rdp-password'), 'utf8')
+        const password = fs.readFileSync(path.join(h.S, 'rdp-password'), 'utf8')
         const key = fs.readFileSync(path.join(h.D, 'desk-key'), 'utf8')
         assert.match(password, /^[0-9a-f]{36}$/)
         assert.match(key, /^[0-9a-f]{32}$/)
@@ -189,7 +196,7 @@ test('setup: where grdctl takes the password only as an argument, only setting i
     try {
         const t = h.target({ FAKE_GRD_PROMPT: '0' })
         await prepareRemoteDesktop(t, false, 'native', 'pane1')
-        const password = fs.readFileSync(path.join(h.D, 'rdp-password'), 'utf8')
+        const password = fs.readFileSync(path.join(h.S, 'rdp-password'), 'utf8')
         assert.equal(fs.readFileSync(path.join(h.root, 'grd', 'pass'), 'utf8'), password)
         assert.deepEqual(h.argv().split('\n').filter(l => l.includes(password)), [`grdctl --headless rdp set-credentials tabby ${password}`])
         fs.writeFileSync(h.log, '')
@@ -197,6 +204,124 @@ test('setup: where grdctl takes the password only as an argument, only setting i
         assert.equal(again.password, password)
         assert.equal(again.deskKey, undefined)
         assert.ok(!h.argv().includes(password), 'checking the credentials puts the password on no command line')
+    } finally {
+        h.cleanup()
+    }
+})
+
+test('setup: machines sharing a home rotate legacy credentials separately and retain them on reconnect', async () => {
+    const first = host()
+    const second = host(first.home, '22222222222222222222222222222222')
+    try {
+        fs.mkdirSync(first.D, { recursive: true })
+        const legacy = { 'rdp-password': 'a'.repeat(36), 'tls.key': 'legacy-key', 'tls.crt': 'legacy-cert' }
+        for (const [file, value] of Object.entries(legacy)) fs.writeFileSync(path.join(first.D, file), value)
+        for (const h of [first, second]) {
+            fs.mkdirSync(path.join(h.root, 'grd'))
+            for (const [file, value] of Object.entries({
+                key: path.join(first.D, 'tls.key'), cert: path.join(first.D, 'tls.crt'), pass: legacy['rdp-password'],
+                user: 'tabby', status: 'enabled', viewonly: 'no',
+            })) fs.writeFileSync(path.join(h.root, 'grd', file), value)
+        }
+        const a = await prepareRemoteDesktop(first.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane1')
+        const b = await prepareRemoteDesktop(second.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane2')
+        assert.notEqual(a.password, b.password)
+        assert.notEqual(a.certificate, b.certificate)
+        assert.notEqual(fs.readFileSync(path.join(first.S, 'tls.key'), 'utf8'), fs.readFileSync(path.join(second.S, 'tls.key'), 'utf8'))
+        for (const [h, endpoint] of [[first, a], [second, b]] as const) {
+            assert.notEqual(endpoint.password, legacy['rdp-password'])
+            assert.equal(fs.readFileSync(path.join(h.root, 'grd', 'pass'), 'utf8'), endpoint.password)
+            assert.equal(fs.readFileSync(path.join(h.root, 'grd', 'key'), 'utf8'), path.join(h.S, 'tls.key'))
+            assert.equal(fs.statSync(h.S).mode & 0o777, 0o700)
+            assert.equal(fs.statSync(path.dirname(h.S)).mode & 0o777, 0o700)
+            for (const file of ['rdp-password', 'tls.key', 'tls.crt']) assert.equal(fs.statSync(path.join(h.S, file)).mode & 0o777, 0o600)
+            assert.match(h.argv(), /^systemctl --user restart gnome-remote-desktop-headless.service$/m)
+            fs.writeFileSync(h.log, '')
+            const again = await prepareRemoteDesktop(h.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane3')
+            assert.equal(again.password, endpoint.password)
+            assert.equal(again.certificate, endpoint.certificate)
+            // This fake has no running GNOME shell, so setup starts it again; credentials themselves stay intact.
+            assert.doesNotMatch(h.argv(), /set-credentials|set-tls-|openssl req/)
+            assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+        }
+        for (const [file, value] of Object.entries(legacy)) assert.equal(fs.readFileSync(path.join(first.D, file), 'utf8'), value)
+    } finally {
+        second.cleanup()
+        first.cleanup()
+    }
+})
+
+test('setup: an absent or malformed machine id never configures GNOME or creates credentials', async () => {
+    const h = host()
+    try {
+        const invalid = ['', 'uninitialized', '0'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32), '../' + 'a'.repeat(29), 'a'.repeat(16) + '\n' + 'b'.repeat(16)]
+        for (const id of invalid) {
+            await assert.rejects(prepareRemoteDesktop(h.target({ FAKE_MACHINE_ID: id }), false, 'native', 'pane1'), /valid \/etc\/machine-id/)
+        }
+        await assert.rejects(prepareRemoteDesktop(h.target({ FAKE_MACHINE_ID_MISSING: '1' }), false, 'native', 'pane1'), /valid \/etc\/machine-id/)
+        assert.ok(!fs.existsSync(path.join(h.D, 'hosts')))
+        assert.doesNotMatch(h.argv(), /openssl req|grdctl --headless rdp/)
+    } finally {
+        h.cleanup()
+    }
+})
+
+test('setup: concurrent first connections share one credential generation', async () => {
+    const h = host()
+    try {
+        const t = h.targetAsync({ FAKE_GRD_PROMPT: '1', FAKE_OD_DELAY: '0.3' })
+        const both = await Promise.all(['pane1', 'pane2'].map(pane => prepareRemoteDesktop(t, false, 'native', pane)))
+        assert.equal(both[0].password, both[1].password)
+        assert.equal(both[0].certificate, both[1].certificate)
+        assert.equal(both[0].password, fs.readFileSync(path.join(h.S, 'rdp-password'), 'utf8'))
+        // Count atomic event records: the general argv log can interleave the concurrent wrappers' arguments.
+        assert.equal(fs.readFileSync(path.join(h.root, 'credential-generations'), 'utf8'), 'certificate\npassword\n')
+        assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+    } finally {
+        h.cleanup()
+    }
+})
+
+test('setup: symbolic credential directories and files are rejected without changing their targets', async () => {
+    for (const entry of ['hosts', `hosts/${MACHINE}`, `hosts/${MACHINE}/tls.key`, `hosts/${MACHINE}/tls.crt`, `hosts/${MACHINE}/rdp-password`]) {
+        const h = host()
+        try {
+            const dest = path.join(h.D, entry), outside = path.join(h.root, 'outside')
+            fs.mkdirSync(path.dirname(dest), { recursive: true })
+            const directory = entry === 'hosts' || entry === `hosts/${MACHINE}`
+            if (directory) fs.mkdirSync(outside)
+            else fs.writeFileSync(outside, 'leave this file alone', { mode: 0o644 })
+            const mode = fs.statSync(outside).mode
+            fs.symlinkSync(outside, dest)
+            await assert.rejects(prepareRemoteDesktop(h.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane1'), /must not be a symbolic link/)
+            assert.ok(fs.lstatSync(dest).isSymbolicLink())
+            assert.equal(fs.statSync(outside).mode, mode)
+            if (directory) assert.deepEqual(fs.readdirSync(outside), [])
+            else assert.equal(fs.readFileSync(outside, 'utf8'), 'leave this file alone')
+            assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+            assert.doesNotMatch(h.argv(), /grdctl --headless rdp/)
+        } finally {
+            h.cleanup()
+        }
+    }
+})
+
+test('setup: generation, permissions and malformed-secret failures release the setup lock', async () => {
+    const h = host()
+    try {
+        await assert.rejects(prepareRemoteDesktop(h.target({ FAKE_OPENSSL_FAIL: '1' }), false, 'native', 'pane1'), /could not create a TLS certificate/)
+        assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+        const ready = await prepareRemoteDesktop(h.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane1')
+        const passwordFile = path.join(h.S, 'rdp-password')
+        fs.chmodSync(passwordFile, 0o644)
+        await assert.rejects(prepareRemoteDesktop(h.target({ FAKE_CHMOD_PATH: passwordFile }), false, 'native', 'pane1'), /credential file/)
+        assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+        assert.equal((await prepareRemoteDesktop(h.target({ FAKE_GRD_PROMPT: '1' }), false, 'native', 'pane1')).password, ready.password)
+        assert.equal(fs.statSync(passwordFile).mode & 0o777, 0o600)
+        fs.writeFileSync(passwordFile, 'not a valid generated password')
+        await assert.rejects(prepareRemoteDesktop(h.target(), false, 'native', 'pane1'), /invalid stored RDP password/)
+        assert.ok(!fs.existsSync(path.join(h.S, 'setup.lock')))
+        assert.equal(fs.readFileSync(passwordFile, 'utf8'), 'not a valid generated password')
     } finally {
         h.cleanup()
     }

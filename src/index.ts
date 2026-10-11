@@ -45,7 +45,7 @@ import {
 export default class RemoteDesktopModule {
     constructor (app: AppService, hotkeys: HotkeysService, desktop: RemoteDesktopService, header: HeaderControls, targets: RemoteTargets, keyboard: DesktopKeyboard, injector: Injector) {
         const compat = injector.get(HostCompatibility)
-        installStyle(compat)
+        installStyle()
         header.install()
         // Passwords go to Tabby's Vault while it is enabled (as Tabby's SSH passwords do), else to the system keychain.
         try { useVault(injector.get(VaultService)) } catch { }

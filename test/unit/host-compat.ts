@@ -18,7 +18,7 @@ test('host identity preserves prereleases and forks without assuming their termi
         xtermDeclaration: '^5', xtermMajor: 5,
     })
     assert.equal(Object.isFrozen(compat.info), true)
-    assert.deepEqual(compat.snapshot().capabilities, { nativeModalDragRegion: null, terminalInput: null })
+    assert.deepEqual(compat.snapshot().capabilities, { terminalInput: null })
 })
 
 test('missing host APIs and unreadable package metadata leave independent information available', () => {
@@ -47,31 +47,6 @@ test('only a declaration restricted to one xterm major establishes that major', 
     }
 })
 
-test('modal compatibility follows the actual drag region on each observation, independent of host version', () => {
-    let style = { content: '""', display: 'block', height: '38px', getPropertyValue: () => 'drag' }
-    const modal = {} as Element
-    const compat = new HostCompatibility({ ...fork, modalStyle: (element, pseudo) => {
-        assert.equal(element, modal)
-        assert.equal(pseudo, '::before')
-        return style
-    } })
-    assert.equal(compat.hasNativeModalDragRegion(modal), true)
-    assert.equal(compat.snapshot().capabilities.nativeModalDragRegion, true)
-    style = { ...style, height: '28.5px' }
-    assert.equal(compat.hasNativeModalDragRegion(modal), true)
-    for (const unavailable of [
-        { height: '0px' }, { display: 'none' }, { content: 'none' }, { content: 'normal' }, { getPropertyValue: () => 'no-drag' },
-    ]) {
-        const probe = new HostCompatibility({ ...fork, version: () => '99.0.0', modalStyle: () => ({ ...style, ...unavailable }) })
-        assert.equal(probe.hasNativeModalDragRegion(modal), false)
-    }
-    style = { ...style, height: '0px' }
-    assert.equal(compat.hasNativeModalDragRegion(modal), false)
-    assert.equal(compat.snapshot().capabilities.nativeModalDragRegion, false)
-    const unknownStyle = new HostCompatibility({ modalStyle: () => { throw new Error('style unavailable') } })
-    assert.equal(unknownStyle.hasNativeModalDragRegion(modal), false)
-})
-
 test('terminal input availability is scoped to the pane supplied, and is unknown without a pane', () => {
     const compat = new HostCompatibility(fork)
     const pane = (inputs: unknown[]) => ({ querySelectorAll: (selector: string) => {
@@ -88,10 +63,10 @@ test('diagnostics label declared versions and unobserved capabilities, with meta
     const lines = compat.diagnosticLines()
     assert.match(lines[0], /^Host: Tabbz Preview 1\.0\.238  preview on darwin$/)
     assert.equal(lines[2], 'Terminal: xterm ^5 (host declaration)')
-    assert.equal(lines[3], 'Compatibility: modal drag region unobserved; terminal input unobserved')
+    assert.equal(lines[3], 'Compatibility: terminal input unobserved')
     assert.ok(lines.every(line => !/[\r\n]/.test(line)))
     assert.deepEqual(new HostCompatibility({}).diagnosticLines(), [
         'Host: unknown unknown on unknown', 'Runtime: Electron unknown, Node unknown',
-        'Terminal: xterm unknown (host declaration)', 'Compatibility: modal drag region unobserved; terminal input unobserved',
+        'Terminal: xterm unknown (host declaration)', 'Compatibility: terminal input unobserved',
     ])
 })

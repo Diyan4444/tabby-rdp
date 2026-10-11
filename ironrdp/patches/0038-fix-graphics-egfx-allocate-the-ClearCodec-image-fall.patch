@@ -1,0 +1,413 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 17:17:35 -0700
+Subject: [PATCH 38/51] fix(graphics,egfx): allocate the ClearCodec image
+ fallibly and convert it to RGBA in place
+
+The ClearCodec decoder allocated its output, width * height * 4 bytes,
+with vec! before reading the stream, and the EGFX client then copied
+the decoded image into a second buffer of the same size to swap its
+blue and red bytes. The destination rectangle that sizes it is the
+server's: the decoder caps each side at 8192 pixels, and the client
+only warns when the rectangle is larger than its surface. A server
+could send a 41-byte ClearCodec command, a stream without layers for an
+8192x8192 rectangle on any surface, and make the client hold 512 MiB
+for it, allocated infallibly. In the WebAssembly build, the command
+grew the memory of the instance every session shares by 513 MiB, and
+when the instance was near its 4 GiB, it trapped rather than failing
+the session. A server could send one with every PDU.
+
+The decoder now reserves its output with try_reserve_exact, as the
+Planar decoder does, and fails with a decode error when there is not
+the memory for it, and the EGFX client swaps the bytes of the decoded
+image in place. That command now takes 256 MiB, once, and near 4 GiB
+it fails the session instead of trapping. A ClearCodec image still
+takes up to 256 MiB, 8192x8192 pixels at four bytes: it cannot be sized
+from the stream, since a residual run of a few bytes fills all of it,
+and 8192 is the per-axis cap the decoder already had, room for an 8K
+monitor.
+
+The allocator of the peak_heap test binary can now make allocations
+past a limit fail, as when memory runs out. With it, a ClearCodec
+command and a Planar command (whose buffers an earlier commit of this
+series made fallible) that do not fit in memory fail with an error
+rather than aborting the tests.
+---
+ crates/ironrdp-egfx/src/client.rs             |  37 ++--
+ crates/ironrdp-graphics/src/clearcodec/mod.rs |  15 +-
+ .../ironrdp-testsuite-core/tests/peak_heap.rs | 182 +++++++++++++++++-
+ 3 files changed, 207 insertions(+), 27 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index c6654249..a648b226 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -1347,20 +1347,20 @@ impl GraphicsPipelineClient {
+         let dest_width = dest_rect.right - dest_rect.left;
+         let dest_height = dest_rect.bottom - dest_rect.top;
+ 
+-        let bgra = self
++        let mut pixels = self
+             .clearcodec_decoder
+             .get_or_insert_with(ClearCodecDecoder::new)
+             .decode(bitmap_data, dest_width, dest_height)
+             .map_err(|e| pdu_other_err!("ClearCodec decode", source: e))?;
+ 
+         // ClearCodec outputs BGRA; convert to RGBA for the uniform BitmapUpdate format
+-        let rgba = convert_bgra_to_rgba(&bgra);
++        convert_bgra_to_rgba_in_place(&mut pixels);
+ 
+         let update = BitmapUpdate {
+             surface_id,
+             destination_rectangle: dest_rect.clone(),
+             codec_id: Codec1Type::ClearCodec,
+-            data: rgba,
++            data: pixels,
+             width: dest_width,
+             height: dest_height,
+         };
+@@ -1606,10 +1606,6 @@ fn bound_regions(
+     regions
+ }
+ 
+-/// Convert BGRA pixel data to RGBA8888
+-///
+-/// ClearCodec produces BGRA output per [MS-RDPEGFX 2.2.4.1]. Reorder to
+-/// [R, G, B, A] for the uniform `BitmapUpdate` pixel format.
+ /// Widen tightly-packed RGB24 to RGBA, marking every pixel opaque.
+ ///
+ /// The RDP 6.0 Planar decoder emits three bytes per pixel; `BitmapUpdate` carries
+@@ -1626,13 +1622,20 @@ fn convert_rgb24_to_rgba(src: &[u8]) -> Result<Vec<u8>, std::collections::TryRes
+     Ok(dst)
+ }
+ 
+-fn convert_bgra_to_rgba(src: &[u8]) -> Vec<u8> {
+-    debug_assert!(src.len().is_multiple_of(4), "BGRA input length not aligned to 4 bytes");
+-    let mut dst = Vec::with_capacity(src.len());
+-    for pixel in src.chunks_exact(4) {
+-        dst.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
++/// Convert BGRA pixel data to RGBA8888, in place
++///
++/// ClearCodec produces BGRA output per [MS-RDPEGFX 2.2.4.1]. Reorder to
++/// [R, G, B, A] for the uniform `BitmapUpdate` pixel format. The image takes
++/// up to 256 MiB, for an 8192x8192 destination, so it is reordered where it
++/// is rather than copied.
++fn convert_bgra_to_rgba_in_place(pixels: &mut [u8]) {
++    debug_assert!(
++        pixels.len().is_multiple_of(4),
++        "BGRA input length not aligned to 4 bytes"
++    );
++    for pixel in pixels.chunks_exact_mut(4) {
++        pixel.swap(0, 2);
+     }
+-    dst
+ }
+ 
+ /// Convert uncompressed 32bpp little-endian pixels to RGBA8888
+@@ -2127,16 +2130,16 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn convert_bgra_to_rgba_reorders_channels() {
++    fn convert_bgra_to_rgba_in_place_reorders_channels() {
+         // BGRA input: [B, G, R, A] per pixel
+-        let bgra = vec![
++        let mut pixels = vec![
+             0xFF, 0x00, 0x00, 0xCC, // B=255, G=0, R=0, A=204 (blue)
+             0x00, 0xFF, 0x00, 0x80, // B=0, G=255, R=0, A=128 (green)
+         ];
+-        let rgba = convert_bgra_to_rgba(&bgra);
++        convert_bgra_to_rgba_in_place(&mut pixels);
+         // Expected: [R, G, B, A] per pixel
+         assert_eq!(
+-            rgba,
++            pixels,
+             vec![
+                 0x00, 0x00, 0xFF, 0xCC, // R=0, G=0, B=255, A=204
+                 0x00, 0xFF, 0x00, 0x80, // R=0, G=255, B=0, A=128
+diff --git a/crates/ironrdp-graphics/src/clearcodec/mod.rs b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+index 69ea4914..29305435 100644
+--- a/crates/ironrdp-graphics/src/clearcodec/mod.rs
++++ b/crates/ironrdp-graphics/src/clearcodec/mod.rs
+@@ -14,7 +14,7 @@ pub use self::vbar_cache::{FullVBar, ShortVBar, VBarCache};
+ /// Glyph cache size as u16 for index arithmetic. GLYPH_CACHE_SIZE=4000 fits in u16.
+ const GLYPH_CACHE_WRAP: u16 = 4_000;
+ 
+-use ironrdp_core::{DecodeResult, ReadCursor, invalid_field_err};
++use ironrdp_core::{DecodeResult, ReadCursor, function, invalid_field_err, other_err_with_source};
+ use ironrdp_pdu::codecs::clearcodec::{
+     ClearCodecBitmapStream, CompositePayload, FLAG_GLYPH_INDEX, RgbRunSegment, SubcodecId, VBar,
+     decode_bands_layer_vbars, decode_residual_layer, decode_subcodec_layer, encode_residual_layer,
+@@ -119,9 +119,18 @@ impl ClearCodecDecoder {
+             ));
+         }
+ 
+-        // Decode composite payload
+-        let mut output = vec![0u8; pixel_count * 4];
++        // The output takes up to 256 MiB, for an 8192x8192 destination, however short the stream: a
++        // residual run of a few bytes fills it, and a stream without layers still asks for it. It
++        // is allocated fallibly, so that a session without the memory for it fails with a decode
++        // error rather than aborting.
++        let output_len = pixel_count * 4;
++        let mut output = Vec::new();
++        output
++            .try_reserve_exact(output_len)
++            .map_err(|error| other_err_with_source(function!(), "not enough memory for the output", error))?;
++        output.resize(output_len, 0);
+ 
++        // Decode composite payload
+         if let Some(ref composite) = stream.composite {
+             self.decode_composite(composite, &mut output, width, height)?;
+         }
+diff --git a/crates/ironrdp-testsuite-core/tests/peak_heap.rs b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+index 2f94646e..26e9ca54 100644
+--- a/crates/ironrdp-testsuite-core/tests/peak_heap.rs
++++ b/crates/ironrdp-testsuite-core/tests/peak_heap.rs
+@@ -1,5 +1,6 @@
+ #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+-//! Peak heap tests: how much memory decoders take for the input a server sends them.
++//! Peak heap tests: how much memory decoders take for the input a server sends them, and what
++//! they do when there is not that much.
+ //!
+ //! They are a test binary of their own, not modules of `integration_tests_core`, because they
+ //! replace the global allocator with one that counts the bytes each thread holds.
+@@ -8,13 +9,22 @@ use core::alloc::{GlobalAlloc, Layout};
+ use core::cell::Cell;
+ use std::alloc::System;
+ 
++use ironrdp_core::encode_vec;
++use ironrdp_dvc::DvcProcessor as _;
++use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
++use ironrdp_egfx::pdu::{
++    CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, Codec1Type, CreateSurfacePdu, GfxPdu, PixelFormat,
++    WireToSurface1Pdu,
++};
+ use ironrdp_graphics::clearcodec::ClearCodecDecoder;
+ use ironrdp_graphics::progressive::{ProgressiveDecodeError, ProgressiveDecoder};
++use ironrdp_graphics::zgfx::wrap_uncompressed;
+ use ironrdp_pdu::codecs::rfx::RfxRectangle;
+ use ironrdp_pdu::codecs::rfx::progressive::{
+     ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+     ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
+ };
++use ironrdp_pdu::geometry::ExclusiveRectangle;
+ 
+ /// The system allocator, counting the bytes each thread holds.
+ struct CountingAllocator;
+@@ -27,30 +37,45 @@ thread_local! {
+     static HELD: Cell<isize> = const { Cell::new(0) };
+     /// The most `HELD` has been since [`peak_heap`] reset it.
+     static PEAK: Cell<isize> = const { Cell::new(0) };
++    /// The most `HELD` may be: an allocation that would take it further fails, as when memory
++    /// runs out. [`with_heap_limit`] sets it.
++    static LIMIT: Cell<isize> = const { Cell::new(isize::MAX) };
+ }
+ 
+-fn count_allocated(bytes: usize) {
++/// Counts an allocation of `bytes`, and returns true, unless it would take this thread past its
++/// limit: then the allocation must fail.
++fn count_allocated(bytes: usize) -> bool {
+     // A layout's size never exceeds isize::MAX.
+     let held = HELD.get().saturating_add(isize::try_from(bytes).unwrap_or(isize::MAX));
++    if held > LIMIT.get() {
++        return false;
++    }
+     HELD.set(held);
+     PEAK.set(PEAK.get().max(held));
++    true
+ }
+ 
+ fn count_freed(bytes: usize) {
+     HELD.set(HELD.get().saturating_sub(isize::try_from(bytes).unwrap_or(isize::MAX)));
+ }
+ 
+-// SAFETY: each method only counts its sizes, then hands its arguments to the system allocator,
+-// whose blocks it returns: it meets GlobalAlloc's contract as the system allocator does.
++// SAFETY: each method counts its sizes, then either fails, returning null as GlobalAlloc lets an
++// allocator do when memory is exhausted (leaving a block it was to reallocate as it was), or
++// hands its arguments to the system allocator, whose blocks it returns: it meets GlobalAlloc's
++// contract as the system allocator does.
+ unsafe impl GlobalAlloc for CountingAllocator {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+-        count_allocated(layout.size());
++        if !count_allocated(layout.size()) {
++            return core::ptr::null_mut();
++        }
+         // SAFETY: our caller meets alloc's contract.
+         unsafe { System.alloc(layout) }
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+-        count_allocated(layout.size());
++        if !count_allocated(layout.size()) {
++            return core::ptr::null_mut();
++        }
+         // SAFETY: our caller meets alloc_zeroed's contract.
+         unsafe { System.alloc_zeroed(layout) }
+     }
+@@ -63,7 +88,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
+ 
+     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+         // A block that moves is held twice until it is copied: count the new one first.
+-        count_allocated(new_size);
++        if !count_allocated(new_size) {
++            return core::ptr::null_mut();
++        }
+         count_freed(layout.size());
+         // SAFETY: our caller meets realloc's contract, and ptr comes from System, through us.
+         unsafe { System.realloc(ptr, layout, new_size) }
+@@ -80,6 +107,101 @@ fn peak_heap<T>(f: impl FnOnce() -> T) -> (T, usize) {
+     (result, usize::try_from(peak).unwrap_or(0))
+ }
+ 
++/// Runs `f` with this thread able to allocate at most `limit` bytes on top of what it holds
++/// already: an allocation that would take it further fails, as when memory runs out.
++fn with_heap_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
++    /// Lifts the limit when `f` returns, or panics.
++    struct Lift;
++
++    impl Drop for Lift {
++        fn drop(&mut self) {
++            LIMIT.set(isize::MAX);
++        }
++    }
++
++    LIMIT.set(HELD.get().saturating_add(isize::try_from(limit).unwrap_or(isize::MAX)));
++    let _lift = Lift;
++    f()
++}
++
++struct NoopHandler;
++
++impl GraphicsPipelineHandler for NoopHandler {}
++
++/// The message a server sends for `pdu`: the PDU in an uncompressed ZGFX segment.
++fn zgfx_message(pdu: &GfxPdu) -> Vec<u8> {
++    wrap_uncompressed(&encode_vec(pdu).expect("the PDU encodes"))
++}
++
++/// A graphics pipeline client whose capabilities are confirmed, with a `width` x `height`
++/// surface 1.
++fn graphics_pipeline_client(width: u16, height: u16) -> GraphicsPipelineClient {
++    let mut client = GraphicsPipelineClient::new(Box::new(NoopHandler), None);
++    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
++        flags: CapabilitiesV8Flags::empty(),
++    }));
++    client
++        .process(0, &zgfx_message(&confirm))
++        .expect("the capabilities are confirmed");
++    let create = GfxPdu::CreateSurface(CreateSurfacePdu {
++        surface_id: 1,
++        width,
++        height,
++        pixel_format: PixelFormat::XRgb,
++    });
++    client
++        .process(0, &zgfx_message(&create))
++        .expect("the surface is created");
++    client
++}
++
++/// The message of a WireToSurface1 PDU drawing `bitmap_data`, coded with `codec_id`, into a
++/// `width` x `height` rectangle at the origin of surface 1.
++fn wire_to_surface1(codec_id: Codec1Type, width: u16, height: u16, bitmap_data: Vec<u8>) -> Vec<u8> {
++    zgfx_message(&GfxPdu::WireToSurface1(WireToSurface1Pdu {
++        surface_id: 1,
++        codec_id,
++        pixel_format: PixelFormat::XRgb,
++        destination_rectangle: ExclusiveRectangle {
++            left: 0,
++            top: 0,
++            right: width,
++            bottom: height,
++        },
++        bitmap_data,
++    }))
++}
++
++/// A ClearCodec bitmap stream of the given layers, without glyph or cache flags.
++fn clearcodec_stream(residual_data: &[u8], bands_data: &[u8], subcodec_data: &[u8]) -> Vec<u8> {
++    let mut stream = vec![0x00, 0x00]; // flags, seq
++    for layer in [residual_data, bands_data, subcodec_data] {
++        stream.extend_from_slice(&u32::try_from(layer.len()).expect("a layer fits in 4 GiB").to_le_bytes());
++    }
++    for layer in [residual_data, bands_data, subcodec_data] {
++        stream.extend_from_slice(layer);
++    }
++    stream
++}
++
++/// An RDP6 bitmap stream of RLE-compressed planes, without alpha, of a `width` x `height` image
++/// whose bytes are all zero: about one byte per 47 pixels of each plane.
++fn planar_zero_rle_stream(width: usize, height: usize) -> Vec<u8> {
++    // Each scanline is runs of 47 bytes (control byte 0xF2), then a run of the `width % 47` left,
++    // which must be 0 or from 3 to 15.
++    let mut scanline = vec![0xF2; width / 47];
++    if !width.is_multiple_of(47) {
++        scanline.push(u8::try_from(width % 47).expect("a remainder of 47 fits in a byte"));
++    }
++
++    // RLE, no alpha, ARGB.
++    let mut stream = vec![0x30];
++    for _ in 0..3 * height {
++        stream.extend_from_slice(&scanline);
++    }
++    stream
++}
++
+ #[test]
+ fn clearcodec_bands_past_the_destination_take_no_memory() {
+     // 256 bands of 65536 columns each, 32 MiB, over a 2x2 destination: columns 0 and 1 carry
+@@ -118,6 +240,52 @@ fn clearcodec_bands_past_the_destination_take_no_memory() {
+     assert!(peak < 1024 * 1024, "decoding the layer took {peak} bytes");
+ }
+ 
++#[test]
++fn clearcodec_image_is_held_once() {
++    // A 41-byte command: a ClearCodec stream without layers (flags, seq and three zero layer sizes)
++    // for an 8192x8192 destination, the largest the decoder takes, on a 1x1 surface. The image
++    // takes 256 MiB, and its RGBA copy took 256 MiB more.
++    let mut client = graphics_pipeline_client(1, 1);
++    let command = wire_to_surface1(Codec1Type::ClearCodec, 8192, 8192, clearcodec_stream(&[], &[], &[]));
++    assert_eq!(command.len(), 41);
++    // The first ClearCodec command also allocates the decoder's caches, about 1.4 MiB.
++    let first = wire_to_surface1(Codec1Type::ClearCodec, 1, 1, clearcodec_stream(&[], &[], &[]));
++    client.process(0, &first).expect("the first command decodes");
++
++    let (result, peak) = peak_heap(|| client.process(0, &command));
++
++    result.expect("the command decodes");
++    assert!(peak < 257 * 1024 * 1024, "decoding the command took {peak} bytes");
++}
++
++#[test]
++fn clearcodec_and_planar_commands_fail_without_memory_for_their_images() {
++    // The command above, and a 4.3 MB Planar command of an 8192x8192 image, which takes 192 MiB
++    // of planes, 192 MiB of RGB24 and 256 MiB of RGBA, in turn. Each limit leaves too little for
++    // one of those buffers, after the ones before it.
++    let clearcodec = wire_to_surface1(Codec1Type::ClearCodec, 8192, 8192, clearcodec_stream(&[], &[], &[]));
++    let planar = wire_to_surface1(Codec1Type::Planar, 8192, 8192, planar_zero_rle_stream(8192, 8192));
++    let mib = 1024 * 1024;
++
++    for (command, limit) in [
++        (&clearcodec, 128 * mib),
++        (&planar, 128 * mib),
++        (&planar, 320 * mib),
++        (&planar, 420 * mib),
++    ] {
++        let mut client = graphics_pipeline_client(1, 1);
++
++        let result = with_heap_limit(limit, || client.process(0, command));
++
++        let Err(error) = result else {
++            panic!("the command decoded in {limit} bytes");
++        };
++        // The error comes from a fallible allocation.
++        let error = error.report().to_string();
++        assert!(error.contains("memory allocation failed"), "{error}");
++    }
++}
++
+ /// A progressive bitmap stream: SYNC, CONTEXT and FRAME_BEGIN blocks, then `blocks`.
+ fn progressive_stream(blocks: impl IntoIterator<Item = ProgressiveBlock<'static>>) -> Vec<u8> {
+     let mut stream = vec![

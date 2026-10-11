@@ -11,6 +11,7 @@ import { DesktopPane, desktopPaneOf, isRDPTab, NestedSSH, RDP_PROFILE_TYPE, Remo
 import { consoleScript, DeskGate, deskKeyDigest, DeskRequest, MACHINE_ID_COMMAND } from './deskScript'
 import { AudioPlayer } from './audio'
 import { IronRDPLoader } from './ironrdp'
+import { createH264Decoder } from './h264'
 import { CLIPBOARD_LABELS, ClipboardMode, clipboardSetting, ClipboardWays, clipboardWays, narrowest, ownClipboard, setUpClipboard, splitPaste } from './clipboard'
 import { ConnectionStatus, STYLE as STATS_STYLE } from './connectionStatus'
 import { Microphone } from './microphone'
@@ -37,7 +38,7 @@ import { formatGateway, Gateway, GatewaySignInError, openThroughGateway, parseGa
 import { CertificateDetails, describeCertificate, vouched, whyNotValid } from './authorities'
 import { scanVMs, vmSpec } from './vms'
 import { SessionLog } from './sessionLog'
-import { HostCompatibility, terminalInputs } from './hostCompat'
+import { terminalInputs } from './hostCompat'
 import { UNSHOWABLE, withoutWordJoiners } from './unshowable'
 
 /**
@@ -77,6 +78,8 @@ const vendor = (f: string) => pathToFileURL(vendorFile(f)).href
 
 const STYLE = `
 .trd-overlay { position: absolute; inset: 0; z-index: 30; display: flex; background: #111; }
+/* Only full-window settings overlays expose their drag strip (see settingsPage.ts). */
+.trd-form-dragbar { display: none; }
 .trd-host { flex: auto; min-width: 0; min-height: 0; display: flex; }
 .trd-host iron-remote-desktop { flex: auto; }
 .trd-last-frame { max-width: 100%; max-height: 100%; object-fit: contain; align-self: center; margin: auto; }
@@ -3984,7 +3987,9 @@ export class RemoteDesktopService {
                 return { connected: false }
             }
             if (h264) {
-                session.h264 = new rdp.WebCodecsH264Decoder({ onFailure: (reason: string) => session.log.push(`h264: failed: ${reason}`) })
+                // The vendor owns surface retirement and all resource accounting; its public option bounds the
+                // browser decoders without wrapping away lifecycle notifications (see h264.ts).
+                session.h264 = createH264Decoder(rdp.WebCodecsH264Decoder, { onFailure: (reason: string) => session.log.push(`h264: failed: ${reason}`) })
                 config.withExtension(rdp.h264Decoder(session.h264))
             }
             // GNOME Remote Desktop requires the graphics pipeline. Windows (and xrdp) do better with bitmaps than with
@@ -4144,47 +4149,12 @@ export class RemoteDesktopService {
 }
 
 let styleInstalled = false
-export function installStyle (compat: HostCompatibility): void {
+export function installStyle (): void {
     if (styleInstalled) {
         return
     }
     styleInstalled = true
     const style = document.createElement('style')
-    style.textContent = STYLE + SIGNIN_STYLE + FILES_STYLE + STATS_STYLE + OSD_STYLE + DRAGBAR_STYLE + ACCOUNT_FORM_STYLE
+    style.textContent = STYLE + SIGNIN_STYLE + FILES_STYLE + STATS_STYLE + OSD_STYLE + ACCOUNT_FORM_STYLE
     document.head.appendChild(style)
-    keepWindowDraggable(compat)
-}
-
-/** A strip the height of the tab bar that stays a window drag region over a dialog (the plugin's, and Tabby's). */
-const DRAGBAR_STYLE = `
-.trd-form-dragbar { display: none; }
-.modal > .trd-form-dragbar { display: block; position: fixed; left: 0; right: 0; top: 0; height: var(--tabs-height, 38px); -webkit-app-region: drag; }
-`
-
-/**
- * Older Tabby dialogs cover the tab bar without a drag region. Supply their fallback strip, deferring to the host's
- * modal pseudo-element when it provides one. The plugin's own dialogs still need their strips (see settingsPage.ts).
- */
-function keepWindowDraggable (compat: HostCompatibility): void {
-    const strip = (modal: Element) => {
-        if (compat.hasNativeModalDragRegion(modal)) {
-            return
-        }
-        if (!modal.querySelector(':scope > .trd-form-dragbar')) {
-            const bar = document.createElement('div')
-            bar.className = 'trd-form-dragbar'
-            modal.prepend(bar)
-        }
-    }
-    // ng-bootstrap appends each dialog (ngb-modal-window.modal) to the body itself: only the body's children are watched.
-    document.querySelectorAll('body > .modal').forEach(strip)
-    new MutationObserver(records => {
-        for (const record of records) {
-            record.addedNodes.forEach(node => {
-                if (node instanceof Element && node.classList.contains('modal')) {
-                    strip(node)
-                }
-            })
-        }
-    }).observe(document.body, { childList: true })
 }

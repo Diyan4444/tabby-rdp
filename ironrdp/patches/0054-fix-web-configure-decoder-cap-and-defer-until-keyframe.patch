@@ -1,0 +1,445 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 20:00:00 -0700
+Subject: [PATCH] fix(web): configure decoder cap and wait for a key frame before opening
+
+Let the host impose a stricter decoder cap through a validated public option,
+counting active and retiring streams together. Keep retirement, byte accounting,
+rate limits and frame completion inside the decoder rather than an external
+wrapper which edits private state. Tabby configures a cap of 16.
+
+Do not construct a browser codec for a delta frame that cannot start a stream.
+A bounded map preserves first-key-frame watchdog behavior without retaining
+access units; key frames, stream endings, failure and close clear its entries.
+An exhausted decoder cap follows the existing failure path, without evicting
+an active or retiring stream to admit another one.
+
+Tests cover public option validation, admission boundaries including retirement,
+bounded key-frame waiting and cleanup. Creation-rate tests now begin real streams
+with key frames and drain tiny auxiliary pictures between openings.
+---
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index a8f466ff..b9e93a7a 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -151,13 +151,34 @@ describe('WebCodecsH264Decoder', () => {
+         expect(config.colorSpace).toEqual({ primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: true });
+     });
+ 
++    it.each([0, -1, 1.5, 33, NaN, Infinity, -Infinity])(
++        'rejects maxDecoders=%s before opening a codec',
++        (maxDecoders) => {
++            expect(() => new WebCodecsH264Decoder({ maxDecoders })).toThrow(RangeError);
++            expect(FakeDecoder.instances).toHaveLength(0);
++        },
++    );
++
++    it.each([1, 16, 32])('accepts maxDecoders=%s without eagerly opening a codec', (maxDecoders) => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders, now: () => clock });
++        expect(FakeDecoder.instances).toHaveLength(0);
++        decoder.decode(frame(0, true), done);
++        expect(FakeDecoder.instances).toHaveLength(1);
++        expect(decoder.failed).toBeNull();
++    });
++
+     it('passes over delta frames until a key frame, then decodes', () => {
+         decoder.decode(frame(0, false), done);
+         expect(done).toHaveBeenCalledWith(0, null);
+         expect(decoder.stats.skipped).toBe(1);
++        expect(FakeDecoder.instances).toHaveLength(0);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(1);
+ 
+         decoder.decode(frame(1, true), done);
+         decoder.decode(frame(2, false), done);
++        expect(FakeDecoder.instances).toHaveLength(1);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(0);
+         const chunks = FakeDecoder.instances[0].chunks;
+         expect(chunks.map((c) => [c.type, c.timestamp])).toEqual([
+             ['key', 1],
+@@ -166,6 +187,54 @@ describe('WebCodecsH264Decoder', () => {
+         expect(decoder.stats.pending).toBe(2);
+     });
+ 
++    it('bounds delta-only waiting surfaces without opening codecs or retaining frames', () => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders: 2, now: () => clock });
++        for (let surfaceId = 1; surfaceId <= 3; surfaceId++) {
++            decoder.decode({ ...frame(surfaceId, false), surfaceId }, done);
++        }
++        expect(FakeDecoder.instances).toHaveLength(0);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(2);
++        expect([...Reflect.get(decoder, 'waitingForKey').keys()]).toEqual([1, 2]);
++        expect(Reflect.get(decoder, 'pendingBytes')).toBe(0);
++        expect(Reflect.get(decoder, 'surfaceOpens').size).toBe(0);
++        expect(decoder.stats.pending).toBe(0);
++        expect(decoder.stats.skipped).toBe(3);
++        expect(done.mock.calls).toEqual([
++            [1, null],
++            [2, null],
++            [3, null],
++        ]);
++        expect(decoder.failed).toBeNull();
++    });
++
++    it('forgets waiting surfaces when they end, including endedSurfaces on a frame', () => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders: 2, now: () => clock });
++        decoder.decode({ ...frame(0, false), surfaceId: 1 }, done);
++        decoder.decode({ ...frame(1, false), surfaceId: 2 }, done);
++        decoder.endSurfaces([1]);
++        expect([...Reflect.get(decoder, 'waitingForKey').keys()]).toEqual([2]);
++        decoder.decode({ ...frame(2, false), surfaceId: 3, endedSurfaces: [2] }, done);
++        expect([...Reflect.get(decoder, 'waitingForKey').keys()]).toEqual([3]);
++        decoder.endSurfaces([3]);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(0);
++        expect(FakeDecoder.instances).toHaveLength(0);
++    });
++
++    it.each(['close', 'failure'] as const)('clears waiting surfaces on %s', (ending) => {
++        decoder.decode({ ...frame(0, false), surfaceId: 2 }, done);
++        decoder.decode(frame(1, true), done);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(1);
++        if (ending === 'close') {
++            decoder.close();
++        } else {
++            FakeDecoder.instances[0].init.error(new DOMException('bad bitstream', 'EncodingError'));
++        }
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(0);
++        expect(FakeDecoder.instances[0].state).toBe('closed');
++    });
++
+     it('hands back the pixels of each region, in turn', async () => {
+         decoder.decode(
+             frame(0, true, [
+@@ -521,9 +590,18 @@ describe('WebCodecsH264Decoder', () => {
+         decoder.close();
+         decoder = new WebCodecsH264Decoder({ stallMs: 1000, now: () => clock });
+         decoder.decode(frame(0, false), done);
++        clock = 900;
++        decoder.decode(frame(1, false), done);
++        // Another delta must not restart the first wait's deadline.
+         clock = 1500;
+         vi.advanceTimersByTime(300);
+         expect(decoder.failed).toMatch(/no key frame/);
++        expect(FakeDecoder.instances).toHaveLength(0);
++        expect(Reflect.get(decoder, 'waitingForKey').size).toBe(0);
++        expect(done.mock.calls).toEqual([
++            [0, null],
++            [1, null],
++        ]);
+     });
+ 
+     function stubCanvas(drawn: unknown[], sizes: number[][] = []) {
+@@ -700,36 +778,97 @@ describe('WebCodecsH264Decoder', () => {
+         expect(done).toHaveBeenLastCalledWith(33, null, 'H.264 for more than 32 surfaces at once');
+     });
+ 
+-    /** A delta frame for `surfaceId` after its stream ended, as when the surface is created again before it. */
++    it('enforces a lower configured decoder cap only when a key frame opens a stream', () => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders: 2, now: () => clock });
++        decoder.decode(frame(0, true), done);
++        decoder.decode({ ...frame(1, true), surfaceId: 2 }, done);
++        decoder.decode({ ...frame(2, false), surfaceId: 3 }, done);
++        expect(FakeDecoder.instances).toHaveLength(2);
++        expect(decoder.failed).toBeNull();
++        expect(done).toHaveBeenCalledWith(2, null);
++
++        decoder.decode({ ...frame(3, true), surfaceId: 3 }, done);
++        expect(decoder.failed).toBe('H.264 for more than 2 surfaces at once');
++        expect(FakeDecoder.instances).toHaveLength(2);
++        expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
++        expect(done).toHaveBeenLastCalledWith(3, null, decoder.failed);
++    });
++
++    it('counts retiring and active decoders together against the configured cap', () => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders: 2, now: () => clock });
++        decoder.decode(frame(0, true), done);
++        decoder.decode({ ...frame(1, true), endedSurfaces: [1] }, done);
++        expect(FakeDecoder.instances).toHaveLength(2);
++        expect(FakeDecoder.instances[0].flushes).toBe(1);
++        expect(FakeDecoder.instances[0].state).toBe('configured');
++        expect(Reflect.get(decoder, 'retiring').size).toBe(1);
++        expect(Reflect.get(decoder, 'surfaces').size).toBe(1);
++        expect(decoder.failed).toBeNull();
++
++        decoder.decode({ ...frame(2, true), surfaceId: 2 }, done);
++        expect(decoder.failed).toBe('H.264 for more than 2 surfaces at once');
++        expect(FakeDecoder.instances).toHaveLength(2);
++        expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
++        expect(done).toHaveBeenLastCalledWith(2, null, decoder.failed);
++    });
++
++    it('makes the retiring decoder slot available again after its flush completes', async () => {
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ maxDecoders: 1, now: () => clock });
++        decoder.decode(frame(0, true, []), done);
++        decoder.endSurfaces([1]);
++        const retired = FakeDecoder.instances[0];
++        retired.emit(0, 1, 1);
++        retired.finishFlush();
++        await Promise.resolve();
++        expect(retired.state).toBe('closed');
++        expect(Reflect.get(decoder, 'retiring').size).toBe(0);
++        decoder.decode({ ...frame(1, true), surfaceId: 2 }, done);
++        expect(FakeDecoder.instances).toHaveLength(2);
++        expect(FakeDecoder.instances[1].state).toBe('configured');
++        expect(decoder.failed).toBeNull();
++    });
++
++    /** A key frame for `surfaceId` after its stream ended, as when the surface is created again before it. */
+     function afterRecreate(id: number, surfaceId = 1): H264Frame {
+-        return { ...frame(id, false, []), surfaceId, endedSurfaces: [surfaceId] };
++        return { ...frame(id, true, []), surfaceId, endedSurfaces: [surfaceId] };
+     }
+ 
+-    it('opens a decoder again for a surface created again, as often as monitors are resized', () => {
++    it('opens a decoder again for a surface created again, as often as monitors are resized', async () => {
+         // Sixteen in a row, then four a second for a minute.
+         for (let id = 0; id < 16; id++) {
+             decoder.decode(afterRecreate(id), done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         for (let id = 16; id < 256; id++) {
+             clock += 250;
+             decoder.decode(afterRecreate(id), done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         expect(decoder.failed).toBeNull();
+         expect(FakeDecoder.instances.length).toBe(256);
+         expect(FakeDecoder.instances.filter((d) => d.state !== 'closed').length).toBe(1);
+     });
+ 
+-    it('fails when a surface opens decoders faster than that', () => {
++    it('fails when a surface opens decoders faster than that', async () => {
+         const failures: string[] = [];
+         decoder.close();
+         decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
+         for (let id = 0; id < 16; id++) {
+             decoder.decode(afterRecreate(id), done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         // A second later, four more.
+         clock += 1000;
+         for (let id = 16; id < 20; id++) {
+             decoder.decode(afterRecreate(id), done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         expect(decoder.failed).toBeNull();
+ 
+@@ -741,18 +880,18 @@ describe('WebCodecsH264Decoder', () => {
+         expect(FakeDecoder.instances.every((d) => d.state === 'closed')).toBe(true);
+     });
+ 
+-    it('stops a message that creates a surface again before each of its frames', () => {
+-        // The session hands out every frame of a message in one go: 32,768 of them here, each on a new stream.
+-        for (let id = 0; id < 32_768; id++) {
++    it('rejects the first stream recreation past the burst allowance', () => {
++        // A bounded boundary fixture: sixteen openings fit, and the next is refused.
++        for (let id = 0; id < 17; id++) {
+             decoder.decode(afterRecreate(id), done);
+         }
+         expect(decoder.failed).toMatch(/^H\.264 decoders opened for surface 1 faster than/);
+         expect(FakeDecoder.instances.length).toBe(16);
+-        expect(done).toHaveBeenCalledTimes(32_768);
+-        expect(done).toHaveBeenLastCalledWith(32_767, null, decoder.failed);
++        expect(done).toHaveBeenCalledTimes(17);
++        expect(done).toHaveBeenLastCalledWith(16, null, decoder.failed);
+     });
+ 
+-    it('fails when the decoders of all surfaces together open faster than monitors are resized', () => {
++    it('fails when the decoders of all surfaces together open faster than monitors are resized', async () => {
+         const failures: string[] = [];
+         decoder.close();
+         decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
+@@ -760,10 +899,14 @@ describe('WebCodecsH264Decoder', () => {
+         let id = 0;
+         for (; id < 128; id++) {
+             decoder.decode({ ...afterRecreate(id, id), endedSurfaces: id > 0 ? [id - 1] : [] }, done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         clock += 1000;
+         for (; id < 160; id++) {
+             decoder.decode({ ...afterRecreate(id, id), endedSurfaces: [id - 1] }, done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         expect(decoder.failed).toBeNull();
+ 
+@@ -772,7 +915,7 @@ describe('WebCodecsH264Decoder', () => {
+         expect(FakeDecoder.instances.length).toBe(160);
+     });
+ 
+-    it('keeps the count of a surface while it matters, however many surfaces come and go', () => {
++    it('keeps the count of a surface while it matters, however many surfaces come and go', async () => {
+         // Surface 1 opens all it may in a row; 64 other surfaces come and go; surface 1 still may not open another.
+         const failures: string[] = [];
+         decoder.close();
+@@ -780,9 +923,13 @@ describe('WebCodecsH264Decoder', () => {
+         let id = 0;
+         for (; id < 16; id++) {
+             decoder.decode(afterRecreate(id), done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         for (let surfaceId = 2; surfaceId < 66; surfaceId++, id++) {
+             decoder.decode({ ...afterRecreate(id, surfaceId), endedSurfaces: [surfaceId - 1] }, done);
++            FakeDecoder.instances[id].emit(id, 1, 1);
++            await Promise.resolve();
+         }
+         expect(decoder.failed).toBeNull();
+         decoder.decode(afterRecreate(id), done);
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index 06b9d1ff..9beb14ec 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -72,6 +72,8 @@ export interface H264DecoderStats {
+ }
+ 
+ export interface WebCodecsH264DecoderOptions {
++    /** Active and retiring browser decoders together: an integer from 1 to 32 (default 32). */
++    maxDecoders?: number;
+     /** A frame that has not come out of the decoder after this long fails the decoder (default 3000 ms). */
+     stallMs?: number;
+     /** Called once, when the decoder fails. */
+@@ -123,10 +125,6 @@ interface Pending {
+ 
+ interface Surface {
+     decoder: VideoDecoder;
+-    /** A new decoder starts at a key frame. */
+-    needKey: boolean;
+-    /** Since when frames were passed over waiting for a key frame (null: not waiting). */
+-    waitingSince: number | null;
+     pending: Map<number, Pending>;
+ }
+ 
+@@ -153,6 +151,9 @@ export class WebCodecsH264Decoder {
+     private readonly surfaces = new Map<number, Surface>();
+     /** Decoders of surfaces whose streams ended, bringing out the frames given to them before they close. */
+     private readonly retiring = new Set<Surface>();
++    /** Surfaces waiting for their first key frame; bounded independently of browser decoders. */
++    private readonly waitingForKey = new Map<number, number>();
++    private readonly maxDecoders: number;
+     /** The bytes of H.264 in the decoders: the access units of the pending frames. */
+     private pendingBytes = 0;
+     /** The bytes the pictures being read back are read into: the RGBA of their frames' regions. */
+@@ -171,6 +172,14 @@ export class WebCodecsH264Decoder {
+     private closed = false;
+ 
+     constructor(private readonly options: WebCodecsH264DecoderOptions = {}) {
++        this.maxDecoders = options.maxDecoders ?? WebCodecsH264Decoder.MAX_DECODERS;
++        if (
++            !Number.isInteger(this.maxDecoders) ||
++            this.maxDecoders < 1 ||
++            this.maxDecoders > WebCodecsH264Decoder.MAX_DECODERS
++        ) {
++            throw new RangeError('maxDecoders must be an integer from 1 to 32');
++        }
+         this.stallMs = options.stallMs ?? 3000;
+         this.now = options.now ?? (() => performance.now());
+         this.opens = new Rate(WebCodecsH264Decoder.SESSION_OPENS, this.now());
+@@ -185,8 +194,19 @@ export class WebCodecsH264Decoder {
+         this.endSurfaces(frame.endedSurfaces ?? []);
+         let surface = this.surfaces.get(frame.surfaceId);
+         if (surface === undefined) {
+-            if (this.surfaces.size + this.retiring.size >= WebCodecsH264Decoder.MAX_DECODERS) {
+-                this.fail(`H.264 for more than ${WebCodecsH264Decoder.MAX_DECODERS} surfaces at once`);
++            if (!frame.keyFrame) {
++                // Deltas cannot start a stream. Track a bounded set for the watchdog without constructing a codec
++                // or retaining the access unit; further unknown surfaces are dropped without keeping state.
++                if (!this.waitingForKey.has(frame.surfaceId) && this.waitingForKey.size < this.maxDecoders) {
++                    this.waitingForKey.set(frame.surfaceId, this.now());
++                }
++                this.stats.skipped++;
++                done(frame.id, null);
++                return;
++            }
++            this.waitingForKey.delete(frame.surfaceId);
++            if (this.surfaces.size + this.retiring.size >= this.maxDecoders) {
++                this.fail(`H.264 for more than ${this.maxDecoders} surfaces at once`);
+                 done(frame.id, null, this.failed ?? undefined);
+                 return;
+             }
+@@ -198,15 +218,6 @@ export class WebCodecsH264Decoder {
+             }
+             surface = this.open(frame.surfaceId);
+         }
+-        if (surface.needKey && !frame.keyFrame) {
+-            // Deltas mean nothing to a decoder that hasn't seen the picture they refer to.
+-            this.stats.skipped++;
+-            if (surface.waitingSince === null) {
+-                surface.waitingSince = this.now();
+-            }
+-            done(frame.id, null);
+-            return;
+-        }
+         const bytes = frame.data.byteLength;
+         if (surface.pending.size >= WebCodecsH264Decoder.MAX_PENDING_FRAMES) {
+             this.fail(`more than ${WebCodecsH264Decoder.MAX_PENDING_FRAMES} frames in a decoder`);
+@@ -220,8 +231,6 @@ export class WebCodecsH264Decoder {
+             done(frame.id, null, this.failed ?? undefined);
+             return;
+         }
+-        surface.needKey = false;
+-        surface.waitingSince = null;
+         if (frame.keyFrame) {
+             this.stats.keyFrames++;
+         }
+@@ -251,6 +260,7 @@ export class WebCodecsH264Decoder {
+         }
+         this.surfaces.clear();
+         this.retiring.clear();
++        this.waitingForKey.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+         this.clearReadbacks();
+@@ -260,6 +270,7 @@ export class WebCodecsH264Decoder {
+     /** Releases streams as soon as their surfaces end, including when no later H.264 frame arrives. */
+     endSurfaces(surfaceIds: number[]): void {
+         for (const surfaceId of surfaceIds) {
++            this.waitingForKey.delete(surfaceId);
+             this.retire(surfaceId);
+         }
+     }
+@@ -355,8 +366,6 @@ export class WebCodecsH264Decoder {
+                     this.fail(describe(error));
+                 },
+             }),
+-            needKey: true,
+-            waitingSince: null,
+             pending: new Map(),
+         };
+         surface.decoder.configure(decoderConfig());
+@@ -630,11 +639,13 @@ export class WebCodecsH264Decoder {
+             return;
+         }
+         const now = this.now();
+-        for (const surface of [...this.surfaces.values(), ...this.retiring]) {
+-            if (surface.waitingSince !== null && now - surface.waitingSince > this.stallMs) {
+-                this.fail(`no key frame for ${Math.round(now - surface.waitingSince)} ms`);
++        for (const since of this.waitingForKey.values()) {
++            if (now - since > this.stallMs) {
++                this.fail(`no key frame for ${Math.round(now - since)} ms`);
+                 return;
+             }
++        }
++        for (const surface of [...this.surfaces.values(), ...this.retiring]) {
+             for (const pending of surface.pending.values()) {
+                 if (now - pending.since > this.stallMs) {
+                     this.fail(`no picture from the decoder for ${Math.round(now - pending.since)} ms`);
+@@ -658,6 +669,7 @@ export class WebCodecsH264Decoder {
+         }
+         this.surfaces.clear();
+         this.retiring.clear();
++        this.waitingForKey.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+         this.clearReadbacks();
