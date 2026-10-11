@@ -330,6 +330,12 @@ Linux). That is, where Tabby's WebCodecs says it decodes H.264 (`VideoDecoder.is
   reconnects by itself without H.264 for that desktop (until Tabby restarts, or the setting is turned on again). A
   decoder the browser takes back (`QuotaExceededError`: an idle one, in a hidden window) reconnects with H.264, as a new
   stream starts with a key frame; taken back again within ten minutes, it counts as a failure like the others.
+- **Surfaces:** IronRDP's decoder opens a `VideoDecoder` (a thread and its buffers) for each surface the server draws
+  on and closes none until the session ends, so the plugin holds it to 16 (`src/h264.ts`): a new surface past that
+  closes the one longest without a frame (the surfaces a resize leaves behind; a desktop draws on one or two), and a
+  surface gets a decoder only with a key frame. The plugin waits on as many surfaces without one as it may have open;
+  a surface among those still without a key frame after 3 s fails H.264, as above, while frames for any further ones
+  are dropped without being waited on (they cost nothing, so none is kept of them).
 - **GNOME** sends H.264 only with a hardware encoder (VA-API or NVENC on the remote); otherwise RemoteFX, as before.
 - **Windows** gets the graphics pipeline only with H.264. It streams H.264 only to EGFX 10 and later (to 8.1 it
   confirms the version without AVC420), and only for what it takes for video: areas of natural picture that keep
@@ -453,13 +459,15 @@ IronRDP's.
     lets the next go), and past 256 waiting (`MAX_WAITING`) get an error. Each also takes room in the connection for as
     much as it may be, from before it is read until it is answered (`ServerFlow`, which the desktop's proxy gives), and
     what its answer hands the connection takes room of its own: the room is 64 MB (`FLOW_WINDOW`) less what was taken
-    and the proxy hasn't read from the connection since. Whatever the proxy reads from it makes room, the connection's
-    other messages too. What is handed to the connection waits in the window until the proxy reads it, and the proxy
-    reads no further than `HIGH_WATER`, 8 MB, ahead of what the server takes. With a server that reads nothing at all,
-    what was read for the remote and not yet taken by the proxy stays within the room and one part more (80 MB), with
-    about those 8 MB more in the proxy. With one that reads while it keeps asking, it can grow past that: each byte of
-    the connection's other messages the proxy reads makes room for a byte of answers, so what waits grows by as much as
-    the proxy reads of them meanwhile. A request waits its turn while there is no room; the room it took is given back
+    and the proxy hasn't read from the connection since, and less what the proxy has read and the server hasn't taken
+    yet (its backlog). The proxy reads the connection whatever the server does, so what is handed to it waits in the
+    proxy, where it is counted, rather than in the WebSocket's own queue to send, where nothing is. Whatever waits for
+    the server counts, the connection's other messages too, and the server taking it makes room. With a server that
+    reads nothing at all, what was read for the remote and not yet taken by the server stays within the room and one
+    part more (80 MB). Only answers wait for room, though: everything else the connection sends (input, the
+    clipboard's answers, sound) goes to the proxy as it is, bounded there alone by the 104 MB and one message more past
+    which the proxy ends the connection (`SERVER_BACKLOG`, [Security notes](#security-notes)). A request waits its turn
+    while there is no room; the room it took is given back
     once it is answered, or stops counting (below). Sizes and errors are answered at once, without waiting for room:
     each is about as large as the request it answers. A shared folder's answers other than its reads (the names in a
     folder, a file's details) take no room either (below). Every request tells the provider that the remote is pulling
@@ -648,8 +656,15 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   GrantFileProtocolExtraPrivileges fuse is on, as it is in Tabby's builds (checked on macOS); a build with it off would
   have its pages say `null`, as sandboxed ones do, and its desktops refused by their own proxy, which would show at the
   first connection. `null` stays refused rather than let sandboxed pages in. Past that, the first message is capped at a
-  request's size and has ten seconds to arrive, messages at 32 MB, and data waiting for a slow side at 8 MB (64 MB
-  inside an SSH channel). The token being the address's path, the plugin takes it out of IronRDP's errors (one names the
+  request's size and has ten seconds to arrive, and messages at 32 MB. Data waiting for a client that is slow to read
+  pauses the server at 8 MB (64 MB inside an SSH channel). Data waiting for a server that is slow to read stays in the
+  proxy, which goes on reading the client: the client's own queue to send counts nothing, and a remote that keeps
+  asking for the clipboard would have the answers it doesn't read pile up there. Past 104 MB (`SERVER_BACKLOG`: the
+  room for answers, one message more and 8 MB) the proxy ends the connection. A session in good faith can end so too,
+  rarely: what is pasted on the remote from here goes as it is, however large (the plugin puts no bound on the
+  clipboard), so an item of more than 104 MB pasted over a link that takes long to carry it (through an SSH channel,
+  say) ends the connection rather than wait. The failure says how much waited for the server, so that the log tells the
+  two apart. The token being the address's path, the plugin takes it out of IronRDP's errors (one names the
   address it couldn't connect to) before they reach the desktop's status and its log, which **Copy log** hands out.
   IronRDP itself prints the address only at its debug and trace levels (`localStorage.trdLogLevel`), to the window's
   console, which Tabby doesn't write to its log file; its debug level printed the token before too, in the request it
@@ -984,11 +999,11 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   requests waiting, one at a time on a stream), and pasted files are read off the window's thread. What is read for the
   remote, parts of files and a shared folder's reads (4 MB at most), waits in the window until the server takes it, so a
   remote that keeps asking while it reads its connection slowly, or not at all, could have it fill the window's memory:
-  what is read for it, or handed to the connection, beyond what the local proxy has read from the connection stays
-  within 64 MB and one answer more (`ServerFlow`), and the proxy lets no more than `HIGH_WATER` (8 MB) wait for the
-  server. Whatever the proxy reads from the connection makes room, its other messages too: a server that reads nothing
-  at all has no more than that waiting, and one that reads while it keeps asking can have what waits grow past it by as
-  much as the proxy reads of those messages meanwhile. A file's size and errors, and a shared folder's answers other
+  what is read for it, handed to the connection, or read by the local proxy and not yet taken by the server stays
+  within 64 MB and one answer more (`ServerFlow`). What else waits for the server (the connection's other messages,
+  the clipboard's answers among them) takes room too, and past 104 MB of it all the proxy ends the connection
+  (`SERVER_BACKLOG`): the proxy reads the connection whatever the server does, so nothing piles up uncounted in the
+  WebSocket's own queue to send. A file's size and errors, and a shared folder's answers other
   than its reads (the names in a folder, a file's details), are answered outside that; a size or an error is about as
   large as the request it answers. Saved files get names without invisible characters, folders of their own and the
   system's mark for downloads, so Gatekeeper and SmartScreen can apply.

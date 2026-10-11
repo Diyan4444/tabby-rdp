@@ -14,7 +14,7 @@ import * as path from 'node:path'
 import * as tls from 'node:tls'
 
 const require = createRequire(import.meta.url)
-const { startRDCleanPathProxy, preconnectionPdu, offersNla, signsNothing, earlyUserAuthorization, withoutUserCookie, FLOW_WINDOW } = require('../../dist/rdcleanpath.js')
+const { startRDCleanPathProxy, preconnectionPdu, offersNla, signsNothing, earlyUserAuthorization, withoutUserCookie, FLOW_WINDOW, SERVER_BACKLOG } = require('../../dist/rdcleanpath.js')
 const WebSocket = require('ws')
 import { authority, signedWith } from './support/certificates.js'
 
@@ -1449,7 +1449,7 @@ test('in Electron: where a certificate\'s chain stands, and whether it is for th
     assert.equal(other.why, 'it was issued for another name than server.test, and it is marked for other uses than a server\'s (its extended key usage)')
 })
 
-test('the room for answers: taken, made again only by what the proxy reads from the connection, all of it again when that ends', { skip: !forServer }, async t => {
+test('the room for answers: taken, made again by what the proxy reads from the connection and the server takes, all of it again when that ends', { skip: !forServer }, async t => {
     // A stand-in RDP server that, past TLS, reads nothing until told to.
     const secureContext = tls.createSecureContext({ key: forServer!.key, cert: forServer!.cert })
     let reading = () => { }
@@ -1510,33 +1510,64 @@ test('the room for answers: taken, made again only by what the proxy reads from 
     await within(room, 'given back')
     proxy.spend(MB)
     assert.equal(proxy.room(), false)
-    // The proxy reads a megabyte from the connection: that much room again.
-    room = madeAgain()
+    // The proxy reads a megabyte from the connection: it no longer waits there, but what of it the system's own buffers
+    // didn't take waits in the proxy for the server, and takes room there.
+    const sent = proxy.stats.bytesOut
     ws.send(Buffer.alloc(MB))
-    await within(room, 'read from the connection')
-    assert.equal(proxy.room(), true)
-    // The server reads nothing: past what the proxy lets wait for it, the proxy stops reading from the connection, and
-    // makes no room however much more waits there.
+    for (let i = 0; i < 100 && proxy.stats.bytesOut - sent < MB; i++) {
+        await soon(10)
+    }
+    assert.equal(proxy.stats.bytesOut - sent, MB)
+    assert.equal(proxy.room(), proxy.backlog < MB)
+    // The server reads nothing: the proxy still reads all the connection has, so that nothing waits in the client's
+    // own queue, where nothing counts it; what it read waits for the server, and takes room.
+    proxy.refund(FLOW_WINDOW)
     const before = proxy.stats.bytesOut
     for (let i = 0; i < 48; i++) {
         ws.send(Buffer.alloc(MB))
     }
-    let read = -1
-    for (let i = 0; i < 100 && read !== proxy.stats.bytesOut; i++) {
-        read = proxy.stats.bytesOut
+    for (let i = 0; i < 100 && proxy.stats.bytesOut - before < 48 * MB; i++) {
         await soon(50)
     }
-    assert.ok(read - before < 48 * MB, `the proxy read ${(read - before) / MB} MB of 48`)
-    proxy.refund(FLOW_WINDOW)
-    proxy.spend(FLOW_WINDOW)
+    assert.equal(proxy.stats.bytesOut - before, 48 * MB)
+    assert.equal(ws.bufferedAmount, 0)
+    // What the system's own buffers took of it aside, it waits in the proxy. How much they take is the host's to say (some
+    // megabytes over a loopback as a rule; a host tuned for fast links may have them take far more), so more goes, a
+    // megabyte at a time, until a clear part waits, and no more than the room, which what waits is spent against below.
+    const settled = async () => {
+        let waiting = -1
+        for (let i = 0; i < 100 && waiting !== proxy.backlog; i++) {
+            waiting = proxy.backlog
+            await soon(50)
+        }
+        return waiting
+    }
+    let total = 48 * MB
+    let waiting = await settled()
+    for (; waiting <= 16 * MB && total < FLOW_WINDOW; total += MB) {
+        ws.send(Buffer.alloc(MB))
+        waiting = await settled()
+    }
+    assert.ok(waiting > 16 * MB, `${waiting / MB} MB waits for the server, of ${total / MB} MB sent`)
+    for (let i = 0; i < 100 && proxy.stats.bytesOut - before < total; i++) {
+        await soon(50)
+    }
+    assert.equal(proxy.stats.bytesOut - before, total)
+    assert.equal(ws.bufferedAmount, 0)
+    // It counts against the room, byte for byte.
+    assert.equal(proxy.room(), true)
+    proxy.spend(FLOW_WINDOW - waiting - 1)
+    assert.equal(proxy.room(), true)
+    proxy.spend(1)
     assert.equal(proxy.room(), false)
     room = madeAgain()
     await soon(200)
     assert.equal(made, false)
-    // The server reads again: the proxy reads the rest, and there is room.
+    // The server reads again: what waited for it goes, and there is room.
     reading()
     await within(room, 'the server reading again')
     assert.equal(proxy.room(), true)
+    proxy.refund(FLOW_WINDOW)
     // A connection that ends takes what was handed to it along: the next starts with all the room.
     proxy.spend(2 * FLOW_WINDOW)
     room = madeAgain()
@@ -1553,6 +1584,61 @@ test('the room for answers: taken, made again only by what the proxy reads from 
     proxy.spend(FLOW_WINDOW)
     await within(proxy.whenRoom(), 'closed, again')
     next.terminate()
+})
+
+test('a server that asks again and again and reads nothing: what the client answers waits in the proxy, which ends the connection past SERVER_BACKLOG', { skip: !forServer }, async t => {
+    // Security review finding 1: the remote asks for this computer's clipboard, a few bytes a time, and reads nothing;
+    // the client answers each with the whole clipboard, which nothing counts against the room. Paused, the client's own
+    // queue to send would grow with every answer, until the window ran out of memory.
+    const secureContext = tls.createSecureContext({ key: forServer!.key, cert: forServer!.cert })
+    const server = net.createServer(socket => {
+        socket.on('error', () => { })
+        socket.once('data', () => {
+            socket.write(confirm(2))
+            const secure = new tls.TLSSocket(socket, { isServer: true, secureContext })
+            secure.on('error', () => { })
+        })
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as net.AddressInfo).port
+    const log: string[] = []
+    const proxy = await startRDCleanPathProxy(() => new Promise<Duplex>(resolve => {
+        const socket: net.Socket = net.connect(port, '127.0.0.1', () => resolve(socket))
+    }), () => { }, (m: string) => log.push(m), { withoutNla: () => { } })
+    t.after(() => { proxy.close(); server.close() })
+    const ws = new WebSocket(proxy.url)
+    ws.on('error', () => { })
+    await opened(ws)
+    const ended = closed(ws)
+    ws.send(request(proxy.token))
+    for (let i = 0; i < 80 && !log.some(l => /relay up/.test(l)); i++) {
+        await soon(25)
+    }
+    assert.ok(log.some(l => /relay up/.test(l)), log.join('\n'))
+    const MB = 1024 * 1024
+    const answer = Buffer.alloc(2 * MB)
+    let gone = false
+    void ended.then(() => { gone = true })
+    // An answer at a time, each once the one before has left the client: the proxy takes each, though the server
+    // takes none (paused, it would leave them in the client's queue, and this would stop).
+    let sent = 0
+    let waited = 0
+    for (; !gone && sent < 2 * SERVER_BACKLOG; sent += answer.length) {
+        ws.send(answer)
+        for (let i = 0; i < 200 && !gone && ws.bufferedAmount; i++) {
+            await soon(10)
+        }
+        assert.ok(gone || !ws.bufferedAmount, `the client still held ${ws.bufferedAmount / MB} MB after ${sent / MB} MB`)
+        waited = Math.max(waited, proxy.backlog)
+    }
+    await ended
+    assert.ok(gone, `${sent / MB} MB sent, and the connection still up`)
+    assert.ok(waited <= SERVER_BACKLOG + answer.length, `${waited / MB} MB waited in the proxy`)
+    assert.match(proxy.failure, /^more than \d+ MB sent to the server waited for it to take them \(\d+ MB\)/)
+    assert.ok(log.some(l => /relay ended/.test(l)), log.join('\n'))
+    // What the connection took went with it.
+    assert.equal(proxy.backlog, 0)
+    assert.equal(proxy.room(), true)
 })
 
 test('a server that fails TLS over a stream like the system ssh\'s leaves no error unheard behind', async t => {

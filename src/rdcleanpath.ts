@@ -50,27 +50,31 @@ export interface RDCleanPathProxy extends ServerFlow {
     token: string
     /**
      * Why the last connection failed before the relay was up (the server didn't answer, refused, offered no TLS, sent
-     * no certificate): the client only sees a generic RDCleanPath error then.
+     * no certificate): the client only sees a generic RDCleanPath error then. Or why the proxy ended the relay (see
+     * SERVER_BACKLOG).
      */
     failure: string | null
     /** RDP bytes relayed since the proxy started (after TLS, before SSH): from the server, and to it. */
     stats: { bytesIn: number, bytesOut: number }
+    /** What the proxy has read from the connection and the server hasn't taken yet: it waits in the proxy (see send). */
+    readonly backlog: number
     close (): void
 }
 
 /**
  * Room for what answers the remote desktop's requests with far more than they are: a part of a file sent from here
  * (FileTransfer), a shared folder's read (SharedDrives). What is handed to the connection goes to the server as the
- * proxy reads it from the connection's WebSocket, and waits in Tabby's window until then; the proxy reads no further
- * ahead of the server than HIGH_WATER (see send). A server that keeps asking and reads slowly, or not at all, could
- * have those answers fill the window's memory, so each takes room before it is read for the remote, and waits while
- * there is none. The room is FLOW_WINDOW less what was taken and the proxy hasn't read from the connection since:
- * whatever it reads counts, the connection's other messages too. Room is taken while there is any, so what is taken
- * can pass FLOW_WINDOW by one answer; what an answer didn't use (a short read, an error, none at all) is given back.
- * A server that reads nothing at all has no more than that kept for it. One that reads while it keeps asking can have
- * more: each byte of the connection's other messages the proxy reads makes room for a byte of answers, so what waits
- * can grow past FLOW_WINDOW by as much as the proxy reads of them meanwhile.
- * RDCleanPathProxy gives it, for the connection it relays.
+ * proxy reads it from the connection's WebSocket, and waits in Tabby's window until the server takes it: first in the
+ * connection, until the proxy reads it (at once: the proxy reads whatever the server does, see send), then in the
+ * proxy (its backlog). A server that keeps asking and reads slowly, or not at all, could have those answers fill the
+ * window's memory, so each takes room before it is read for the remote, and waits while there is none. The room is
+ * FLOW_WINDOW less what was taken and the proxy hasn't read from the connection since, and less the backlog: whatever
+ * waits for the server counts, the connection's other messages too. Room is taken while there is any, so what is
+ * taken can pass FLOW_WINDOW by one answer; what an answer didn't use (a short read, an error, none at all) is given
+ * back. A server that reads nothing at all has no more than that kept for it of answers. Only answers wait for room:
+ * everything else the connection sends (input, the clipboard's answers, sound) goes to the proxy as it is, and is
+ * bounded there alone, by SERVER_BACKLOG, past which the connection ends. RDCleanPathProxy gives the room, for the
+ * connection it relays.
  */
 export interface ServerFlow {
     /** Whether there is room now. */
@@ -84,9 +88,8 @@ export interface ServerFlow {
 }
 
 /**
- * What answers to the remote's requests may have taken of the window's memory, read for it or handed to the connection,
- * beyond what the proxy has read from the connection (see ServerFlow): four of the largest parts of files a request
- * gets. A link stays busy with far less, as the proxy lets no more than HIGH_WATER wait for the server.
+ * What answers to the remote's requests may have taken of the window's memory, read for it, handed to the connection
+ * or waiting in the proxy for the server (see ServerFlow): four of the largest parts of files a request gets.
  */
 export const FLOW_WINDOW = 64 * 1024 * 1024
 
@@ -627,8 +630,15 @@ const MAX_EARLY = 256 * 1024
 const MAX_CLIENTS = 4
 /** A WebSocket message from the client: RDP PDUs, at most a few megabytes for a shared drive's read. */
 const MAX_MESSAGE = 32 * 1024 * 1024
-/** Data waiting for the other side past this pauses the side it comes from, until half of it is gone. */
+/** Data waiting for the client past this pauses the server, until half of it is gone. */
 const HIGH_WATER = 8 * 1024 * 1024
+/**
+ * What may wait in the proxy for a server that doesn't take it, before the connection ends (see send). Answers keep
+ * within FLOW_WINDOW of it and one message more (see ServerFlow), so the rest of what the client sends (input, sound,
+ * and the clipboard's answers, which nothing else bounds) always has HIGH_WATER at least: far more than it needs while
+ * the server reads.
+ */
+export const SERVER_BACKLOG = FLOW_WINDOW + MAX_MESSAGE + HIGH_WATER
 
 /**
  * Sends the client's X.224 request upstream, reads the confirm, then does TLS there. With a pre-connection blob, that
@@ -752,13 +762,16 @@ export async function startRDCleanPathProxy (openUpstream: UpstreamFactory, chec
     let legacyTls = false
     const stats = { bytesIn: 0, bytesOut: 0 }
     // The room (see ServerFlow): what was taken for answers and not read from the connection since, the client whose
-    // connection that is (the latest to reach the relay: a reconnect can overlap the connection it replaces), and what
-    // waits for room. Once the proxy is closed there is room for good: nothing more goes anywhere.
+    // connection that is (the latest to reach the relay: a reconnect can overlap the connection it replaces), the
+    // stream to its server, where what the proxy read waits for the server, and what waits for room. Once the proxy is
+    // closed there is room for good: nothing more goes anywhere.
     let owed = 0
     let flowClient: unknown = null
+    let flowUpstream: Duplex | null = null
     let roomWaiters: (() => void)[] = []
     let shut = false
-    const hasRoom = () => shut || owed < FLOW_WINDOW
+    const backlog = () => flowUpstream?.writableLength ?? 0
+    const hasRoom = () => shut || owed + backlog() < FLOW_WINDOW
     const roomMade = () => {
         if (roomWaiters.length && hasRoom()) {
             const go = roomWaiters
@@ -813,19 +826,32 @@ export async function startRDCleanPathProxy (openUpstream: UpstreamFactory, chec
             // What was handed to this connection went with it: the next starts with all the room.
             if (flowClient === ws) {
                 flowClient = null
+                flowUpstream = null
                 owed = 0
                 roomMade()
             }
         }
         let deadline = setTimeout(() => stage === 'hello' && ws.terminate(), HELLO_TIMEOUT_MS)
         const toServer = options.autologon ? autologon() : (data: Buffer) => data
+        // The proxy reads the client whatever the server does: what the server doesn't take yet waits here, where it is
+        // counted, and not in the client's own queue to send, where nothing is (IronRDP's WebSocket sends without
+        // looking at it). The room keeps answers within bounds (see ServerFlow); the clipboard's answers, which the
+        // remote can ask for again and again, aren't counted there, so the connection ends once more waits than
+        // SERVER_BACKLOG. Each write taken by the server makes room again. A server that reads, slowly, can end up
+        // there too: what is pasted there from here goes as it is, however large (nothing bounds it), and more of it
+        // than SERVER_BACKLOG on a link that takes long to carry it waits here meanwhile. So the failure says how much
+        // waited, not only that the server stopped taking it.
         const send = (data: Buffer) => {
             const out = toServer(data)
-            // The server (or the SSH channel to it) not keeping up: stop reading from the client until it has (see
-            // ServerFlow).
-            if (out.length && !upstream!.write(out) && upstream!.writableLength > HIGH_WATER) {
-                ws.pause()
-                upstream!.once('drain', () => ws.resume())
+            if (closed || !out.length) {
+                return
+            }
+            upstream!.write(out, roomMade)
+            if (upstream!.writableLength > SERVER_BACKLOG) {
+                failure = `more than ${Math.round(SERVER_BACKLOG / 1024 / 1024)} MB sent to the server waited for it to take them (${Math.round(upstream!.writableLength / 1024 / 1024)} MB): it stopped reading, or the link is too slow for what was sent`
+                log(`RDCleanPath relay ended: ${failure}`)
+                ws.terminate()
+                end()
             }
         }
         failure = null
@@ -846,12 +872,13 @@ export async function startRDCleanPathProxy (openUpstream: UpstreamFactory, chec
         ws.on('message', async (data: Buffer) => {
             if (stage === 'relay') {
                 stats.bytesOut += data.length
-                // Read from the connection: as much room again (see ServerFlow).
+                // Read from the connection: no longer waiting there, but in the proxy, for as long as the server doesn't
+                // take it (see ServerFlow).
                 if (flowClient === ws) {
                     owed = Math.max(0, owed - data.length)
-                    roomMade()
                 }
                 send(data)
+                roomMade()
                 return
             }
             if (stage === 'handshake') {
@@ -951,6 +978,7 @@ export async function startRDCleanPathProxy (openUpstream: UpstreamFactory, chec
                 stage = 'relay'
                 // The room is this connection's from now on, all of it (see ServerFlow).
                 flowClient = ws
+                flowUpstream = upstream
                 owed = 0
                 roomMade()
                 // PROTOCOL_HYBRID_EX in the server's negotiation response: an Early User Authorization Result follows CredSSP.
@@ -1010,6 +1038,7 @@ export async function startRDCleanPathProxy (openUpstream: UpstreamFactory, chec
         token,
         stats,
         get failure () { return failure },
+        get backlog () { return backlog() },
         close: () => {
             // Stops listening, and ends the clients there are: close() alone waits for them.
             wss.close()

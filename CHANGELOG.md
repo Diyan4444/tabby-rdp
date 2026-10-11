@@ -7,6 +7,13 @@ Local release candidate; not published on npm or as a GitHub release.
 **Security** (the rest of the review of 0.5.3-rc.1; all of these were in 0.5.2 too)
 - **The RD Gateway's NTLM sign-in is always bound to its TLS connection.** A challenge without the target information
   or the time that the binding goes with is refused, rather than answered without the binding and the integrity code.
+- **A server can no longer fill Tabby's memory with clipboard answers it doesn't read.** The local proxy stopped
+  reading the client when the server fell behind, so answers piled up uncounted in the window until it crashed. It
+  now goes on reading, counts what waits for the server against the room file transfers already keep within, and
+  ends the connection once 104 MB waits.
+- **H.264 decoders are held to 16 per desktop**, a surface gets one only with a key frame, and surfaces left behind
+  (by resizes) are closed to make room: a server could have the window open a decoder, with its thread, for every
+  surface it named.
 - **A shared folder's listing gives the server at most 10,000 names**, read a few at a time, rather than the whole
   folder for each listing the server asks for. A name past those is still there to open by its path, though not to
   find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
