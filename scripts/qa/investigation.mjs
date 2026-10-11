@@ -8,7 +8,7 @@ import { regressionWindow } from './history.mjs'
 // Summarize allowlisted diagnostic signals, never upload arbitrary log text, addresses or credentials.
 const signals = {
     'Screenshot comparison mismatch': /toHaveScreenshot|toMatchSnapshot|pixels.*different/i,
-    'Timeout observed': /timed? ?out|timeout/i,
+    'Timeout observed': /timed? ?out|TimeoutError|exceeded.{0,30}time limit/i,
     'Connection refused': /ECONNREFUSED|connection refused/i,
     'Connection closed': /connection (?:closed|reset)|ECONNRESET/i,
     'Authentication failure': /authentication failed|permission denied/i,
@@ -45,7 +45,7 @@ export async function investigate(run,directory,runs,reviewer,signal) {
         if(run.mutations) {record.status='not-evaluated';record.reason='Mutation evidence is evaluated separately without diagnostic labels.'}
         else {
             const cases=reviewCases(run,directory).filter(c=>!c.excluded)
-            const item=cases.find(c=>c.id==='final-window') || cases.find(c=>c.id==='actual') || cases[0]
+            const item=cases.find(c=>c.id==='actual' && c.images.some(i=>i.role==='reference')) || cases.find(c=>c.id==='final-window') || cases[0]
             if(!item) {record.status='no-image-evidence';record.reason='No eligible screenshot: diagnostic facts retained; no visual diagnosis claimed.'}
             else {
                 const evidence=loadEvidence(item,directory)

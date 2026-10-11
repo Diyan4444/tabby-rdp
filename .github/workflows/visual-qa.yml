@@ -25,7 +25,6 @@ jobs:
       # No OpenAI/Codex credentials, private RDP credentials or network tunnels in hosted jobs.
       TRD_QA_AI_PROVIDER: responses
       TRD_QA_UPDATE_BASELINES: '0'
-      TRD_QA_RUN_DIR: ${{ runner.temp }}/tabby-qa-evidence
       PLAYWRIGHT_HTML_OPEN: never
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
