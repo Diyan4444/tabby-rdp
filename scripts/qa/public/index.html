@@ -2,15 +2,21 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tabby-RDP · Visual QA</title><link rel="stylesheet" href="/style.css"></head>
 <body>
-<header><div class="brand">Tabby-RDP <span>/ Engineering</span></div><span class="pill">PHASE 2 · REAL RDP</span></header>
+<header><div class="brand">Tabby-RDP <span>/ Engineering</span></div><span class="pill">PHASE 3 · TEST THE TESTS</span></header>
 <main>
 <div class="intro"><div><p class="eyebrow">VISUAL QUALITY</p><h1>See what the tests see.</h1><p class="muted">Test native macOS, Windows and Linux Tabby clients against dedicated remote desktops. Inspect screenshots, comparisons and execution traces.</p></div></div>
 <p id="message" role="status" aria-live="polite"></p>
 <form id="login"><label for="token">Dashboard access token</label><div class="login-row"><input id="token" type="password" required autocomplete="current-password" placeholder="Token from the server’s .qa/token file"><button>Sign in</button></div><p class="muted">Access expires after 8 hours. Results and execution controls require authentication.</p></form>
 <div id="workspace" hidden>
 <section class="controls"><div><label for="environment">Test environment</label><select id="environment"></select><p id="coverage" class="muted"></p></div><div class="actions"><button id="run">Run visual test</button><button id="cancel" class="secondary" hidden>Cancel run</button></div></section>
+<section id="mutations-panel" class="mutation-panel" aria-label="Test the Tests">
+<h2>Test the Tests</h2><p class="muted">Select defects for the RDP environment above. Each campaign runs healthy controls before and after, restores each defect, and records visible manifestation independently. Synthetic error dialogs test overlays; they do not crash Tabby.</p>
+<div id="mutation-choices" class="mutation-choices"></div>
+<button id="campaign">Run selected mutations</button><p id="mutation-scope" class="muted"></p>
+<div id="effectiveness" class="summary"></div><details><summary>Detection breakdown and campaign history</summary><pre id="mutation-metrics"></pre></details>
+</section>
 <div class="summary" id="summary"></div><div class="summary" id="environments"></div>
-<p class="scope">Configuration indicates credentials are present; a successful run verifies connectivity and rendering. Mutation campaigns and AI review remain pending.</p>
+<p class="scope">Configuration indicates credentials are present; a successful run verifies connectivity and rendering. Campaigns measure detector sensitivity separately from application health. AI review remains pending.</p>
 <div class="layout"><section><h2>Run history</h2><div id="history"></div></section><section id="detail" aria-label="Run details"><p class="muted">Start a test to collect visual evidence.</p></section></div>
 </div>
 </main><script src="/app.js" defer></script></body></html>

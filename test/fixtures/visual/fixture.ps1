@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Directory)
+param([Parameter(Mandatory=$true)][string]$Directory,[int]$LifetimeSeconds=300)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace VisualQA -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr SetProcessDpiAwarenessContext(IntPtr c);'
@@ -6,6 +6,8 @@ Add-Type -Namespace VisualQA -Name Dpi -MemberDefinition '[DllImport("user32.dll
 $f = New-Object Windows.Forms.Form
 $f.Text = 'Tabby Visual QA Fixture'; $f.FormBorderStyle = 'None'; $f.WindowState = 'Maximized'; $f.TopMost = $true; $f.KeyPreview = $true
 $script:state = @{version=1; sequence=0; input='initial'; platform='windows'; font='Segoe UI'; scale=1}
+$script:mutation = ''
+$script:mutationUntil = Get-Date
 $started = Get-Date
 function Publish {
     $script:state | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 (Join-Path $Directory 'state.json')
@@ -33,7 +35,7 @@ $f.Add_Paint({
     $colors=@(@(255,0,0),@(0,255,0),@(0,0,255),@(255,255,255),@(128,128,128),@(0,0,0))
     for($i=0;$i -lt $colors.Length;$i++){ Rect $g (64+$i*80) 240 64 64 $colors[$i] }
     Text $g 64 320 ('REMOTE FRAME {0:D2}' -f $script:state.sequence)
-    Rect $g 64 ($h-116) 220 48 @(36,66,102); Text $g 80 ($h-108) 'Advance frame' 18
+    if($script:mutation -ne 'missing'){ Rect $g 64 ($h-116) 220 48 @(36,66,102); Text $g 80 ($h-108) 'Advance frame' 18 }
     $color=if($script:state.sequence%2 -eq 0){@(30,100,200)}else{@(240,200,40)}
     Rect $g ($w-160) ($h-144) 80 64 $color
     Publish
@@ -57,8 +59,11 @@ $timer.Add_Tick({
             Publish
         }
         if($command.quit){$f.Close()}
-        if($command.reset -and $script:state.sequence -ne 0){$script:state.sequence=0;$script:state.input='reset';$f.Invalidate()}
+        if($null -ne $command.mutation){$script:mutation=$command.mutation;$script:mutationUntil=(Get-Date).AddSeconds(30);$f.Invalidate()}
+        if($command.advance){$script:state.sequence += [int]$command.advance;$f.Invalidate()}
+        if($command.reset){$script:state.sequence=0;$script:state.input='reset';$f.Invalidate()}
     }
-    if(((Get-Date)-$started).TotalSeconds -gt 300){$f.Close()}
+    if($script:mutation -and (Get-Date) -gt $script:mutationUntil){$script:mutation='';$f.Invalidate()}
+    if(((Get-Date)-$started).TotalSeconds -gt $LifetimeSeconds){$f.Close()}
 }); $timer.Start()
 try {[Windows.Forms.Application]::Run($f)} finally {$timer.Dispose();$script:state.ready=$false;Publish;$f.Dispose()}

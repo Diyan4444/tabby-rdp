@@ -4,9 +4,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createTestContext, type CanvasInfo } from '../lib/harness.js'
 import { clientIdentity, verifyLinuxIdentity, type ClientIdentity } from './identity.js'
+import { campaign } from './mutations.js'
 import { windowsGuest } from '../lib/windows.js'
 
 const kind = process.env.TRD_QA_TEST === 'visual-windows' ? 'windows' : 'linux'
+const fixtureLifetime = process.env.TRD_QA_MUTATIONS ? 1200 : 300
 const xrdp = kind === 'linux' && process.env.TRD_TEST_EXPECT_STACK === 'xrdp'
 const fixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/visual')
 interface FixtureState { version: number, sequence: number, input: string, platform: string, width: number, height: number, ready: boolean, scale: number, font: string, captureId?: number }
@@ -61,7 +63,7 @@ PYID`)).trim())
             remoteKey = xrdp ? `${identity.os}-${identity.version}-xfce-${identity.xfce}-xrdp-${identity.xrdp}-xorgxrdp-${identity.xorgxrdp}`
                 : `${identity.os}-${identity.point || identity.version}-gnome-${identity.gnome.match(/\b(\d+\.[\d.]+)/)?.[1]}-grd-${identity.grd.match(/\b(\d+\.[\d.]+)/)?.[1]}`
         }
-        t.onCleanup(() => ev('document.getElementById("trd-visual-size")?.remove()'))
+        t.onCleanup(() => ev('globalThis.__trdMutationRestore?.(); document.getElementById("trd-visual-size")?.remove()'))
         const setSize = async (width: number, height: number) => {
             // Tabby's focus/sign-in layout writes inline dimensions again. Keep the test
             // viewport fixed through those real interactions, scoped to this owned pane.
@@ -116,6 +118,25 @@ PYID`)).trim())
         // Store the initial desktop as evidence, not a nondeterministic OS-shell regression baseline.
         await info.attach('initial-desktop', { body: Buffer.from((await ev<string>('return H.canvasElement(H.pane).toDataURL("image/png")')).split(',')[1], 'base64'), contentType: 'image/png' })
         if (kind === 'linux') {
+            // An evidence-only OS screenshot must not hide an active crash reporter behind
+            // the fullscreen fixture. Inspect only this dedicated account, without dumping
+            // crash payloads/process arguments (which can contain credentials).
+            const health = JSON.parse((await t.remote('H.pane', `python3 - <<'PYHEALTH'
+import json, os, pathlib
+reporters = []
+for p in pathlib.Path('/proc').iterdir():
+    try:
+        if p.name.isdigit() and p.stat().st_uid == os.getuid():
+            name = (p/'comm').read_text().strip()
+            if name in ('apport-gtk', 'whoopsie', 'gnome-abrt', 'abrt-applet'):
+                reporters.append(dict(pid=int(p.name), name=name))
+    except (OSError, ValueError): pass
+print(json.dumps(dict(activeCrashReporters=reporters)))
+PYHEALTH`)).trim())
+            await info.attach('desktop-health', { body: JSON.stringify(health), contentType: 'application/json' })
+            expect(health.activeCrashReporters, 'Dedicated desktop has no active crash reporter; inspect initial-desktop before fixture setup').toEqual([])
+        }
+        if (kind === 'linux') {
             const directory = (await t.remote('H.pane', 'mktemp -d /tmp/tabby-visual-qa-XXXXXX')).trim()
             expect(directory).toMatch(/^\/tmp\/tabby-visual-qa-[A-Za-z0-9]+$/)
             await t.remote('H.pane', `cat > ${directory}/fixture.py`, fs.readFileSync(path.join(fixtures, 'fixture.py'), 'utf8'))
@@ -135,11 +156,11 @@ for key in ['DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS']:
 assert os.environ.get('DISPLAY'), 'Xfce session has no X11 display'
 os.environ.update(GDK_BACKEND='x11', TRD_VISUAL_DESKTOP='xfce')
 with open('${directory}/fixture.log', 'w') as log:
-    child = subprocess.Popen(['python3', '${directory}/fixture.py', '${directory}'], stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    child = subprocess.Popen(['python3', '${directory}/fixture.py', '${directory}', '${fixtureLifetime}'], stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
 pathlib.Path('${directory}/pid').write_text(str(child.pid))
 PYFIXTURE`)
             } else {
-                await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland setsid python3 ${directory}/fixture.py ${directory} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
+                await t.remote('H.pane', `W=$(systemctl --user show-environment | sed -n 's/^WAYLAND_DISPLAY=//p'); WAYLAND_DISPLAY=\${W:-wayland-0} GDK_BACKEND=wayland setsid python3 ${directory}/fixture.py ${directory} ${fixtureLifetime} >${directory}/fixture.log 2>&1 < /dev/null & echo $! > ${directory}/pid`)
             }
             fixtureLog = () => t.remote('H.pane', `cat ${directory}/fixture.log 2>/dev/null || true`)
             readState = async () => { try { return JSON.parse(await t.remote('H.pane', `cat ${directory}/state.json 2>/dev/null || true`)) } catch { return null } }
@@ -147,7 +168,7 @@ PYFIXTURE`)
             cleanupFixture = async () => {
                 await control({ quit: true })
                 await t.sleep(300)
-                const removed = await t.remote('H.pane', `pkill -f '^python3 ${directory}/fixture.py ${directory}$' 2>/dev/null || true; rm -rf ${directory}; test ! -e ${directory} && echo cleaned`)
+                const removed = await t.remote('H.pane', `pkill -f '^python3 ${directory}/fixture.py ${directory}( [0-9]+)?$' 2>/dev/null || true; rm -rf ${directory}; test ! -e ${directory} && echo cleaned`)
                 expect(removed.trim(), 'Remote fixture directory removed').toBe('cleaned')
             }
         } else {
@@ -168,7 +189,7 @@ PYFIXTURE`)
             await guest.guest(`[IO.File]::WriteAllText('${directory}\\fixture.b64','')`)
             for (let offset = 0; offset < encoded.length; offset += 1600) await guest.guest(`[IO.File]::AppendAllText('${directory}\\fixture.b64','${encoded.slice(offset, offset+1600)}')`)
             await guest.guest(`[IO.File]::WriteAllBytes('${directory}\\fixture.ps1',[Convert]::FromBase64String([IO.File]::ReadAllText('${directory}\\fixture.b64')))`)
-            await guest.inSession('tabby-visual-qa', `& '${directory}\\fixture.ps1' -Directory '${directory}' *> '${directory}\\fixture.log'`)
+            await guest.inSession('tabby-visual-qa', `& '${directory}\\fixture.ps1' -Directory '${directory}' -LifetimeSeconds ${fixtureLifetime} *> '${directory}\\fixture.log'`)
             fixtureLog = () => guest.guest(`Get-Content -Raw '${directory}\\fixture.log' -ErrorAction SilentlyContinue`)
             readState = async () => { try { return JSON.parse((await guest.guest(`Get-Content -Raw '${directory}\\state.json' -ErrorAction SilentlyContinue`)).replace(/^\uFEFF/, '')) } catch { return null } }
             control = value => guest.guest(`[IO.File]::WriteAllText('${directory}\\command.json','${JSON.stringify(value)}')`)
@@ -196,14 +217,18 @@ PYFIXTURE`)
         const canvas = page.locator('.trd-overlay iron-remote-desktop canvas')
         const samples = async () => ev<{ width: number, height: number, points: number[][] }>(`const cv=H.canvasElement(H.pane), c=cv.getContext('2d'),w=cv.width,h=cv.height;
             return {width:w,height:h,points:[[24,24],[w-24,24],[24,h-24],[w-24,h-24],[w-120,h-112]].map(([x,y])=>Array.from(c.getImageData(x,y,1,1).data))}`)
-        const assertFrame = async (sequence: number) => {
+        const assertFrame = async (sequence: number, timeout = 15_000) => {
             const remote = await readState()
             expect(remote?.sequence, 'Independent remote fixture state').toBe(sequence)
             const expected = [[220,40,60],[30,200,80],[40,80,220],[240,200,40], sequence%2 ? [240,200,40] : [30,100,200]]
             await expect.poll(async () => {
                 const frame = await samples()
                 return frame.width === remote?.width && frame.height === remote?.height && frame.points.every((rgb,i)=>rgb[3] === 255 && rgb.slice(0,3).every((value,j)=>Math.abs(value-expected[i][j])<=8))
-            }, { timeout: 15_000, message: 'Decoded framebuffer geometry, four edge markers and remote sequence color' }).toBe(true)
+            }, { timeout, message: 'Decoded framebuffer geometry, four edge markers and remote sequence color' }).toBe(true)
+        }
+        const snapshotName = (name: string) => {
+            const host = metadata.host as { version: string, electron: string }
+            return `${remoteKey}-${(metadata.client as ClientIdentity).platform}-${(metadata.client as ClientIdentity).arch}-tabby-${host.version}-electron-${host.electron}-${name}.png`
         }
         const checkpoint = async (name: string, baseline = true) => {
             await guestCapture(name)
@@ -217,13 +242,24 @@ PYFIXTURE`)
             if (baseline) {
                 expect([state.width, state.height], 'Remote checkpoint uses the requested resolution').toEqual(
                     name === 'resized' || name === 'reconnected' ? [900, 650] : [800, 600])
-                const host = metadata.host as { version: string, electron: string }
-                const snapshot = `${remoteKey}-${(metadata.client as ClientIdentity).platform}-${(metadata.client as ClientIdentity).arch}-tabby-${host.version}-electron-${host.electron}-${name}.png`
+                const snapshot = snapshotName(name)
                 if (fs.existsSync(info.snapshotPath(snapshot))) await info.attach(`${name}-expected`, { path: info.snapshotPath(snapshot), contentType: 'image/png' })
                 await expect(canvas).toHaveScreenshot(snapshot, { maxDiffPixels: 0 })
             }
         }
         await test.step('Initial deterministic full desktop rendering', async () => { await checkpoint('actual') })
+        if (process.env.TRD_QA_MUTATIONS) {
+            const clip = await canvas.boundingBox()
+            expect(clip).toBeTruthy()
+            await test.step('Test the Tests: healthy controls, mutations and restoration', async () => {
+                await campaign({ info, ev, snapshot: snapshotName('actual'),
+                    capture: () => page.screenshot({ clip: clip!, animations: 'disabled', caret: 'hide', scale: 'css' }),
+                    frameAssertion: async () => { await assertFrame((await readState())!.sequence, 2000) },
+                    control, sequence: async () => (await readState())?.sequence,
+                    settle: async () => { await assertFrame(0); await expect(canvas).toHaveScreenshot(snapshotName('actual'), { maxDiffPixels: 0 }) },
+                })
+            })
+        }
         await test.step('Mouse and keyboard traverse the real RDP connection', async () => {
             await t.clickDesktop('H.pane', 160, initial.height-90)
             await expect.poll(async () => (await readState())?.input).toBe('mouse')
@@ -280,6 +316,7 @@ PYFIXTURE`)
         })
         expect(errors, 'Renderer exceptions').toEqual([])
     } finally {
+        await ev('globalThis.__trdMutationRestore?.()').catch(() => {})
         await info.attach('final-window', { body: await page.screenshot({ timeout: 5000 }), contentType: 'image/png' }).catch(() => {})
         await info.attach('fixture-log', { body: (await fixtureLog().catch(() => 'Fixture log unavailable')).slice(-16000), contentType: 'text/plain' })
         await info.attach('environment', { body: JSON.stringify(metadata, null, 2), contentType: 'application/json' })

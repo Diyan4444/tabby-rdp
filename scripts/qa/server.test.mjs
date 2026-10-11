@@ -36,6 +36,10 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     assert.equal(invalidHost, 403)
     assert.equal((await request('/api/runs', { test: 'visual-host', command: 'ignored' })).status, 400)
     assert.equal((await request('/api/runs', { test: 'unknown' })).status, 400)
+    assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]},false)).status,401)
+    assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]},true,{Origin:'https://example.com'})).status,403)
+    assert.equal((await request('/api/campaigns', {test:'visual-host',mutations:[{id:'crop',value:20}]})).status,400)
+    assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:999}]})).status,400)
     const login = await request('/api/login', { token }, false)
     assert.equal(login.status, 200)
     assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/)
@@ -43,6 +47,7 @@ test('HTTP authentication, fixed catalog, single execution, cancellation, artifa
     assert.equal(created.status, 202)
     const run = await created.json()
     assert.equal((await request('/api/runs', { test: 'visual-host' })).status, 409)
+    assert.equal((await request('/api/campaigns', {test:'visual-linux',mutations:[{id:'crop',value:20}]})).status,409)
     assert.equal((await request('/api/cancel', {})).status, 202)
     let state
     for (let i = 0; i < 100; i++) {

@@ -8,7 +8,7 @@ export default defineConfig({
     outputDir: path.join(output, 'artifacts'),
     workers: 1,
     retries: 0,
-    timeout: process.env.TRD_QA_TEST === 'visual-host' ? 120_000 : 240_000,
+    timeout: process.env.TRD_QA_MUTATIONS ? 900_000 : process.env.TRD_QA_TEST === 'visual-host' ? 120_000 : 240_000,
     // Missing baselines fail too. Only the explicit local baseline command can write them.
     updateSnapshots: process.env.TRD_QA_UPDATE_BASELINES === '1' ? 'all' : 'none',
     snapshotPathTemplate: '{testDir}/baselines/{arg}{ext}',

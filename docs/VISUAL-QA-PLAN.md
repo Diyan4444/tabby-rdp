@@ -582,7 +582,7 @@ Update it after each completed phase.
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
 | 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
-| 3. Defect Injection | Pending | — | — |
+| 3. Defect Injection | In Progress | — | Implementing dashboard campaigns, independent manifestation checks and controls. |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
 
@@ -673,6 +673,8 @@ For each decision, document:
 Prefer concise entries over lengthy architectural essays.
 
 ### Outstanding Issues
+
+- User review found an unexpected Ubuntu Tabby crash dialog in accepted run `2026-10-11T10-46-41.888Z-bf325b96` / `initial-desktop`. This image was evidence-only; the later fullscreen fixture hid it. The remote Apport report is dated 09:39:12 UTC (signal 5), before the 10:46 run; its reporter remained open. The historical test result is retained, but does **not** establish initial-desktop health. Phase 3 adds an explicit crash-reporter preflight and unexpected-dialog mutation coverage. Root cause is not established by the screenshot.
 
 - Native macOS, Windows and Linux ARM64 clients now have reviewed baselines. Tabby 1.0.236 / Electron 43.7.0
   is common, but macOS declares xterm ^6.0.0 and the official Linux/Windows builds declare ^5. x86_64 remains

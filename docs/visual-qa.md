@@ -1,4 +1,4 @@
-# Visual QA operations (Phases 1–2)
+# Visual QA operations (Phases 1–3)
 
 The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD and Xfce/xrdp desktops through IronRDP**, plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
 
@@ -370,3 +370,73 @@ done
 ```
 
 Each run consumes one of the dashboard's 100 history slots. Keep previous failure evidence when archiving history.
+
+## Test the Tests (Phase 3)
+
+Select a real RDP environment, choose one or more catalog defects and their bounded parameter values, then click
+**Run selected mutations**. A campaign uses the existing real-RDP lifecycle and reviewed baseline: healthy control,
+selected mutations serially, restoration after each, healthy control, then ordinary input/resize/reconnect checks.
+**Campaign completed** is separate from application **Passed**; environment health cards exclude campaigns.
+A failure or escape remains in history. **Reproduce campaign** repeats the same values on the current checkout,
+whose commit/dirty flag is recorded; it does not automatically check out the historical commit.
+
+The catalog has 13 entries: the twelve plan categories plus a synthetic unexpected-error dialog. Framebuffer
+crop/color/blank/freeze/stale hooks wrap only the owned canvas context's `putImageData`; frontend offsets, scale,
+geometry and overlays affect only that owned desktop. Missing-control injection changes the real GTK/WinForms fixture
+via its existing private command channel. Text degradation alters a captured PNG only and is explicitly **not RDP
+rendering coverage**. All values are deterministic (seed null). No mutation is shipped in production plugin code.
+
+Before/after visible pixels establish spatial manifestation separately from reference comparison (RGBA delta >8,
+with changed-pixel counts/bounds and a difference image). Temporal cases advance independent remote JSON state and
+retain two later captures showing the earlier frame. This witnesses an observed change/stall, not automatic proof
+that every changed pixel has the intended cause; inspect retained evidence. The detector receives only image bytes,
+the existing baseline name and the ordinary decoded-frame/state assertion. It gets no mutation ID, parameters or
+expected failure. Screenshot comparison uses Playwright's existing PNG comparator with zero allowed differing pixels;
+frame-state checks reuse the ordinary four corners/sequence/geometry oracle. A fixed viewport capture is essential:
+following a transformed canvas's bounding box could conceal an offset. Baselines and retries are unchanged.
+
+Each experiment records parameters/layer/category, timestamps, detection observation latency, manifestation,
+individual detector results, classification and restoration. Incomplete, disconnected or nonmanifested experiments
+are excluded from detection rates and shown separately; no-op injection is never credited as detection or escape.
+Only completed detector observations enter metrics. A restoration failure fails the campaign and remains visible,
+even if detection had already completed. Metrics include healthy-control false positives, manifested escapes,
+category/layer/detector breakdowns and per-campaign history. Observation latency includes capture, remote queries and
+assertion timeout; it is **not** exact repaint or algorithm-only latency. No statistical generalization from this small
+catalog, AI judgment, scheduling or automatic issue creation is claimed.
+
+Authenticated `POST /api/campaigns` accepts only `{test, mutations: [{id, value}]}` from the fixed catalog. It shares
+the existing single-run guard, cancellation, protected artifacts and 100-run capacity. One campaign occupies one run.
+Campaigns have a 900-second test / 960-second server deadline. Canvas/CSS hooks self-restore after 30 seconds if
+normal cleanup is interrupted; remote missing-control injection also expires after 30 seconds. The fixture exits
+after 20 minutes for campaigns (five minutes for normal tests); forced termination can leave its temporary directory
+until operator cleanup. Normal cleanup restores every experiment and removes the fixture. Persistent native clients
+remain operator-owned. Restart treats interrupted campaigns as infrastructure failures, not passing evidence.
+
+Reports retain named before/actual/expected/difference/restored PNGs and the real session trace. Raw and visible
+resize evidence remains available. The trace viewer records browser actions, captures and locator screenshot checks;
+synchronous buffer comparisons are recorded in `mutation-results.json` and the HTML report rather than as CDP trace
+API calls. The dashboard shows live trial progress, final detector results, metrics and reproduction controls.
+
+Run the browser demonstration (healthy → mutation campaign → report/trace → healthy):
+
+```sh
+TRD_QA_BROWSER=/path/to/chrome node scripts/qa/mutation-acceptance.mjs visual-macos-ubuntu2404 crop
+# All default catalog values:
+node scripts/qa/mutation-acceptance.mjs visual-macos-ubuntu2404 crop,offset,scale,freeze,missing,overlay,color,blank,alignment,text,stale,geometry,dialog
+```
+
+### Initial-desktop health limitation discovered during review
+
+The user identified a Tabby crash dialog in the evidence-only initial-desktop PNG from
+`2026-10-11T10-46-41.888Z-bf325b96`. The later fullscreen fixture obscured it; the original Passed result applies to
+fixture checks and does not prove an unobstructed OS desktop. Its historical record and image remain unchanged.
+The isolated Ubuntu guest retained an Apport report dated 09:39:12 (signal 5) and an active reporter; Tabby had restarted
+at 09:40:40, before that 10:46 run. This does not establish the crash's root cause or a crash during the run.
+
+Linux preparation now records same-account known crash-reporter processes and fails **Infrastructure failure**
+before fixture startup if one is active. The actual retained dialog triggered this check in run
+`2026-10-11T11-19-50.552Z-ea2fab57`. The crash payload was archived privately and the stale reporter closed on the
+isolated QA guest; no report was submitted or application relaunched from the dialog. This is a process-based health
+check, not general screenshot understanding. Arbitrary unexpected initial OS dialogs—including Windows dialogs—still
+need broader deterministic shell checks or Phase 4 visual review. The synthetic dialog mutation qualifies overlay
+detection inside the measured fixture viewport, not generic OS-dialog recognition.

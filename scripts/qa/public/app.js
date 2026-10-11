@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id)
 let selected = null
 let lastDetail = ''
+let mutationCatalogLoaded = false
+const runLabel = run => run.mutations && run.status === 'passed' ? 'Campaign completed' : labels[run.status]
 const labels = { passed: 'Passed', failed: 'Failed', skipped: 'Skipped', 'infrastructure-failed': 'Infrastructure failure', cancelled: 'Cancelled', running: 'Running', 'not-run': 'Not executed', timedOut: 'Timed out', interrupted: 'Interrupted' }
 function node (tag, text, className) {
     const element = document.createElement(tag)
@@ -28,6 +30,10 @@ $('run').onclick = async () => {
     $('run').disabled = true
     try { const run = await api('/api/runs', { test: $('environment').value }); selected = run.id; message(); await refresh() } catch (error) { message(error); $('run').disabled = false }
 }
+$('campaign').onclick = async () => {
+    const mutations = [...document.querySelectorAll('[data-mutation]:checked')].map(input=>({id:input.dataset.mutation,value:Number($('value-'+input.dataset.mutation).value)}))
+    try { const run = await api('/api/campaigns', { test: $('environment').value, mutations }); selected=run.id; message(); await refresh() } catch(error) { message(error) }
+}
 $('cancel').onclick = async () => { try { await api('/api/cancel', {}); message(new Error('Cancellation requested. Waiting for cleanup…')); await refresh() } catch (error) { message(error) } }
 function showRun (run) {
     const signature = JSON.stringify(run)
@@ -36,7 +42,7 @@ function showRun (run) {
     const detail = $('detail')
     detail.dataset.runId = run.id
     detail.replaceChildren()
-    detail.append(node('p', 'RUN EVIDENCE', 'eyebrow'), node('h2', labels[run.status], `status ${run.status}`))
+    detail.append(node('p', 'RUN EVIDENCE', 'eyebrow'), node('h2', runLabel(run), `status ${run.status}`))
     detail.append(node('p', `${new Date(run.startedAt).toLocaleString()} · ${run.durationMs === undefined ? run.stage : (run.durationMs / 1000).toFixed(1) + ' s'}`, 'muted'))
     detail.append(node('p', `${run.environment || 'Local Tabby'} · ${run.coverage}`, 'muted'))
     detail.append(node('code', `${run.commit.slice(0, 12)}${run.dirty ? ' + uncommitted changes' : ''} · Test driver: ${run.platform}`))
@@ -45,6 +51,19 @@ function showRun (run) {
     links.append(link('Execution log ↗', artifactURL(run, 'execution.log')))
     if (run.tests.some(t => t.status !== 'not-run')) links.append(link('Playwright report & trace viewer ↗', artifactURL(run, 'report/index.html')))
     detail.append(links)
+    if (run.mutations) {
+        detail.append(node('h3', 'Mutation detection results'))
+        const repeat=node('button','Reproduce campaign','secondary'); repeat.disabled=!!document.querySelector('#cancel:not([hidden])');
+        repeat.onclick=async()=>{try{const next=await api('/api/campaigns',{test:run.test,mutations:run.mutations.map(m=>({id:m.id,value:m.value}))});selected=next.id;await refresh()}catch(error){message(error)}}
+        detail.append(repeat)
+        detail.append(node('p', 'Parameters: '+run.mutations.map(m=>`${m.id} ${m.parameter}=${m.value} (${m.layer})`).join('; '),'muted'))
+        if (!run.experiments?.length) detail.append(node('p',run.status==='running' ? 'Executing controls and mutations; live stage is recorded in the execution log.' : 'No completed experiment evidence. Not executed / incomplete.','muted'))
+        for (const trial of run.experiments || []) {
+            const caught=trial.detectors.filter(d=>d.failed).map(d=>d.id).join(', ') || 'none'
+            detail.append(node('p',`${trial.id}: ${trial.classification || 'incomplete'} · manifested: ${trial.manifestation?.manifested ?? 'control'} · caught by: ${caught} · restored: ${trial.restored} · observation ${Math.round(trial.latencyMs || 0)} ms`))
+        }
+        detail.append(node('pre',JSON.stringify(run.effectiveness || {},null,2),'metrics'))
+    }
     for (const test of run.tests) {
         detail.append(node('h3', test.title), node('p', labels[test.status] || test.status, `status ${test.status}`))
         for (const error of test.errors || []) detail.append(node('pre', error, 'error'))
@@ -70,15 +89,30 @@ function showRun (run) {
 }
 async function refresh () {
     const data = await api('/api/runs')
+    if (!mutationCatalogLoaded) {
+        for (const mutation of data.mutations || []) {
+            const cell=node('div');const label=node('label'); const check=node('input');check.type='checkbox';check.dataset.mutation=mutation.id;check.checked=mutation.id==='crop';
+            label.append(check,document.createTextNode(' '+mutation.name));
+            const parameter=node('label',mutation.parameter+' · '+mutation.layer);parameter.htmlFor='value-'+mutation.id;
+            const values=node('select');values.id=parameter.htmlFor;
+            for(const value of mutation.values){const option=node('option',String(value));option.value=String(value);values.append(option)}
+            cell.append(label,parameter,values);$('mutation-choices').append(cell)
+        }
+        mutationCatalogLoaded=true
+    }
+    const rate=value=>value===null || value===undefined ? 'No evidence' : (100*value).toFixed(1)+'%'
+    const metrics=data.effectiveness || {}
+    $('effectiveness').replaceChildren(...[['Detection',rate(metrics.detectionRate)],['Manifested',metrics.manifested || 0],['Control false positives',rate(metrics.falsePositiveRate)],['Escapes',metrics.escaped?.length || 0]].map(([label,value])=>{const box=node('div',undefined,'metric');box.append(node('span',label),node('strong',String(value)));return box}))
+    $('mutation-metrics').textContent=JSON.stringify({metrics,history:data.trends},null,2)
     $('login').hidden = true; $('workspace').hidden = false
     const choice = $('environment').value
     $('environment').replaceChildren(...data.catalog.map(item => { const option = node('option', item.name + (item.configured ? '' : ' — Not configured')); option.value = item.id; return option }))
     if (choice) $('environment').value = choice
-    const showCoverage = () => { const item = data.catalog.find(item => item.id === $('environment').value); $('coverage').textContent = item.coverage + (item.configured ? '' : ' · Missing: ' + item.missing.join(', ')) }
+    const showCoverage = () => { const item = data.catalog.find(item => item.id === $('environment').value); $('campaign').disabled=!!data.active || (item.suite || item.id)==='visual-host'; $('mutation-scope').textContent=(item.suite || item.id)==='visual-host' ? 'Select a real RDP desktop to enable mutations.' : 'One serialized campaign; fixed catalog values only. Screenshot/evaluator defects do not qualify RDP rendering.'; $('coverage').textContent = item.coverage + (item.configured ? '' : ' · Missing: ' + item.missing.join(', ')) }
     $('environment').onchange = showCoverage; showCoverage()
     const environments = $('environments'); environments.replaceChildren()
     for (const item of data.catalog) {
-        const latest = data.runs.find(run => run.test === item.id)
+        const latest = data.runs.find(run => run.test === item.id && !run.mutations)
         const card = node('div', undefined, 'metric'); card.append(node('span', item.environment, 'muted'), node('strong', latest ? labels[latest.status] : 'Not executed'), node('span', item.configured ? 'Configured' : 'Not configured', 'muted'))
         if (latest) { const actual = latest.tests.flatMap(t => t.attachments || []).find(a => a.name === 'actual'); if (actual) { const preview = node('img'); preview.src = artifactURL(latest, actual.path); preview.alt = item.environment + ' latest screenshot'; card.append(preview) }; const button = node('button', 'View evidence', 'secondary'); button.onclick = () => { selected = latest.id; lastDetail = ''; refresh().catch(message) }; card.append(button) }
         environments.append(card)
@@ -86,7 +120,7 @@ async function refresh () {
     $('run').disabled = !!data.active; $('cancel').hidden = !data.active
     $('run').textContent = data.active ? 'Test running…' : 'Run visual test'
     const summary = $('summary'); summary.replaceChildren()
-    for (const [title, value] of [['Latest run', data.runs[0] ? labels[data.runs[0].status] : 'Not executed'], ['Passed', data.runs.filter(r => r.status === 'passed').length], ['Failed', data.runs.filter(r => r.status === 'failed').length], ['Infrastructure failures', data.runs.filter(r => r.status === 'infrastructure-failed').length]]) {
+    for (const [title, value] of [['Latest run', data.runs[0] ? runLabel(data.runs[0]) : 'Not executed'], ['Passed', data.runs.filter(r => !r.mutations && r.status === 'passed').length], ['Failed', data.runs.filter(r => !r.mutations && r.status === 'failed').length], ['Infrastructure failures', data.runs.filter(r => r.status === 'infrastructure-failed').length]]) {
         const item = node('div', undefined, 'metric'); item.append(node('span', title, 'muted'), node('strong', String(value))); summary.append(item)
     }
     const history = $('history'); history.replaceChildren()
@@ -94,7 +128,7 @@ async function refresh () {
     if (!selected || !data.runs.some(r => r.id === selected)) selected = data.runs[0]?.id
     for (const run of data.runs) {
         const row = node('button', undefined, `run-row${selected === run.id ? ' selected' : ''}`)
-        row.append(node('span', run.environment || 'Local Tabby'), node('span', labels[run.status], `status ${run.status}`), node('span', new Date(run.startedAt).toLocaleString(), 'muted'), node('code', run.commit.slice(0, 8) + (run.dirty ? ' + changes' : '')))
+        row.append(node('span', (run.mutations ? 'Campaign · ' : '') + (run.environment || 'Local Tabby')), node('span', runLabel(run), `status ${run.status}`), node('span', new Date(run.startedAt).toLocaleString(), 'muted'), node('code', run.commit.slice(0, 8) + (run.dirty ? ' + changes' : '')))
         row.onclick = () => { selected = run.id; lastDetail = ''; refresh().catch(message) }
         history.append(row)
     }

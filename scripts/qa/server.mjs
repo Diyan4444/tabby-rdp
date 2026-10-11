@@ -1,3 +1,4 @@
+import { mutations, validateCampaign, effectiveness } from './mutations.mjs'
 import { targetEnvironment, missingSettings, validateTargets } from './matrix.mjs'
 import http from 'node:http'
 import fs from 'node:fs'
@@ -76,6 +77,7 @@ function command (run, args) {
         const child = spawn(process.execPath, args, { cwd: root, detached: process.platform !== 'win32', env: {
             ...targetEnvironment(catalog.find(item => item.id === run.test), process.env, targets), TRD_QA_RUN_DIR: path.join(runsDir, run.id), TRD_QA_UPDATE_BASELINES: '0',
             TRD_QA_PARENT_PID: String(process.pid), PLAYWRIGHT_HTML_OPEN: 'never',
+            TRD_QA_MUTATIONS: run.mutations ? JSON.stringify(run.mutations) : '',
         }, stdio: ['ignore', 'pipe', 'pipe'] })
         active.child = child
         let bytes = 0
@@ -91,7 +93,7 @@ function command (run, args) {
 async function execute (run) {
     const timeout = setTimeout(() => {
         if (active?.run === run) { active.timedOut = true; stopActive() }
-    }, (catalog.find(item => item.id === run.test).suite || run.test) === 'visual-host' ? 180_000 : 300_000)
+    }, run.mutations ? 960_000 : (catalog.find(item => item.id === run.test).suite || run.test) === 'visual-host' ? 180_000 : 300_000)
     try {
         const entry = catalog.find(item => item.id === run.test)
         const missing = missingSettings(entry, process.env, targets)
@@ -125,6 +127,18 @@ async function execute (run) {
         run.finishedAt = new Date().toISOString()
         run.durationMs = Date.now() - Date.parse(run.startedAt)
         run.stage = 'finished'
+        if (run.mutations) {
+            try {
+                const result = readJSON(path.join(runsDir, run.id, 'mutation-results.json'))
+                run.experiments = result.trials
+                // Interrupted/failed infrastructure cannot contribute to effectiveness metrics.
+                if (['cancelled','infrastructure-failed'].includes(run.status)) run.experiments = run.experiments.map(t=>({...t, complete:false, classification:'incomplete'}))
+            } catch { run.experiments = [] }
+            run.effectiveness = effectiveness(run.experiments)
+            if (run.status === 'passed' && (run.effectiveness.manifested !== run.mutations.length || run.effectiveness.controls !== 2)) {
+                run.status = 'infrastructure-failed'; run.reason = 'Campaign evidence incomplete'
+            }
+        }
         save(run)
         active = null
     }
@@ -170,16 +184,28 @@ const server = http.createServer(async (req, res) => {
             return json(res, 200, { ok: true })
         }
         if (!authorized(req)) return json(res, 401, { error: 'Sign in to view results and execute tests' })
-        if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, { catalog: availableCatalog(process.env, targets), runs: loadRuns(runsDir), active: active?.run.id || null })
-        if (req.method === 'POST' && url.pathname === '/api/runs') {
+        if (req.method === 'GET' && url.pathname === '/api/runs') {
+            const runs = loadRuns(runsDir)
+            const completedTrials = runs.filter(r=>r.stage==='finished').flatMap(r=>r.experiments || [])
+            if (active?.run.mutations) {
+                const current = runs.find(r=>r.id===active.run.id)
+                try { current.experiments = readJSON(path.join(runsDir, current.id, 'mutation-results.json')).trials } catch {}
+            }
+            return json(res, 200, { catalog: availableCatalog(process.env, targets), mutations, runs, active: active?.run.id || null,
+                effectiveness: effectiveness(completedTrials),
+                trends: runs.filter(r=>r.mutations).map(r=>({ id:r.id, commit:r.commit, startedAt:r.startedAt, status:r.status, effectiveness:r.effectiveness || null })) })
+        }
+        if (req.method === 'POST' && ['/api/runs', '/api/campaigns'].includes(url.pathname)) {
             const input = await body(req)
-            if (Object.keys(input).length !== 1 || !catalog.some(item => item.id === input.test)) return json(res, 400, { error: 'Select an available test' })
+            const campaign = url.pathname === '/api/campaigns'
+            const requestedMutations = campaign ? validateCampaign(input, catalog.find(item=>item.id===input.test)) : null
+            if (!campaign && (Object.keys(input).length !== 1 || !catalog.some(item => item.id === input.test))) return json(res, 400, { error: 'Select an available test' })
             if (active || stopping) return json(res, 409, { error: 'A run is already active or the server is stopping' })
             // A bounded, explicit capacity avoids silently deleting failure evidence in this first phase.
             if (loadRuns(runsDir).length >= 100) return json(res, 409, { error: '100-run capacity reached; archive old run directories before continuing' })
             const entry = catalog.find(item => item.id === input.test)
             const id = new Date().toISOString().replaceAll(':', '-') + '-' + crypto.randomBytes(4).toString('hex')
-            const run = { id, test: input.test, status: 'running', stage: 'building', startedAt: new Date().toISOString(),
+            const run = { id, test: input.test, ...(requestedMutations ? { mutations: requestedMutations } : {}), status: 'running', stage: 'building', startedAt: new Date().toISOString(),
                 commit: git('rev-parse', 'HEAD'), dirty: !!git('status', '--porcelain'),
                 platform: `${os.platform()}-${os.arch()}`, node: process.version,
                 clientPlatform: entry.client || null, server: entry.desktop || null, environment: entry.environment, coverage: entry.coverage, tests: [{ title: entry.name, status: 'not-run', attachments: [] }],

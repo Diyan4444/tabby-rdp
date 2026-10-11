@@ -13,6 +13,9 @@ import cairo
 folder = pathlib.Path(sys.argv[1])
 state = {'version': 1, 'sequence': 0, 'input': 'initial', 'platform': os.environ.get('TRD_VISUAL_DESKTOP', 'gnome'), 'font': 'DejaVu Sans', 'scale': 1}
 started = time.monotonic()
+mutation = ''
+mutation_until = 0
+lifetime = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 window = Gtk.Window(title='Tabby Visual QA Fixture')
 window.set_decorated(False)
 window.fullscreen()
@@ -50,7 +53,8 @@ def draw(widget, cr):
     for i, color in enumerate([(255,0,0), (0,255,0), (0,0,255), (255,255,255), (128,128,128), (0,0,0)]):
         rect(64+i*80, 240, 64, 64, color)
     text(64, 344, 'REMOTE FRAME %02d' % state['sequence'])
-    rect(64, h-116, 220, 48, (36, 66, 102)); text(80, h-85, 'Advance frame', 18)
+    if mutation != 'missing':
+        rect(64, h-116, 220, 48, (36, 66, 102)); text(80, h-85, 'Advance frame', 18)
     color = (30, 100, 200) if state['sequence'] % 2 == 0 else (240, 200, 40)
     rect(w-160, h-144, 80, 64, color)
     publish()
@@ -66,14 +70,21 @@ def key(widget, event):
     return True
 
 def tick():
+    global mutation, mutation_until
     try:
         command = json.loads((folder/'command.json').read_text())
         (folder/'command.json').unlink()
         if command.get('quit'): Gtk.main_quit(); return False
-        if command.get('reset') and state['sequence'] != 0:
+        if 'mutation' in command:
+            mutation = command['mutation']; mutation_until = time.monotonic()+30; area.queue_draw()
+        if command.get('advance'):
+            state['sequence'] += int(command['advance']); area.queue_draw()
+        if command.get('reset'):
             state.update(sequence=0, input='reset'); area.queue_draw()
     except (FileNotFoundError, ValueError): pass
-    if time.monotonic()-started > 300: Gtk.main_quit(); return False
+    if mutation and time.monotonic() > mutation_until:
+        mutation = ''; area.queue_draw()
+    if time.monotonic()-started > lifetime: Gtk.main_quit(); return False
     return True
 
 area.connect('draw', draw)

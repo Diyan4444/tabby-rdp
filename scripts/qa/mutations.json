@@ -1,0 +1,15 @@
+[
+  {"id":"crop","name":"Crop right edge","layer":"framebuffer","category":"cropping","parameter":"pixels","values":[20,40]},
+  {"id":"offset","name":"Offset desktop","layer":"frontend","category":"offset","parameter":"pixels","values":[10,20]},
+  {"id":"scale","name":"Incorrect scaling","layer":"frontend","category":"scaling","parameter":"percent","values":[125,150]},
+  {"id":"freeze","name":"Freeze decoded updates","layer":"framebuffer","category":"frozen","parameter":"advances","values":[1,3]},
+  {"id":"missing","name":"Missing fixture control","layer":"remote-environment","category":"missing-ui","parameter":"controls","values":[1]},
+  {"id":"overlay","name":"Opaque desktop overlay","layer":"frontend","category":"overlay","parameter":"pixels","values":[160,240]},
+  {"id":"color","name":"Swap red / blue channels","layer":"framebuffer","category":"color","parameter":"channels","values":[2]},
+  {"id":"blank","name":"Blank framebuffer","layer":"framebuffer","category":"blank","parameter":"intensity","values":[0]},
+  {"id":"alignment","name":"Small alignment error","layer":"frontend","category":"alignment","parameter":"pixels","values":[2,4]},
+  {"id":"text","name":"Degrade captured text","layer":"screenshot-evaluator","category":"text","parameter":"blockSize","values":[4,8]},
+  {"id":"stale","name":"Replay earlier decoded frame","layer":"framebuffer","category":"stale","parameter":"advances","values":[1,3]},
+  {"id":"geometry","name":"Distort aspect ratio","layer":"frontend","category":"geometry","parameter":"widthPercent","values":[90,80]},
+  {"id":"dialog","name":"Unexpected error dialog (synthetic)","layer":"frontend","category":"unexpected-dialog","parameter":"width","values":[420,500]}
+]
