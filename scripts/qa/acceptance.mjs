@@ -27,8 +27,11 @@ try {
     // Stop promptly on a terminal failure rather than waiting for a failure to turn into a pass.
     await expect(page.locator('#detail h2')).not.toHaveText('Running', { timeout: 320_000 })
     await expect(page.locator('#detail h2')).toHaveText('Passed')
-    await expect(page.locator('#detail img').first()).toBeVisible()
-    expect(await page.locator('#detail img').first().evaluate(img => img.naturalWidth)).toBeGreaterThan(0)
+    const preview = page.locator('#detail img').first()
+    await expect(preview).toBeVisible()
+    // A larger matrix pushes the evidence below the fold; visibility alone does not load a lazy image.
+    await preview.scrollIntoViewIfNeeded()
+    await expect.poll(() => preview.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true)
     await page.screenshot({ path: path.join(data, `${selected}-dashboard.png`), fullPage: true })
     const reportPage = page.waitForEvent('popup')
     await page.getByRole('link', { name: 'Playwright report & trace viewer' }).click()
