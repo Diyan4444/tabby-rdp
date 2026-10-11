@@ -142,7 +142,7 @@ function teardown () {
         tabby = null
     }
     if (sandbox && !flag('--keep')) {
-        fs.rmSync(sandbox, { recursive: true, force: true })
+        fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
         sandbox = null
     }
 }

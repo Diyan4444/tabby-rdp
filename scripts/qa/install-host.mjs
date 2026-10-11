@@ -12,6 +12,11 @@ const assets = {
 if(process.env.GITHUB_ACTIONS !== 'true' || !process.env.RUNNER_TEMP || !process.env.GITHUB_ENV) throw new Error('Installer is restricted to disposable Actions runners')
 const asset=assets[`${os.platform()}-${os.arch()}`]
 if(!asset)throw new Error('Unqualified hosted architecture')
+for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','CODEX_HOME','TRD_QA_ENV_FILE','TRD_QA_TARGETS_FILE']) if(process.env[key])throw new Error('Private credential/configuration environment must not be present in hosted smoke')
+// Empty SSH configuration prevents host startup warnings; no keys or network destinations are installed.
+const sshDirectory=path.join(os.homedir(),'.ssh')
+fs.mkdirSync(sshDirectory,{recursive:true,mode:0o700})
+if(!fs.existsSync(path.join(sshDirectory,'config')))fs.writeFileSync(path.join(sshDirectory,'config'),'# Isolated hosted smoke: no private destinations\n',{mode:0o600})
 const directory=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'tabby-qa-'))
 const file=path.join(directory,asset[0])
 const response=await fetch(`https://github.com/Eugeny/tabby/releases/download/v1.0.236/tabby-1.0.236-${asset[0]}`,{signal:AbortSignal.timeout(120000)})

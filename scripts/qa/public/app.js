@@ -246,7 +246,7 @@ function showAutomation(data) {
         jobs.append(d)
     }
     const table=node('table');table.append(node('caption','Run outcomes by environment'))
-    const tr=node('tr');for(const title of ['Environment','Latest','App failures','Infrastructure','Median','Possible flakes'])tr.append(node('th',title));table.append(tr)
+    const tr=node('tr');for(const title of ['Environment','Latest','Test failures','Infrastructure','Median','Possible flakes'])tr.append(node('th',title));table.append(tr)
     for(const group of data.history || []) {
         const row=node('tr');for(const value of [group.test,group.latest?.status,group.applicationFailures,group.infrastructureFailures,group.medianDurationMs===null?'—':(group.medianDurationMs/1000).toFixed(1)+'s',group.suspectFlakes.length])row.append(node('td',String(value)));table.append(row)
     }

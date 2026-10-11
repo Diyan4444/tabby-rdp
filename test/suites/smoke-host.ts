@@ -85,8 +85,10 @@ await suite('smoke-host', async t => {
         check(`${frontend}: scrolling returns to the last output`, !!await waitFor('const b = H.local.frontend.xterm.buffer.active; return b.viewportY === b.baseY && H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
         await ev('H.config.store.terminal.fontSize -= 2; await H.config.save(); H.local.configure()')
 
+        // Produce actual PTY output: ConPTY can repaint its OS buffer during a tab/geometry change,
+        // so synthetic renderer-only output is not a valid Windows background-output oracle.
         // The pane loses focus to settings, then becomes active again: output and keyboard must recover.
-        await ev(`RD.help.open('settings'); H.local.session.emitOutput(Buffer.from('SMOKE_BACKGROUND\\r\\n'))`)
+        await ev(`RD.help.open('settings'); H.local.sendInput('echo SMOKE_BACKGROUND\\r')`)
         await waitFor('return !!document.querySelector(".trd-settings")', 5)
         await ev('H.inZone(() => RD.app.selectTab(H.topOf(H.local)))')
         check(`${frontend}: background output survives tab switching`, !!await waitFor('return H.screen(H.local).includes("SMOKE_BACKGROUND")', 5))

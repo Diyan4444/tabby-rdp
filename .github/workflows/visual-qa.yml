@@ -44,9 +44,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb openbox libgtk-3-0 libnss3 libasound2t64 libgbm1
       - name: Linux native smoke
+        timeout-minutes: 3
         if: runner.os == 'Linux'
         run: xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --hidden smoke-host visual-smoke'
       - name: Windows and macOS native smoke
+        timeout-minutes: 3
         if: runner.os != 'Linux'
         run: node --import tsx test/run.ts --hidden smoke-host visual-smoke
       - name: Retain only this job's public GUI evidence
