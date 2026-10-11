@@ -20,13 +20,17 @@ The test account (default: tabbyrdp).
 
 .PARAMETER Password
 Its password. Needed when the account doesn't exist yet.
+.PARAMETER PasswordFile
+Optional private file containing the password, avoiding a secret in the process command line.
 #>
 [CmdletBinding()]
 param(
     [string] $UserName = 'tabbyrdp',
-    [string] $Password
+    [string] $Password,
+    [string] $PasswordFile
 )
 $ErrorActionPreference = 'Stop'
+if ($PasswordFile) { $Password = [IO.File]::ReadAllText($PasswordFile).TrimEnd("`r", "`n") }
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

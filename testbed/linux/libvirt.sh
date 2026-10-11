@@ -25,12 +25,22 @@ for c in virsh virt-install cloud-localds; do
 done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 V="virsh -c ${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-IMAGE_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+case "$(uname -m)" in
+    aarch64|arm64) IMAGE_ARCH=arm64 ;;
+    x86_64) IMAGE_ARCH=amd64 ;;
+    *) echo 'unsupported host architecture' >&2; exit 2 ;;
+esac
+IMAGE_BASE="https://cloud-images.ubuntu.com/noble/${UBUNTU_IMAGE_BUILD:-current}"
+IMAGE_NAME="noble-server-cloudimg-$IMAGE_ARCH.img"
+IMAGE_URL="$IMAGE_BASE/$IMAGE_NAME"
 WORK="${TESTBED_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tabby-rdp-testbed}"
 mkdir -p "$WORK"
 
 # The cloud image (kept for next time) and a cloud-init seed with the key.
-[ -f "$WORK/noble.img" ] || curl -fL -o "$WORK/noble.img" "$IMAGE_URL"
+# Verify the downloaded bytes against Canonical's HTTPS-served manifest; retain it with the image.
+[ -f "$WORK/$IMAGE_NAME" ] || curl -fL -o "$WORK/$IMAGE_NAME" "$IMAGE_URL"
+curl -fsSL "$IMAGE_BASE/SHA256SUMS" -o "$WORK/SHA256SUMS"
+(cd "$WORK" && sha256sum --check --ignore-missing SHA256SUMS)
 printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-data"
 {
     printf '#cloud-config\nhostname: %s\nusers:\n  - default\nssh_pwauth: false\nssh_authorized_keys:\n' "$NAME"
@@ -38,7 +48,7 @@ printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$WORK/meta-dat
 } > "$WORK/user-data"
 # DHCP by MAC address: the desktop packages bring NetworkManager, which asks for a lease by MAC, and the address
 # would change at the first reboot otherwise.
-printf 'version: 2\nethernets:\n  lan:\n    match: {name: "en*"}\n    dhcp4: true\n    dhcp-identifier: mac\n' \
+printf 'version: 2\nrenderer: networkd\nethernets:\n  lan:\n    match: {name: "en*"}\n    dhcp4: true\n    dhcp-identifier: mac\n' \
     > "$WORK/network-config"
 cloud-localds -N "$WORK/network-config" "$WORK/seed.iso" "$WORK/user-data" "$WORK/meta-data"
 
@@ -50,7 +60,7 @@ if ! $V pool-info "$NAME" >/dev/null 2>&1; then
     $V pool-autostart "$NAME" >/dev/null
 fi
 $V vol-create-as "$NAME" "$NAME.qcow2" 4G --format qcow2 >/dev/null
-$V vol-upload --pool "$NAME" "$NAME.qcow2" "$WORK/noble.img"
+$V vol-upload --pool "$NAME" "$NAME.qcow2" "$WORK/$IMAGE_NAME"
 $V vol-resize --pool "$NAME" "$NAME.qcow2" 20G >/dev/null
 $V vol-create-as "$NAME" seed.iso "$(wc -c < "$WORK/seed.iso")" --format raw >/dev/null
 $V vol-upload --pool "$NAME" seed.iso "$WORK/seed.iso"
@@ -68,7 +78,7 @@ done
 echo
 [ -n "$IP" ] || { echo "no address after 3 minutes; check: $V console $NAME" >&2; exit 1; }
 
-SSH="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$WORK/known_hosts -o BatchMode=yes ubuntu@$IP"
+SSH="ssh ${TEST_SSH_KEY:+-i $TEST_SSH_KEY} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$WORK/known_hosts -o BatchMode=yes ubuntu@$IP"
 i=0; until $SSH true 2>/dev/null; do
     i=$((i+1)); [ $i -lt 60 ] || { echo "no SSH to ubuntu@$IP" >&2; exit 1; }; sleep 3
 done

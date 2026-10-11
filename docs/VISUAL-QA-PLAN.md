@@ -579,7 +579,7 @@ Update it after each completed phase.
 | Phase | Status | Commit | Acceptance |
 |---|---|---|---|
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
-| 2. Real RDP Validation | Pending | — | — |
+| 2. Real RDP Validation | In Progress | — | Both dedicated RDP lifecycles executed; clean-commit dashboard acceptance is the final validation step. |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
@@ -638,6 +638,26 @@ A phase may only be marked **Complete** when its acceptance criteria have been d
    zero differing pixels under Playwright's default perceptual comparator, and no retries. Full-element screenshots
    in Electron included unpainted offscreen areas, so the tested checkpoint is explicitly the visible viewport.
 
+**Phase 2 decisions (2026-10-10 PDT / 2026-10-11 UTC):**
+
+1. Reuse the existing CDP lifecycle through `createTestContext()` and the runner's credential guard. Add fixed
+   `visual-linux` / `visual-windows` catalog entries; no commands or environment values are accepted over HTTP.
+   Operator-owned private configuration supplies SSH/WinRM credentials. Missing configuration fails before launch.
+2. Create fresh dedicated Linux and Windows guests on a separate available ARM64 libvirt host, following the user's
+   instruction to avoid another thread's testbed. Reuse static installer/driver assets only, not its live disk or
+   session. Ubuntu provisioning now supports both architectures, dated images, checksum validation and GI/Cairo.
+   Windows ARM installation required manual WinPE image application; no claim of a generic ARM Windows provisioner.
+3. Use fullscreen native GTK/WinForms fixtures with independent JSON state, fixed typography/colors and input-driven
+   sequence tiles. Test actual RDP pixels, screenshot baselines, input, tab return, resize and reconnect. No mock
+   framebuffer. H.264 is explicitly disabled; broader Section 5 scenarios remain documented coverage gaps.
+4. Preserve bounded resize filmstrips and timestamped region samples, including transient settling. Require sustained
+   correct final samples and reject invalid samples after initial correct repaint. Keep raw-canvas and final visible
+   captures; add same-session Windows guest screen evidence. The five point samples do not measure whole-frame damage
+   area; Wayland fixture state is not a guest pixel oracle. The other thread's H.264 resize observation remains open.
+5. Keep zero baseline tolerance/retries and explicit local baseline updates. Store four platform/runtime-specific
+   RDP baselines per environment; detailed report metadata records guest versions, scale, fixture state and sampled
+   transitions. Add per-environment status/preview and an expandable filmstrip to the existing dashboard.
+
 Record significant decisions here.
 
 For each decision, document:
@@ -653,15 +673,17 @@ Prefer concise entries over lengthy architectural essays.
 ### Outstanding Issues
 
 - Only macOS arm64 / installed Tabby 1.0.236 / Electron 43.7.0 has a reviewed baseline and executed visual coverage.
-  Its reported xterm declaration is ^6.0.0. Other hosts fail until a baseline is explicitly reviewed there.
-- Remote Windows/Linux availability is **not verified**. No real RDP session was executed in Phase 1. Phase 2 must
-  configure deterministic dedicated desktops and validate the actual framebuffer path.
+  Its reported xterm declaration is ^6.0.0. Other hosts fail until a baseline is explicitly reviewed there. The
+  other thread’s H.264 resize failure is not resolved by the non-H.264 controls here.
+- Phase 1 had no real RDP coverage. Phase 2 now provisions dedicated Windows/Ubuntu desktops; see its handoff for
+  actual acceptance records and the disclosed Windows installer provenance limitation. Only the listed scenarios
+  and non-H.264 path are covered; broader Section 5 coverage remains outstanding.
 - Trace DOM replay can miss fonts/icons from Electron's local `file://` resources; the captured actual PNG and
   filmstrip are the pixel evidence. Actions, assertions, timings and DOM snapshots are available in the local viewer.
 - Dashboard runs the current working tree (commit + dirty flag), not a frozen checkout. Use a dedicated checkout;
   do not edit it or run competing desktop suites during execution. The single-run guard covers this server only.
-- The dashboard exposes one selected visual test, not the full existing CDP catalog. Ingestion of legacy suite
-  outcomes, remote environment controls, long-term trends, scheduled runs, AI and mutations remain later-phase work.
+- The dashboard exposes three visual catalog entries, not the full existing CDP catalog. Legacy-suite ingestion,
+  VM lifecycle controls, long-term trends, scheduled runs, AI and mutations remain later-phase work.
 - Runtime evidence is in ignored `.qa/`; back it up separately. Capacity is bounded; automatic retention and remote
   service-manager deployment are documented/deferred. The existing development-only Angular audit advisory predates
   this change; runtime dependency audit reported zero vulnerabilities. No dependency upgrade outside this phase.
@@ -713,6 +735,37 @@ Do not represent incomplete work as complete.
 - Next phase: read this entire plan and `docs/visual-qa.md`; provision/identify dedicated Windows and GNOME desktops,
   reuse the existing RDP suites/runner, and expand the fixed catalog and structured results deliberately. Do not
   count the Phase 1 settings baseline as end-to-end RDP validation. AI/mutation/scheduling work remains out of scope.
+
+**Phase 2 — implementation ready; final clean-commit acceptance pending**
+
+- Added `visual-linux` and `visual-windows`, native fixtures, remote JSON state checks, four reviewed baselines per
+  guest and bounded resize filmstrips. Guest-side Windows screen captures independently validate visible corner
+  markers and retain a transition reference. Dashboard selection, environment status/previews, failure evidence,
+  private configuration and browser acceptance reuse the Phase 1 service and existing Tabby/CDP runner.
+- Provisioned fresh isolated Windows 11 Pro ARM64 and Ubuntu 24.04 GNOME guests on another available libvirt host.
+  The other thread's guest and live disk were not altered. Setup media containing fresh credentials was detached
+  and removed; signed driver validation and setup completion receipts are retained privately. Operations, image
+  provenance (including the inherited `.UNVERIFIED` Windows ISO discrepancy), scope and restart steps are in
+  [visual-qa.md](visual-qa.md); private host/credential/tunnel receipts are in ignored `.qa/private/`.
+- Validation so far: build/typecheck passed, unit suite **578 passed / 3 skipped / 0 failed**, existing `smoke-host`
+  and `smoke-rdp` **ALL PASSED**, four QA tests passed including missing-environment Not executed/Infrastructure
+  failure and secret-free configuration reporting. Linux browser acceptance passed in runs
+  `2026-10-11T06-06-48.238Z-c71d47be` and `2026-10-11T06-11-36.480Z-8a7d3255` (development working tree).
+  Windows baseline lifecycle passed in **197 seconds**, with no retries; normal baseline comparison is next.
+- Setup failures were preserved: missing GI/Cairo prevented Ubuntu fixture startup; Windows' first-login Start menu
+  obscured the fixture, independently confirmed by guest screen capture. Installed the required Cairo bridge and
+  explicitly dismiss the first-login menu/activate the fixture. Baselines were reviewed only after those fixes;
+  no tolerances were increased. Initial transport helper accidentally returned a DOM form instead of a Boolean;
+  corrected it before Windows acceptance. These are setup/harness failures, not established client regressions.
+- Reviewed baseline content: native text/gradient/color grid, four edge markers, frame counter and input tile at
+  800×600 and 900×650. Tab return matches initial pixels; reconnect matches resized pixels in both environments.
+  894 generated files (including ZIP members) were scanned for the new guest passwords: no matches.
+- Remaining coverage: H.264 (including the other thread's observed resize failure), multiple simultaneous sessions,
+  non-default DPI, clipboard, window movement, rapid animation and prolonged idle. Ubuntu has no independent
+  Wayland guest screenshot oracle. Region samples do not quantify affected screen area or prove a root cause.
+  Windows WinRM checks take materially longer than Linux SSH checks; actual timestamps/capture overhead are retained.
+  Runtime artifacts remain ignored and need separate backup. Phase 3 should reuse these real checkpoints without
+  feeding mutation metadata into detectors. No mutation, AI or scheduling functionality was implemented.
 
 After completing each phase, record:
 

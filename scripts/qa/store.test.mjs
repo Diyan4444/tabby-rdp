@@ -34,3 +34,13 @@ test('restarting retains completed evidence and marks unfinished runs as infrast
     assert.deepEqual(loadRuns(dir).map(r => r.status), ['passed', 'infrastructure-failed'])
     assert.match(loadRuns(dir)[1].reason, /unverified/)
 })
+
+test('environment configuration is reported without exposing credentials', async () => {
+    const { availableCatalog } = await import('./store.mjs')
+    const empty = availableCatalog({})
+    assert.deepEqual(empty.map(e => [e.id, e.configured]), [['visual-host', true], ['visual-linux', false], ['visual-windows', false]])
+    const configured = availableCatalog({ TRD_TEST_HOST: 'test-host', TRD_TEST_WIN_SSH_HOST: 'test-host', TRD_TEST_WIN_ADDRESS: 'guest:3389', TRD_TEST_WIN_USER: 'test', TRD_TEST_WIN_PASSWORD: 'secret-value', TRD_TEST_WIN_WINRM: 'guest:5985' })
+    assert.ok(configured.every(e => e.configured))
+    assert.ok(!JSON.stringify(configured).includes('secret-value'))
+    assert.equal(classify(1, { tests: [{ status: 'infrastructure-failed' }] }, '/tmp'), 'infrastructure-failed')
+})

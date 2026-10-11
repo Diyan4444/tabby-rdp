@@ -300,3 +300,5 @@ input {
         flex-direction:column;
     }
 }
+
+select{display:block;max-width:100%;padding:10px;margin-top:8px;border-radius:6px;background:#182335;color:#edf4ff;border:1px solid #526078;font:inherit}.metric img{max-width:100%}

@@ -5,11 +5,20 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawn, execFileSync } from 'node:child_process'
-import { catalog, writeJSON, readJSON, classify, loadRuns, recoverRuns } from './store.mjs'
+import { catalog, availableCatalog, writeJSON, readJSON, classify, loadRuns, recoverRuns } from './store.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const data = path.resolve(process.env.TRD_QA_DATA || path.join(root, '.qa'))
 const runsDir = path.join(data, 'runs')
+// Operator-owned configuration, never accepted from an HTTP request or copied into results.
+const envFile = process.env.TRD_QA_ENV_FILE
+if (envFile) {
+    const settings = readJSON(path.resolve(envFile))
+    for (const [key, value] of Object.entries(settings)) {
+        if (!/^TRD_TEST_[A-Z_]+$/.test(key) || typeof value !== 'string') throw new Error('Invalid QA environment setting')
+        process.env[key] = value
+    }
+}
 const port = Number(process.env.TRD_QA_PORT || 4317)
 fs.mkdirSync(runsDir, { recursive: true, mode: 0o700 })
 const lock = path.join(data, 'server.pid')
@@ -80,15 +89,21 @@ function command (run, args) {
 async function execute (run) {
     const timeout = setTimeout(() => {
         if (active?.run === run) { active.timedOut = true; stopActive() }
-    }, 180_000)
+    }, run.test === 'visual-host' ? 180_000 : 300_000)
     try {
+        const missing = catalog.find(item => item.id === run.test).required.filter(key => !process.env[key])
+        if (missing.length) {
+            const reason = 'Environment not configured: ' + missing.join(', ')
+            fs.writeFileSync(path.join(runsDir, run.id, 'execution.log'), reason + '\n')
+            throw new Error(reason)
+        }
         const build = await command(run, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'])
         if (build !== 0 || active.cancelled || active.timedOut) {
             run.reason = 'Build failed or execution interrupted; visual test did not execute.'
             run.status = 'infrastructure-failed'
         } else {
             run.stage = 'testing'; save(run)
-            const code = await command(run, ['--import', 'tsx', 'test/run.ts', '--hidden', 'visual-host'])
+            const code = await command(run, ['--import', 'tsx', 'test/run.ts', '--hidden', run.test])
             let report
             try { report = readJSON(path.join(runsDir, run.id, 'results.json')) } catch {}
             run.status = classify(code, report, path.join(runsDir, run.id))
@@ -102,7 +117,7 @@ async function execute (run) {
     } finally {
         clearTimeout(timeout)
         if (active.cancelled) run.status = 'cancelled'
-        if (active.timedOut) { run.status = 'infrastructure-failed'; run.reason = 'Execution exceeded the 180 second limit.' }
+        if (active.timedOut) { run.status = 'infrastructure-failed'; run.reason = 'Execution exceeded the environment time limit.' }
         run.finishedAt = new Date().toISOString()
         run.durationMs = Date.now() - Date.parse(run.startedAt)
         run.stage = 'finished'
@@ -151,18 +166,19 @@ const server = http.createServer(async (req, res) => {
             return json(res, 200, { ok: true })
         }
         if (!authorized(req)) return json(res, 401, { error: 'Sign in to view results and execute tests' })
-        if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, { catalog, runs: loadRuns(runsDir), active: active?.run.id || null })
+        if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, { catalog: availableCatalog(process.env), runs: loadRuns(runsDir), active: active?.run.id || null })
         if (req.method === 'POST' && url.pathname === '/api/runs') {
             const input = await body(req)
-            if (Object.keys(input).length !== 1 || input.test !== 'visual-host') return json(res, 400, { error: 'Select an available test' })
+            if (Object.keys(input).length !== 1 || !catalog.some(item => item.id === input.test)) return json(res, 400, { error: 'Select an available test' })
             if (active || stopping) return json(res, 409, { error: 'A run is already active or the server is stopping' })
             // A bounded, explicit capacity avoids silently deleting failure evidence in this first phase.
             if (loadRuns(runsDir).length >= 100) return json(res, 409, { error: '100-run capacity reached; archive old run directories before continuing' })
+            const entry = catalog.find(item => item.id === input.test)
             const id = new Date().toISOString().replaceAll(':', '-') + '-' + crypto.randomBytes(4).toString('hex')
             const run = { id, test: input.test, status: 'running', stage: 'building', startedAt: new Date().toISOString(),
                 commit: git('rev-parse', 'HEAD'), dirty: !!git('status', '--porcelain'),
                 platform: `${os.platform()}-${os.arch()}`, node: process.version,
-                coverage: catalog[0].coverage, tests: [{ title: catalog[0].name, status: 'not-run', attachments: [] }],
+                environment: entry.environment, coverage: entry.coverage, tests: [{ title: entry.name, status: 'not-run', attachments: [] }],
             }
             fs.mkdirSync(path.join(runsDir, id), { mode: 0o700 })
             save(run); active = { run, child: null, cancelled: false, timedOut: false }

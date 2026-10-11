@@ -22,11 +22,13 @@ if [ "${ID:-}" != ubuntu ] || [ "${VERSION_ID:-}" != 24.04 ]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+# Network service restarts can sever the provisioning SSH session. Reboot after setup instead.
+export NEEDRESTART_MODE=l
 apt-get update
 # ubuntu-desktop-minimal brings a complete GNOME session (Shell, settings schemas, fonts, portals, Files,
 # Terminal); gnome-remote-desktop 46 provides the headless RDP server; pipewire-bin has pw-play (the audio suite);
 # python3-gi drives Mutter's DisplayConfig (Retina scaling); tmux is the alternative `desk` backend.
-apt-get install -y ubuntu-desktop-minimal gnome-remote-desktop pipewire-bin python3-gi python3-venv tmux openssh-server openssl
+apt-get install -y ubuntu-desktop-minimal gnome-remote-desktop pipewire-bin python3-gi python3-gi-cairo fonts-dejavu-core python3-venv tmux openssh-server openssl
 # pywinrm lets this host run the Windows suite's checks inside a Windows test machine. Ubuntu's python3-winrm can't
 # sign in with NTLM (it needs MD4, which OpenSSL 3 turns off); the current one from PyPI can.
 python3 -m venv /opt/tabby-rdp-test/winrm

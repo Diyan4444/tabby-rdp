@@ -19,7 +19,7 @@ import { waitForPort } from './lib/cdp.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LINUX_SUITES = ['e2e', 'desk', 'resize', 'keyboard', 'focus', 'actions', 'clipboard', 'files', 'audio', 'microphone', 'graphics', 'reconnect', 'desktops', 'profiles', 'direct', 'certificates', 'status', 'wake', 'help', 'nested', 'vms', 'headless', 'takeover']
-const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host']
+const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host', 'visual-linux', 'visual-windows']
 
 const args = process.argv.slice(2)
 const flag = (name: string) => args.includes(name)
@@ -37,7 +37,7 @@ for (const s of suites) {
     }
 }
 const selected = suites.length ? suites : LINUX_SUITES
-const smoke = selected.some(s => s.startsWith('smoke-') || s === 'visual-host')
+const smoke = selected.some(s => s.startsWith('smoke-') || s.startsWith('visual-'))
 if (flag('--require-rdp') && selected.includes('smoke-rdp') && !process.env.TRD_TEST_HOST) {
     console.error('--require-rdp needs TRD_TEST_HOST; live RDP coverage cannot be skipped')
     process.exit(2)
@@ -212,12 +212,13 @@ for (const name of selected) {
             // tsx, not this Node alone: the suites are TypeScript (see tsconfig.test.json). Node 22.18+ could strip the
             // types itself, but the suites run on any Node 22 (lib/cdp.ts) and this keeps it that way. Resolved from
             // here: by name, Node would look for it from the current directory, which need not be this checkout.
-            const command = name === 'visual-host'
+            const command = name.startsWith('visual-')
                 ? [path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js'), 'test', '--config', path.join(ROOT, 'test', 'visual', 'playwright.config.ts')]
                 : ['--import', import.meta.resolve('tsx'), path.join(ROOT, 'test', 'suites', `${name}.ts`)]
             const child = spawn(process.execPath, command, {
                 env: {
                     ...process.env, TRD_CDP_PORT: String(port),
+                    ...(name.startsWith('visual-') ? { TRD_QA_TEST: name } : {}),
                     ...(expectedXterm ? { TRD_SMOKE_EXPECT_XTERM: expectedXterm } : {}),
                     ...(flag('--require-rdp') ? { TRD_SMOKE_REQUIRE_RDP: '1' } : {}),
                 },

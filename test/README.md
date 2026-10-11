@@ -225,7 +225,8 @@ and a suite that reads a shape out of one states it (`ev<CanvasInfo>(...)`) — 
 
 ## Visual QA dashboard
 
-`npm run qa` serves the authenticated Phase 1 dashboard at <http://127.0.0.1:4317>. It runs the real plugin settings
-UI in the existing disposable Tabby runner, with Playwright screenshots and traces. `npm run test:visual` runs the
-same check locally. See [visual QA operations](../docs/visual-qa.md) for access, baselines, storage and validation.
-This checkpoint does not establish RDP rendering coverage.
+`npm run qa` serves the authenticated dashboard at <http://127.0.0.1:4317>. Select local plugin settings,
+Ubuntu GNOME or Windows 11. All use the existing disposable Tabby runner and Playwright evidence. `visual-linux`
+and `visual-windows` reach real RDP sessions; `visual-host` checks only local settings. `npm run test:visual`
+retains the local host default. See [visual QA operations](../docs/visual-qa.md) for dedicated guest configuration,
+reviewed baselines, temporal resize evidence, storage, acceptance and coverage limits.

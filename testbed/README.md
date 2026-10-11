@@ -23,6 +23,10 @@ testbed/linux/libvirt.sh [name] [keys.pub]   # on the libvirt host; keys.pub: th
 # prints the address, and how to forward a port to it from another machine
 ```
 
+The libvirt script supports amd64 and arm64 hosts and verifies the image against Canonical’s SHA256 manifest.
+Set `UBUNTU_IMAGE_BUILD` to a dated build (for example `20260926`) and `TEST_SSH_KEY` to the provisioning private key
+when needed. Keep a separate `TESTBED_DIR` for each pinned image build.
+
 **Or any Ubuntu 24.04 VM** (virt-manager, UTM, Hyper-V, a cloud instance), with SSH set up for your key:
 
 ```sh

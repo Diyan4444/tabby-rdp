@@ -26,7 +26,7 @@ $('login').onsubmit = async event => {
 }
 $('run').onclick = async () => {
     $('run').disabled = true
-    try { const run = await api('/api/runs', { test: 'visual-host' }); selected = run.id; message(); await refresh() } catch (error) { message(error); $('run').disabled = false }
+    try { const run = await api('/api/runs', { test: $('environment').value }); selected = run.id; message(); await refresh() } catch (error) { message(error); $('run').disabled = false }
 }
 $('cancel').onclick = async () => { try { await api('/api/cancel', {}); message(new Error('Cancellation requested. Waiting for cleanup…')); await refresh() } catch (error) { message(error) } }
 function showRun (run) {
@@ -38,6 +38,7 @@ function showRun (run) {
     detail.replaceChildren()
     detail.append(node('p', 'RUN EVIDENCE', 'eyebrow'), node('h2', labels[run.status], `status ${run.status}`))
     detail.append(node('p', `${new Date(run.startedAt).toLocaleString()} · ${run.durationMs === undefined ? run.stage : (run.durationMs / 1000).toFixed(1) + ' s'}`, 'muted'))
+    detail.append(node('p', `${run.environment || 'Local Tabby'} · ${run.coverage}`, 'muted'))
     detail.append(node('code', `${run.commit.slice(0, 12)}${run.dirty ? ' + uncommitted changes' : ''} · ${run.platform}`))
     if (run.reason) detail.append(node('p', run.reason, 'reason'))
     const links = node('div', undefined, 'links')
@@ -53,20 +54,35 @@ function showRun (run) {
         }
         detail.append(attachments)
         const gallery = node('div', undefined, 'gallery')
+        const diagnostic = node('details'); diagnostic.append(node('summary', 'Raw canvas and resize filmstrip'))
+        const diagnosticGallery = node('div', undefined, 'gallery'); diagnostic.append(diagnosticGallery)
         // Show canonical actual/expected first; Playwright also attaches diff images on a mismatch.
         for (const a of (test.attachments || []).filter(a => a.contentType === 'image/png')) {
             const figure = node('figure')
             const caption = node('figcaption', a.name)
             const aLink = link('', artifactURL(run, a.path))
             const img = node('img'); img.src = aLink.href; img.alt = `${a.name}: ${test.title}`; img.loading = 'lazy'
-            aLink.append(img); figure.append(caption, aLink); gallery.append(figure)
+            aLink.append(img); figure.append(caption, aLink); (/raw-canvas|^resize-\d/.test(a.name) ? diagnosticGallery : gallery).append(figure)
         }
         detail.append(gallery)
+        if (diagnosticGallery.childElementCount) detail.append(diagnostic)
     }
 }
 async function refresh () {
     const data = await api('/api/runs')
     $('login').hidden = true; $('workspace').hidden = false
+    const choice = $('environment').value
+    $('environment').replaceChildren(...data.catalog.map(item => { const option = node('option', item.name + (item.configured ? '' : ' — Not configured')); option.value = item.id; return option }))
+    if (choice) $('environment').value = choice
+    const showCoverage = () => { const item = data.catalog.find(item => item.id === $('environment').value); $('coverage').textContent = item.coverage + (item.configured ? '' : ' · Missing: ' + item.missing.join(', ')) }
+    $('environment').onchange = showCoverage; showCoverage()
+    const environments = $('environments'); environments.replaceChildren()
+    for (const item of data.catalog) {
+        const latest = data.runs.find(run => run.test === item.id)
+        const card = node('div', undefined, 'metric'); card.append(node('span', item.environment, 'muted'), node('strong', latest ? labels[latest.status] : 'Not executed'), node('span', item.configured ? 'Configured' : 'Not configured', 'muted'))
+        if (latest) { const actual = latest.tests.flatMap(t => t.attachments || []).find(a => a.name === 'actual'); if (actual) { const preview = node('img'); preview.src = artifactURL(latest, actual.path); preview.alt = item.environment + ' latest screenshot'; card.append(preview) }; const button = node('button', 'View evidence', 'secondary'); button.onclick = () => { selected = latest.id; lastDetail = ''; refresh().catch(message) }; card.append(button) }
+        environments.append(card)
+    }
     $('run').disabled = !!data.active; $('cancel').hidden = !data.active
     $('run').textContent = data.active ? 'Test running…' : 'Run visual test'
     const summary = $('summary'); summary.replaceChildren()
@@ -78,7 +94,7 @@ async function refresh () {
     if (!selected || !data.runs.some(r => r.id === selected)) selected = data.runs[0]?.id
     for (const run of data.runs) {
         const row = node('button', undefined, `run-row${selected === run.id ? ' selected' : ''}`)
-        row.append(node('span', labels[run.status], `status ${run.status}`), node('span', new Date(run.startedAt).toLocaleString(), 'muted'), node('code', run.commit.slice(0, 8) + (run.dirty ? ' + changes' : '')))
+        row.append(node('span', run.environment || 'Local Tabby'), node('span', labels[run.status], `status ${run.status}`), node('span', new Date(run.startedAt).toLocaleString(), 'muted'), node('code', run.commit.slice(0, 8) + (run.dirty ? ' + changes' : '')))
         row.onclick = () => { selected = run.id; lastDetail = ''; refresh().catch(message) }
         history.append(row)
     }

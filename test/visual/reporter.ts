@@ -13,7 +13,7 @@ export default class QAReporter implements Reporter {
             attachments: result.attachments.map((a, index) => {
                 const directory = path.join(this.directory(), 'evidence')
                 fs.mkdirSync(directory, { recursive: true })
-                const ext = a.contentType === 'image/png' ? '.png' : a.contentType === 'application/zip' ? '.zip' : '.json'
+                const ext = a.contentType === 'image/png' ? '.png' : a.contentType === 'application/zip' ? '.zip' : a.contentType.startsWith('text/') ? '.log' : '.json'
                 const file = path.join(directory, `${index}-${a.name.replace(/[^a-zA-Z0-9.-]/g, '_')}${ext}`)
                 if (a.path) fs.copyFileSync(a.path, file)
                 else if (a.body) fs.writeFileSync(file, a.body)
