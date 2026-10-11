@@ -4,6 +4,23 @@
 
 Local release candidate; not published on npm or as a GitHub release.
 
+**Added**
+- **Cross-platform visual QA against real desktops:** native Tabby clients on macOS, Windows and Linux cover
+  Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian 13.7 / GNOME 48, Rocky Linux 9 / Xfce with xrdp, and
+  Windows 11. Checks capture desktop pixels, keyboard input, resize, tab return and reconnect with reviewed baselines
+  and recorded client, server and plugin identities. RDP qualification currently uses ARM64 clients.
+- **A local visual QA dashboard** runs tests and opens screenshot evidence, HTML reports and traces. It includes
+  history, scheduling, retention, automatic failure investigation and optional AI review. Credentials, private target
+  configuration and run artifacts stay outside the published package and repository.
+- **Tests of the visual tests:** controlled defect injection verifies that the deterministic checks detect all 13
+  tested defects on all three client platforms. Optional AI review remains advisory, with its misses recorded.
+- **Hosted native smoke checks on macOS, Windows and Linux** validate plugin loading and settings in CI. Real RDP
+  tests use separately configured machines; hosted smoke results do not stand in for desktop qualification.
+- **An experimental Fedora KDE / KRDP testbed** covers H.264 with FreeRDP 3.32.1 on the server, using two opt-in
+  server patches for color and authentication compatibility. The fixed-monitor profile passes on all three native
+  client platforms. Stock server variants and live remote monitor resizing remain unqualified. The plugin's RDP
+  client remains IronRDP; Rocky Linux's tested traditional desktop stack is Xfce with xrdp.
+
 **Changed**
 - **Standard dialogs use Tabby's own window drag region**, available in Tabby 1.0.238
   ([upstream #11766](https://github.com/Eugeny/tabby/pull/11766)). The plugin no longer adds a fallback to host dialogs.
