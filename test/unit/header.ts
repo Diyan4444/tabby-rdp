@@ -423,7 +423,7 @@ test('the settings page says which hosts a desktop added from an SSH tab is for:
 
 test('copied connection logs include host compatibility information before the connection entries', () => {
     const compat = new HostCompatibility({
-        name: () => 'Tabbz Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
+        name: () => 'Example Terminal Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
         terminalPackage: () => ({ devDependencies: { '@xterm/xterm': '^5' } }),
     })
     let copied = ''

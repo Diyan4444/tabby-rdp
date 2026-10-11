@@ -10,6 +10,38 @@ ROOT = pathlib.Path(__file__).resolve().parent
 
 
 class Credentials(unittest.TestCase):
+    def test_xrdp_password_sources_cross_sudo_only_on_stdin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            password = "disposable-xrdp-test-only"
+            secret_file = root / "password"
+            secret_file.write_text(password + "\n")
+            (root / "id").write_text("#!/bin/sh\nprintf '1000\\n'\n")
+            (root / "sudo").write_text("""#!/bin/sh
+if [ "$1" = -v ]; then exit 0; fi
+for arg in "$@"; do
+    case "$arg" in *disposable-xrdp-test-only*) exit 98;; esac
+done
+[ "$1" = -n ] && [ "$2" = env ] || exit 97
+IFS= read -r received
+[ "$received" = disposable-xrdp-test-only ] || exit 96
+exit 0
+""")
+            for name in ("id", "sudo"):
+                (root / name).chmod(0o755)
+            for source in ("file", "stdin", "environment"):
+                with self.subTest(source=source):
+                    env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+                    env.pop("TEST_PASSWORD", None)
+                    env.pop("TEST_PASSWORD_FILE", None)
+                    if source == "file": env["TEST_PASSWORD_FILE"] = str(secret_file)
+                    if source == "stdin": env["TEST_PASSWORD_FILE"] = "-"
+                    if source == "environment": env["TEST_PASSWORD"] = password
+                    result = subprocess.run(["sh", str(ROOT / "linux/xrdp.sh"), "qa-user", "ssh-user"],
+                                            input=(password + "\n").encode(), env=env, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn(password.encode(), result.stdout + result.stderr)
+
     def test_answer_files_keep_passwords_out_of_commands(self):
         administrator = "Admin<&'\"$`test1"
         password = "Test<&'\"$`%value1"

@@ -36,6 +36,10 @@ testbed/linux/libvirt.sh [name] [keys.pub]   # on the libvirt host; keys.pub: th
 # prints the address, and how to forward a port to it from another machine
 ```
 
+The libvirt script supports amd64 and arm64 images. Select a reviewed dated image and set `TEST_SSH_KEY` to the
+provisioning private key when needed. Keep a separate `TESTBED_DIR` for each reviewed image build. Other distro
+profiles use `TEST_IMAGE` and `TEST_IMAGE_SHA256`; Ubuntu also accepts the legacy variables above.
+
 **Or any Ubuntu 24.04 VM** (virt-manager, UTM, Hyper-V, a cloud instance), with SSH set up for your key:
 
 ```sh
@@ -49,11 +53,13 @@ mode (the plugin runs its own headless GNOME session); and lets the test user's 
 VM 2 CPUs, 4 GB of memory and 20 GB of disk. No GPU is needed.
 
 `winrm-requirements.txt` pins pywinrm and every dependency, with SHA-256 hashes for CPython 3.12 Linux x86_64 and
-ARM64 wheels. Provisioning requires that file beside `provision.sh`, rejects other Ubuntu releases, disables pip
+ARM64 wheels. Ubuntu provisioning requires that file beside `provision.sh`, rejects other Ubuntu releases, disables pip
 source builds, and requires matching hashes. To upgrade, download the complete wheel tree for both architectures
 without installing it, review the versions and publisher artifacts, update the pins and wheel hashes, and verify
 `pip download --require-hashes --only-binary=:all: -r winrm-requirements.txt` for both targets. Ubuntu packages still
 receive updates from the distribution's signed apt repositories; this is not a frozen operating-system snapshot.
+The Debian, Fedora and Rocky profiles do not install this Ubuntu-specific WinRM wheel lock; use the Ubuntu SSH
+gateway for Windows guest checks. Their Linux desktop checks do not require WinRM.
 
 ### xrdp, for the xrdp suite (optional)
 
@@ -208,3 +214,23 @@ Never run provisioning with shell tracing enabled. Catchable signals are cleaned
 requires deleting any leftover `provision.*` directory and `config.iso` volume manually.
 
 Run `python3 testbed/test_credentials.py` for the local answer-file and cleanup regression checks.
+
+### Versioned visual QA matrix
+
+Rocky Linux 9 with Xfce/xrdp is also available using `TEST_DISTRO=rocky9` and
+`TEST_XRDP_PASSWORD_FILE=/private/password`. This uses a dedicated `tabbyxrdp` account and the existing
+`xrdp.sh` provisioner, with EPEL/CRB packages, an Xorg session and a loopback-only listener on 3390.
+Fedora KDE Plasma/KRDP has a separately qualified patched, fixed-monitor profile; see `docs/VISUAL-QA-PLAN.md`.
+
+The Linux libvirt provisioner also accepts `TEST_DISTRO=debian13` and `TEST_DISTRO=fedora44`; the default remains
+`ubuntu2404`. Each creates a separate guest and refuses an existing VM name. Debian 13.7/GNOME 48 and Fedora 44/GNOME 50
+complement Ubuntu's GNOME 46. For each distro, set `TEST_IMAGE` to a locally reviewed cloud image and
+`TEST_IMAGE_SHA256` to its reviewed digest. Authenticate the publisher's checksum first; where it uses SHA-512, verify
+that checksum before recording the verified file's SHA-256. The script verifies the local file on every run and
+never downloads a mutable default image. `TEST_SECURE_BOOT=0` explicitly
+selects non-Secure-Boot UEFI where the host firmware rejects Fedora's shim. The visual tests verify the actual installed
+versions instead of trusting the image name.
+
+See [the native-client matrix instructions](../docs/visual-qa.md#native-client-and-desktop-matrix) for separate Windows,
+Linux and macOS Tabby clients, private CDP tunnels, exact version checks and per-cell dashboard configuration. These are
+native Tabby applications, not browser substitutes. Do not use another thread's running desktop as a test fixture.

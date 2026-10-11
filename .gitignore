@@ -5,3 +5,4 @@ __pycache__/
 *.tgz
 .DS_Store
 docs/demo/
+.qa/

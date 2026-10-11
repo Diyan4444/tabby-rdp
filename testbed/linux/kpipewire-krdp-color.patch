@@ -1,0 +1,42 @@
+diff --git a/src/libopenh264encoder.cpp b/src/libopenh264encoder.cpp
+index 5eb274c..349a493 100644
+--- a/src/libopenh264encoder.cpp
++++ b/src/libopenh264encoder.cpp
+@@ -33,13 +33,20 @@ LibOpenH264Encoder::LibOpenH264Encoder(H264Profile profile, PipeWireProduce *pro
+     : SoftwareEncoder(produce)
+     , m_profile(profile)
+ {
+-    auto colorRange = m_colorRange == PipeWireBaseEncodedStream::ColorRange::Full ? u"full"_s : u"limited"_s;
+-    m_filterGraphToParse = u"format=yuv420p,scale=out_range=%1"_s.arg(colorRange);
++
+ }
+ 
+ bool LibOpenH264Encoder::initialize(const QSize &size)
+ {
+-    createFilterGraph(size);
++    // setupEncoder sets the range after construction. Convert RGB directly with
++    // the RDP matrix; converting to default limited BT.601 first loses precision.
++    const bool fullRange = m_colorRange == PipeWireBaseEncodedStream::ColorRange::Full;
++    m_filterGraphToParse = fullRange
++        ? u"scale=out_range=full:out_color_matrix=bt709,format=yuv420p"_s
++        : u"format=yuv420p,scale=out_range=limited"_s;
++    if (!createFilterGraph(size)) {
++        return false;
++    }
+ 
+     auto codec = avcodec_find_encoder_by_name("libopenh264");
+     if (!codec) {
+@@ -60,6 +67,13 @@ bool LibOpenH264Encoder::initialize(const QSize &size)
+     m_avCodecContext->gop_size = 100;
+     m_avCodecContext->pix_fmt = AV_PIX_FMT_YUV420P;
+     m_avCodecContext->time_base = AVRational{1, 1000};
++    if (fullRange) {
++        m_avCodecContext->color_range = AVCOL_RANGE_JPEG;
++        m_avCodecContext->colorspace = AVCOL_SPC_BT709;
++        m_avCodecContext->color_primaries = AVCOL_PRI_BT709;
++        // Desktop RGB values are sRGB, not a BT.709 transfer-function conversion.
++        m_avCodecContext->color_trc = AVCOL_TRC_IEC61966_2_1;
++    }
+ 
+     if (m_quality) {
+         // "q" here stands for "quantization", but that effectively impacts quality.

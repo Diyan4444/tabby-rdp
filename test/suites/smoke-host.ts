@@ -80,8 +80,15 @@ await suite('smoke-host', async t => {
         const small = await ev<{ cols: number, rows: number }>('return H.smokeSize()')
         await ev('H.smokeResize(760, 450)')
         check(`${frontend}: resize fits a larger pane`, !!await waitFor(`const s = H.smokeSize(); return s.cols > ${small.cols} && s.rows > ${small.rows}`, 5), small)
-        await ev(`H.local.session.emitOutput(Buffer.from(Array.from({ length: 80 }, (_, i) => 'SMOKE_SCROLL_' + i + '\\r\\n').join('')))`)
-        check(`${frontend}: output drains through the session middleware`, !!await waitFor('return H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
+        // Windows' command editor can recall a character while probing word-jump keys.
+        // Clear that probe's input and observe the new prompt before issuing the output command.
+        await ev(`H.local.sendInput('\\x03')`)
+        check(`${frontend}: shell prompt is ready after shortcut probes`, !!await waitFor('return H.screen(H.local).trimEnd().endsWith(">")', 5))
+        const scrollCommand = t.platform === 'win32'
+            ? 'for /l %i in (0,1,79) do @echo SMOKE_SCROLL_%i\r'
+            : 'for i in {0..79}; do echo SMOKE_SCROLL_$i; done\r'
+        await ev(`H.local.sendInput(${JSON.stringify(scrollCommand)})`)
+        check(`${frontend}: output drains through the session middleware`, !!await waitFor('return H.screen(H.local).includes("SMOKE_SCROLL_79")', 5), await ev('return H.screen(H.local).slice(-2400)'))
         await ev('H.local.frontend.scrollToTop()')
         const font = await ev<{ size: number, rows: number }>('return { size: H.local.frontend.xterm.options.fontSize, rows: H.local.frontend.xterm.rows }')
         await ev('H.config.store.terminal.fontSize += 2; await H.config.save(); H.local.configure()')
@@ -91,8 +98,10 @@ await suite('smoke-host', async t => {
         check(`${frontend}: scrolling returns to the last output`, !!await waitFor('const b = H.local.frontend.xterm.buffer.active; return b.viewportY === b.baseY && H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
         await ev('H.config.store.terminal.fontSize -= 2; await H.config.save(); H.local.configure()')
 
+        // Produce actual PTY output: ConPTY can repaint its OS buffer during a tab/geometry change,
+        // so synthetic renderer-only output is not a valid Windows background-output oracle.
         // The pane loses focus to settings, then becomes active again: output and keyboard must recover.
-        await ev(`RD.help.open('settings'); H.local.session.emitOutput(Buffer.from('SMOKE_BACKGROUND\\r\\n'))`)
+        await ev(`RD.help.open('settings'); H.local.sendInput('echo SMOKE_BACKGROUND\\r')`)
         await waitFor('return !!document.querySelector(".trd-settings")', 5)
         await ev('H.inZone(() => RD.app.selectTab(H.topOf(H.local)))')
         check(`${frontend}: background output survives tab switching`, !!await waitFor('return H.screen(H.local).includes("SMOKE_BACKGROUND")', 5))

@@ -227,3 +227,22 @@ still supports Node 18. `test/package.json` marks the tree as ESM (the plugin it
 build). A page expression is a string, so nothing can check what it returns: `ev` and `waitFor` default to `unknown`,
 and a suite that reads a shape out of one states it (`ev<CanvasInfo>(...)`) — the shared ones are exported from
 [`lib/harness.ts`](lib/harness.ts).
+
+## Visual QA dashboard
+
+`npm run qa` serves the authenticated dashboard at <http://127.0.0.1:4317>. Select local plugin settings,
+Ubuntu GNOME or Windows 11. All use the existing disposable Tabby runner and Playwright evidence. `visual-linux`
+and `visual-windows` reach real RDP sessions; `visual-host` checks only local settings. `npm run test:visual`
+retains the local host default. See [visual QA operations](../docs/visual-qa.md) for dedicated guest configuration,
+reviewed baselines, temporal resize evidence, storage, acceptance and coverage limits.
+
+## Native-client visual matrix
+
+The visual dashboard has distinct cells for macOS, Windows and Linux **Tabby clients**, each targeting Ubuntu 24.04
+(GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48), Rocky 9 (Xfce/xrdp) and Windows 11 desktops. Each client also has a settings capture.
+These reuse `visual-host`, `visual-linux` and `visual-windows`; per-cell configuration selects the native CDP session and
+remote machine. Actual client/guest identity and installed plugin content are verified before visual assertions.
+
+See [setup, baseline review and acceptance](../docs/visual-qa.md#native-client-and-desktop-matrix). A Windows desktop reached
+from macOS is **macOS-client / Windows-server coverage**, not Windows-client coverage. Unsupported/unconfigured combinations
+remain visible and cannot count as a pass. Architecture is recorded from the Tabby process, independently of the test driver.

@@ -30,6 +30,8 @@ jobs:
         # Among them: vendor/ and the IronRDP patch series are what vendor/SHA256SUMS records (test/unit/vendor.ts).
         # ironrdp.yml rebuilds vendor/ when they change.
         run: npm run test:unit
+      - name: QA dashboard contracts and lifecycle
+        run: npm run test:qa
       - name: Package contents
         run: |
           npm pack --dry-run 2>&1 | tee pack.txt

@@ -47,7 +47,11 @@
     "test:smoke": "tsx test/run.ts --packed --hidden smoke-host smoke-rdp direct",
     "test:unit": "tsx --test test/unit/*.ts",
     "build:ironrdp": "scripts/build-ironrdp.sh",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "qa": "node scripts/qa/server.mjs",
+    "test:visual": "npm run build && tsx test/run.ts --hidden visual-host",
+    "test:qa": "node --test scripts/qa/*.test.mjs",
+    "qa:baseline": "node scripts/qa/baseline.mjs"
   },
   "dependencies": {
     "semver": "7.8.5",
@@ -55,6 +59,7 @@
   },
   "devDependencies": {
     "@angular/core": "15.2.10",
+    "@playwright/test": "1.64.0",
     "@types/node": "^20.19.0",
     "@types/semver": "^7.8.0",
     "rxjs": "7.8.2",

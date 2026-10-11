@@ -7,14 +7,14 @@ import type { HostSources } from '../../src/hostCompat.js'
 const require = createRequire(import.meta.url)
 const { HostCompatibility, createHostCompatibility } = require('../../dist/hostCompat.js') as typeof import('../../src/hostCompat.js')
 const fork: HostSources = {
-    name: () => 'Tabbz Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
+    name: () => 'Example Terminal Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
     terminalPackage: () => ({ devDependencies: { '@xterm/xterm': '^5' } }),
 }
 
 test('host identity preserves prereleases and forks without assuming their terminal version', () => {
     const compat = new HostCompatibility(fork)
     assert.deepEqual(compat.info, {
-        name: 'Tabbz Preview', version: '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
+        name: 'Example Terminal Preview', version: '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
         xtermDeclaration: '^5', xtermMajor: 5,
     })
     assert.equal(Object.isFrozen(compat.info), true)
@@ -59,9 +59,9 @@ test('terminal input availability is scoped to the pane supplied, and is unknown
 })
 
 test('diagnostics label declared versions and unobserved capabilities, with metadata kept on single lines', () => {
-    const compat = new HostCompatibility({ ...fork, name: () => 'Tabbz\nPreview', version: () => '1.0.238\r\npreview' })
+    const compat = new HostCompatibility({ ...fork, name: () => 'Example Terminal\nPreview', version: () => '1.0.238\r\npreview' })
     const lines = compat.diagnosticLines()
-    assert.match(lines[0], /^Host: Tabbz Preview 1\.0\.238  preview on darwin$/)
+    assert.match(lines[0], /^Host: Example Terminal Preview 1\.0\.238  preview on darwin$/)
     assert.equal(lines[2], 'Terminal: xterm ^5 (host declaration)')
     assert.equal(lines[3], 'Compatibility: terminal input unobserved')
     assert.ok(lines.every(line => !/[\r\n]/.test(line)))
