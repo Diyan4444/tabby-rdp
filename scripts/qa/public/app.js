@@ -39,7 +39,7 @@ function showRun (run) {
     detail.append(node('p', 'RUN EVIDENCE', 'eyebrow'), node('h2', labels[run.status], `status ${run.status}`))
     detail.append(node('p', `${new Date(run.startedAt).toLocaleString()} · ${run.durationMs === undefined ? run.stage : (run.durationMs / 1000).toFixed(1) + ' s'}`, 'muted'))
     detail.append(node('p', `${run.environment || 'Local Tabby'} · ${run.coverage}`, 'muted'))
-    detail.append(node('code', `${run.commit.slice(0, 12)}${run.dirty ? ' + uncommitted changes' : ''} · ${run.platform}`))
+    detail.append(node('code', `${run.commit.slice(0, 12)}${run.dirty ? ' + uncommitted changes' : ''} · Test driver: ${run.platform}`))
     if (run.reason) detail.append(node('p', run.reason, 'reason'))
     const links = node('div', undefined, 'links')
     links.append(link('Execution log ↗', artifactURL(run, 'execution.log')))

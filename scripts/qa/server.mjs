@@ -1,3 +1,4 @@
+import { targetEnvironment, missingSettings, validateTargets } from './matrix.mjs'
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,6 +20,7 @@ if (envFile) {
         process.env[key] = value
     }
 }
+const targets = process.env.TRD_QA_TARGETS_FILE ? validateTargets(readJSON(path.resolve(process.env.TRD_QA_TARGETS_FILE))) : {}
 const port = Number(process.env.TRD_QA_PORT || 4317)
 fs.mkdirSync(runsDir, { recursive: true, mode: 0o700 })
 const lock = path.join(data, 'server.pid')
@@ -72,7 +74,7 @@ function command (run, args) {
     return new Promise(resolve => {
         // No caller-provided executable, arguments, environment or shell. Baseline updates are always disabled.
         const child = spawn(process.execPath, args, { cwd: root, detached: process.platform !== 'win32', env: {
-            ...process.env, TRD_QA_RUN_DIR: path.join(runsDir, run.id), TRD_QA_UPDATE_BASELINES: '0',
+            ...targetEnvironment(catalog.find(item => item.id === run.test), process.env, targets), TRD_QA_RUN_DIR: path.join(runsDir, run.id), TRD_QA_UPDATE_BASELINES: '0',
             TRD_QA_PARENT_PID: String(process.pid), PLAYWRIGHT_HTML_OPEN: 'never',
         }, stdio: ['ignore', 'pipe', 'pipe'] })
         active.child = child
@@ -89,9 +91,10 @@ function command (run, args) {
 async function execute (run) {
     const timeout = setTimeout(() => {
         if (active?.run === run) { active.timedOut = true; stopActive() }
-    }, run.test === 'visual-host' ? 180_000 : 300_000)
+    }, (catalog.find(item => item.id === run.test).suite || run.test) === 'visual-host' ? 180_000 : 300_000)
     try {
-        const missing = catalog.find(item => item.id === run.test).required.filter(key => !process.env[key])
+        const entry = catalog.find(item => item.id === run.test)
+        const missing = missingSettings(entry, process.env, targets)
         if (missing.length) {
             const reason = 'Environment not configured: ' + missing.join(', ')
             fs.writeFileSync(path.join(runsDir, run.id, 'execution.log'), reason + '\n')
@@ -103,7 +106,8 @@ async function execute (run) {
             run.status = 'infrastructure-failed'
         } else {
             run.stage = 'testing'; save(run)
-            const code = await command(run, ['--import', 'tsx', 'test/run.ts', '--hidden', run.test])
+            const env = targetEnvironment(entry, process.env, targets)
+            const code = await command(run, ['--import', 'tsx', 'test/run.ts', '--hidden', ...(env.TRD_TEST_CLIENT_CDP_PORT ? ['--port', env.TRD_TEST_CLIENT_CDP_PORT] : []), entry.suite || run.test])
             let report
             try { report = readJSON(path.join(runsDir, run.id, 'results.json')) } catch {}
             run.status = classify(code, report, path.join(runsDir, run.id))
@@ -166,7 +170,7 @@ const server = http.createServer(async (req, res) => {
             return json(res, 200, { ok: true })
         }
         if (!authorized(req)) return json(res, 401, { error: 'Sign in to view results and execute tests' })
-        if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, { catalog: availableCatalog(process.env), runs: loadRuns(runsDir), active: active?.run.id || null })
+        if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, { catalog: availableCatalog(process.env, targets), runs: loadRuns(runsDir), active: active?.run.id || null })
         if (req.method === 'POST' && url.pathname === '/api/runs') {
             const input = await body(req)
             if (Object.keys(input).length !== 1 || !catalog.some(item => item.id === input.test)) return json(res, 400, { error: 'Select an available test' })
@@ -178,7 +182,7 @@ const server = http.createServer(async (req, res) => {
             const run = { id, test: input.test, status: 'running', stage: 'building', startedAt: new Date().toISOString(),
                 commit: git('rev-parse', 'HEAD'), dirty: !!git('status', '--porcelain'),
                 platform: `${os.platform()}-${os.arch()}`, node: process.version,
-                environment: entry.environment, coverage: entry.coverage, tests: [{ title: entry.name, status: 'not-run', attachments: [] }],
+                clientPlatform: entry.client || null, server: entry.desktop || null, environment: entry.environment, coverage: entry.coverage, tests: [{ title: entry.name, status: 'not-run', attachments: [] }],
             }
             fs.mkdirSync(path.join(runsDir, id), { mode: 0o700 })
             save(run); active = { run, child: null, cancelled: false, timedOut: false }

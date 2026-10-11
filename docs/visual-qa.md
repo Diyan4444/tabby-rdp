@@ -205,3 +205,110 @@ A separate thread observed persistent black center samples after Windows H.264 r
 recovery on reconnect. It did not establish full-screen blackness or a client-side cause. This suite's non-H.264
 passes do not resolve that observation. Its follow-up requires same-session guest pixels during the failure,
 spatial damage measurement and repaint/resize/reconnect recovery controls; preserve the original failure evidence.
+
+## Native client and desktop matrix
+
+The fixed catalog now separates the **native Tabby client** (macOS, Windows, Linux) from the **remote RDP desktop**:
+Ubuntu 24.04 / GNOME 46, Fedora 44 / GNOME 50, Debian **13.7** / GNOME 48, and Windows 11. Each client also has a local
+settings test. macOS is a Tabby client target; this does not promise a native macOS RDP server. Windows → Windows needs
+a separate Windows server from the client VM for independent coverage. The original three Phase 1/2 IDs remain available.
+
+The test reads the actual Tabby process's platform/architecture, checks its installed plugin bytes against the current
+build, then verifies `/etc/os-release`, Debian's point release, GNOME Shell and GNOME Remote Desktop versions (or the
+Windows edition/build). A wrong version fails preparation. Screenshot keys include **observed** desktop/distro, GNOME/GRD
+versions, client OS/architecture, Tabby and Electron. Updating a VM therefore requires explicit baseline review.
+
+Configure matrix cells with a private JSON file, selected by `TRD_QA_TARGETS_FILE` on both dashboard and baseline commands:
+
+```json
+{
+  "visual-macos-fedora44": {
+    "TRD_TEST_HOST": "127.0.0.1",
+    "TRD_TEST_PORT": "2229",
+    "TRD_TEST_USER": "fedora",
+    "TRD_TEST_SSH_KEY": "/private/path/test-key"
+  },
+  "visual-windows-ubuntu2404": {
+    "TRD_TEST_CLIENT_CDP_PORT": "9336",
+    "TRD_TEST_HOST": "192.0.2.10",
+    "TRD_TEST_PORT": "22",
+    "TRD_TEST_USER": "ubuntu",
+    "TRD_TEST_SSH_KEY": "C:\\TabbyVisualQA\\ssh-key"
+  },
+  "visual-macos-host": {},
+  "visual-linux-host": { "TRD_TEST_CLIENT_CDP_PORT": "9337" }
+}
+```
+
+The addresses and SSH key paths are **as seen by the native Tabby client**, while `TRD_TEST_CLIENT_CDP_PORT` is an
+SSH-forwarded loopback port on the dashboard/test-driver machine. Windows desktop cells use the same `TRD_TEST_WIN_*`
+variables documented above. Matrix cells do not inherit any `TRD_TEST_*` settings from other cells or the legacy environment
+file. Absent cells display Not configured / Not executed. Configuration alone is never passing coverage. Keep both private
+JSON files mode 0600; restart the dashboard after changing them. HTTP callers can select only fixed IDs, never configuration.
+
+### Dedicated native clients
+
+Run `node scripts/qa/bundle-client.mjs` to build an installation directory containing only the plugin, its runtime
+dependencies, the launcher and credential guard. Copy that directory to each dedicated client VM. Install a checksum-verified
+Tabby release there, plus Node 18 or newer. The initial Linux/Windows clients use checksum-verified official 1.0.236
+ARM64 binaries (xterm ^5); the existing macOS installation reports 1.0.236 with xterm ^6.0.0. All report Electron 43.7.0.
+Those are separate observed builds, not a claim that the same version label means identical host contents. Start:
+
+```sh
+node scripts/qa/client.mjs /path/to/Tabby /path/to/client-bundle 9335
+```
+
+The launcher creates a temporary profile, disables analytics/updates, installs the same test-only credential guard used by
+`test/run.ts`, keeps the native window mapped, and removes its profile/process tree when stopped. It stays alive for the
+operator-managed CDP session; stop it after testing. Rebuild and redeploy the bundle after plugin changes. A stale bundle
+fails the content check, even if its package version is unchanged. The dashboard executes the existing suites using `--port`,
+with screenshots, traces and reports remaining on the central test driver. It does not install or remotely launch clients.
+
+On Linux, install Xvfb and xfwm4 and start them on a dedicated display (for example `:91`, 1280×1024×24, `-nolisten tcp`).
+Run both xfwm4 and the launcher with `DISPLAY=:91`. Use the distribution package's correctly owned/mode-4755
+`chrome-sandbox`; the tested ARM64 package needed its permissions corrected. Forward CDP through SSH to the **guest's
+loopback**, not its network address. Keep the window mapped; minimize/unmap can stop Chromium's animation frames.
+
+On Windows, install Microsoft's signed ARM64 Visual C++ redistributable before the portable ARM64 Tabby build (otherwise
+`russh.win32-arm64-msvc.node` fails to load). Run the launcher as the dedicated interactive test user, for example with an
+interactive-token scheduled task. A WinRM service session cannot supply that desktop. If SSH is unavailable on Windows,
+a `netsh interface portproxy` can forward the guest address to loopback CDP: firewall that port to the libvirt host alone,
+then SSH-forward it from that host. Remove the firewall rule, portproxy and task at teardown. Never publish CDP to a LAN.
+
+```sh
+TRD_QA_TARGETS_FILE=/private/targets.json node scripts/qa/baseline.mjs visual-linux-fedora44
+# Review new baseline PNGs, then use the dashboard (baseline updates always disabled):
+TRD_QA_TARGETS_FILE=/private/targets.json npm run qa
+TRD_QA_BROWSER=/path/to/chrome node scripts/qa/acceptance.mjs visual-linux-fedora44
+```
+
+### Additional Linux guests
+
+Run on an isolated libvirt host with the existing public test key:
+
+```sh
+TEST_DISTRO=ubuntu2404 testbed/linux/libvirt.sh qa-ubuntu /path/test-key.pub
+TEST_DISTRO=debian13 testbed/linux/libvirt.sh qa-debian /path/test-key.pub
+TEST_DISTRO=fedora44 testbed/linux/libvirt.sh qa-fedora /path/test-key.pub
+```
+
+The provisioner selects distro-specific cloud images/packages/users (`ubuntu`, `debian`, `fedora`), verifies the exact image
+against its vendor's HTTPS checksum manifest, and refuses existing VM names. Debian defaults to the current trixie image;
+`DEBIAN_IMAGE_BUILD` and `UBUNTU_IMAGE_BUILD` can pin dated images. The runtime matrix requires Debian 13.7 exactly and will
+reject a later point release until deliberately updated. Fedora pins image 44-1.7. Provisioning suppresses welcome tours,
+notification banners and animations only for the dedicated test user. The fixture dismisses GNOME's startup overview through
+real RDP Escape input. A failed assertion retains raw, visible and final-window evidence before cleanup.
+
+On the tested ARM host, Fedora's shim was rejected by the installed Secure Boot firmware. The disposable Fedora test VM
+uses non-Secure-Boot AAVMF; its image checksum was still verified. `TEST_SECURE_BOOT=0` explicitly requests UEFI without
+Secure Boot for that case. This matrix does not qualify Secure Boot. Debian's initial provision attempt stopped before reboot
+on an unsupported `grdctl --version`; package-version reporting now uses dpkg/rpm. Linux fixture VMs omit the
+unnecessary virtual TPM: the tested Debian ARM kernel exposed no `/dev/tpmrm0` for the default device, causing a
+90-second systemd device wait before SSH. The provisioner also freezes cloud-init before ejecting its seed. MAC-based DHCP with explicit
+networkd prevents its desktop packages from changing the address. Reboot after provisioning so the installed user D-Bus
+services are present before the first GNOME setup. The Debian and Fedora guests were reboot-checked.
+
+The Windows test guests are unactivated. An activation watermark appeared on the older VM during preparation; it remains
+in the retained evidence. Final matrix cells use the separate server VM. No licensing bypass or watermark masking is
+performed. If activation state or another OS overlay changes later, strict comparisons can fail and require environment
+review. The Phase 2 Windows installation-media provenance limitation also carries forward to the offline server clone.

@@ -580,6 +580,7 @@ Update it after each completed phase.
 |---|---|---|---|
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
+| 2a. Distro/native-client expansion | In Progress | — | Expanded matrix acceptance underway. |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
 | 5. Full Automation | Pending | — | — |
@@ -802,6 +803,39 @@ After completing each phase, record:
 - What the next phase needs to know.
 
 The document must serve as a durable handoff between independent Codex sessions.
+
+### Phase 2 extension — distro and native-client coverage (2026-10-11)
+
+**Scope:** user-requested expansion of Phase 2, not Phase 3. Status: In Progress pending dashboard acceptance.
+
+- Added fixed matrix cells for macOS, Windows and Linux **native Tabby clients**, each with settings UI plus
+  Ubuntu 24.04/GNOME 46, Fedora 44/GNOME 50, Debian 13.7/GNOME 48 and Windows 11 remote desktops.
+- New isolated ARM64 Fedora and Debian VMs use vendor-checksummed cloud images. The existing isolated Ubuntu
+  and Windows QA VMs remain separate from the other thread's work. Clients report Tabby 1.0.236
+  ARM64/Electron 43.7.0. Linux/Windows use checksum-verified official binaries and declare xterm ^5; the existing
+  macOS installation declares ^6.0.0. Identical version labels do not establish identical host builds. This expansion
+  does not establish x86_64 client coverage.
+- Every run checks the real client OS and installed plugin content, then the actual remote release/GNOME/GRD
+  versions. Baseline keys use those observed identities, including Windows build. Driver OS is labeled separately.
+- Operator-only per-cell configuration and private CDP tunnels reuse the existing runner's `--port` support.
+  A missing cell cannot inherit another cell's credentials/destination. Fixed HTTP IDs remain the only execution input.
+- Added distro-aware package/image provisioning and a small native-client launcher/bundle command. No extra
+  service, job queue or parallel test framework. Native client sessions are operator-managed and explicitly stopped.
+- Baseline preparation passed all twelve native-client→remote-desktop combinations, including Windows→Windows
+  on independent VMs, plus native Windows/Linux settings. Final clean-commit dashboard acceptance remains in progress.
+- Provisioning findings retained in `.qa/`: Fedora's shim was rejected by the installed ARM Secure Boot firmware;
+  its disposable VM explicitly uses non-Secure-Boot AAVMF. Windows portable ARM64 required Microsoft's signed
+  Visual C++ ARM64 runtime. First-login GNOME welcome dialogs and overview obscured correct framebuffer content;
+  dedicated test-account provisioning suppresses tours/banners, and Escape dismisses the overview over actual RDP.
+  Debian's first attempt stopped before reboot on unsupported `grdctl --version`; package-version reporting fixes it. Serial-console diagnosis identified a 90-second systemd wait for missing `/dev/tpmrm0`, delaying SSH.
+  Linux fixtures now omit the unnecessary virtual TPM. The provisioner also freezes cloud-init before ejecting
+  its seed, retains MAC-based DHCP/networkd configuration, and starts the user D-Bus socket before setting GNOME preferences.
+- An offline clone of the isolated Windows QA guest supplies a separate Windows server for Windows→Windows.
+  macOS is tested as a native Tabby client, not claimed as a native RDP server. H.264 remains disabled/unqualified as in Phase 2.
+- The older Windows guest developed an activation watermark; it was retained in failure/preparation evidence,
+  not masked or bypassed. All final Windows desktop cells use the separate server clone. These disposable guests
+  are unactivated; future OS overlays can cause legitimate baseline mismatches and require environment review.
+- Operational instructions and lifecycle limitations: `docs/visual-qa.md`, “Native client and desktop matrix”.
 
 ## 17. Execution Instructions for Codex / Astra High
 

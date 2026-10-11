@@ -1,13 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { matrix, missingSettings } from './matrix.mjs'
 
 export const catalog = [
     { id: 'visual-host', name: 'Remote Desktop settings', environment: 'Local Tabby', coverage: 'Actual plugin UI; no RDP session', required: [] },
     { id: 'visual-linux', name: 'Ubuntu GNOME desktop', environment: 'Ubuntu GNOME', coverage: 'Real RDP framebuffer, geometry, input, resize, tab return and reconnect', required: ['TRD_TEST_HOST'] },
     { id: 'visual-windows', name: 'Windows 11 desktop', environment: 'Windows 11', coverage: 'Real RDP framebuffer, geometry, input, resize, tab return and reconnect', required: ['TRD_TEST_WIN_SSH_HOST', 'TRD_TEST_WIN_ADDRESS', 'TRD_TEST_WIN_USER', 'TRD_TEST_WIN_PASSWORD', 'TRD_TEST_WIN_WINRM'] },
 ]
-export function availableCatalog (env) {
-    return catalog.map(({ required, ...item }) => ({ ...item, configured: required.every(key => !!env[key]), missing: required.filter(key => !env[key]) }))
+catalog.push(...matrix)
+export function availableCatalog (env, targets = {}) {
+    return catalog.map(({ required, ...item }) => { const missing = missingSettings({ ...item, required }, env, targets); return { ...item, configured: !missing.length, missing } })
 }
 export const terminalStates = ['passed', 'failed', 'skipped', 'infrastructure-failed', 'cancelled']
 export function writeJSON (file, value) {

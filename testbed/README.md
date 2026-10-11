@@ -157,3 +157,15 @@ disc in a drive. In an elevated PowerShell on it, after `setup.ps1`:
 .\server.ps1 -Password '<the test account's password>'   # restarts once, and finishes at startup
 # -SshKeys <a file of public keys>: may sign in over SSH as an administrator (the hyperv suite lists the VMs that way)
 ```
+
+### Versioned visual QA matrix
+
+The Linux libvirt provisioner also accepts `TEST_DISTRO=debian13` and `TEST_DISTRO=fedora44`; the default remains
+`ubuntu2404`. Each creates a separate guest and refuses an existing VM name. Debian 13.7/GNOME 48 and Fedora 44/GNOME 50
+complement Ubuntu's GNOME 46. Images are checked against their vendor checksum manifests. `TEST_SECURE_BOOT=0` explicitly
+selects non-Secure-Boot UEFI where the host firmware rejects Fedora's shim. The visual tests verify the actual installed
+versions instead of trusting the image name.
+
+See [the native-client matrix instructions](../docs/visual-qa.md#native-client-and-desktop-matrix) for separate Windows,
+Linux and macOS Tabby clients, private CDP tunnels, exact version checks and per-cell dashboard configuration. These are
+native Tabby applications, not browser substitutes. Do not use another thread's running desktop as a test fixture.

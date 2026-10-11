@@ -1,9 +1,11 @@
 // Exercises the dashboard in a browser, including its locally hosted Playwright trace viewer.
 // Start npm run qa first. Install Chromium (npx playwright install chromium), or set TRD_QA_BROWSER.
+import { catalog } from './store.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { chromium, expect } from '@playwright/test'
 const selected = process.argv[2] || 'visual-host'
+const suite = catalog.find(item => item.id === selected)?.suite || selected
 const base = `http://127.0.0.1:${process.env.TRD_QA_PORT || 4317}`
 const data = path.resolve(process.env.TRD_QA_DATA || '.qa')
 const browser = await chromium.launch({ ...(process.env.TRD_QA_BROWSER ? { executablePath: process.env.TRD_QA_BROWSER } : {}) })
@@ -32,7 +34,7 @@ try {
     await page.getByRole('link', { name: 'Playwright report & trace viewer' }).click()
     const report = await reportPage
     await report.waitForLoadState('networkidle')
-    await report.getByText(selected === 'visual-host' ? 'Remote Desktop settings in real Tabby' : `Real RDP visual checkpoints: ${selected.slice(7)}`, { exact: true }).click()
+    await report.getByText(suite === 'visual-host' ? 'Remote Desktop settings in real Tabby' : `Real RDP visual checkpoints: ${suite.slice(7)}`, { exact: true }).click()
     await report.waitForTimeout(500)
     const traceLink = report.locator('a[href*="trace/index.html"]').first()
     await expect(traceLink).toBeVisible()

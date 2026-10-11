@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createTestContext, type CanvasInfo } from '../lib/harness.js'
+import { clientIdentity, verifyLinuxIdentity, type ClientIdentity } from './identity.js'
 import { windowsGuest } from '../lib/windows.js'
 
 const kind = process.env.TRD_QA_TEST === 'visual-windows' ? 'windows' : 'linux'
@@ -31,14 +32,27 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
     page.on('pageerror', error => errors.push(error.message))
     try {
         expect(await ev('return globalThis.__trdSmokeCredentials')).toBe(true)
+        metadata.client = await clientIdentity(ev)
         metadata.host = await ev('return RD.compat.snapshot()')
         const cdp = await context.newCDPSession(page)
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 850, deviceScaleFactor: 1, mobile: false })
         await t.settings({ desk: false, resize: 'live', sharpness: 'standard', clipboard: 'off', sound: false, microphone: false, h264: false, connectionStatus: false })
         const win = t.env.windows
-        const over = kind === 'windows' ? { host: win.host, user: win.user, name: 'Windows QA' } : { name: 'Ubuntu QA' }
+        const over = kind === 'windows' ? { host: win.host, user: win.user, name: 'Windows QA' } : { name: 'Linux QA' }
         expect(await ev(`H.pane = await H.openSSH(${JSON.stringify(over)}); return !!H.pane`), 'SSH test transport').toBe(true)
-        metadata.remote = await t.remote('H.pane', kind === 'linux' ? 'cat /etc/os-release; dpkg-query -W gnome-shell gnome-remote-desktop fonts-dejavu-core' : 'uname -sm')
+        let remoteKey = kind as string
+        if (kind === 'linux') {
+            const identity = JSON.parse((await t.remote('H.pane', `python3 - <<'PYID'
+import json, subprocess, pathlib
+os = dict(line.split('=', 1) for line in pathlib.Path('/etc/os-release').read_text().splitlines() if '=' in line)
+def value(key): return os.get(key, '').strip('"')
+def command(args): return subprocess.check_output(args, text=True).strip()
+print(json.dumps(dict(os=value('ID'), version=value('VERSION_ID'), point=pathlib.Path('/etc/debian_version').read_text().strip() if value('ID') == 'debian' else '', gnome=command(['gnome-shell', '--version']), grd=command(['rpm', '-q', '--qf', '%{VERSION}', 'gnome-remote-desktop'] if value('ID') == 'fedora' else ['dpkg-query', '-W', '-f', '\${Version}', 'gnome-remote-desktop']))))
+PYID`)).trim())
+            metadata.remote = identity
+            verifyLinuxIdentity(identity)
+            remoteKey = `${identity.os}-${identity.point || identity.version}-gnome-${identity.gnome.match(/\b(\d+\.[\d.]+)/)?.[1]}-grd-${identity.grd.match(/\b(\d+\.[\d.]+)/)?.[1]}`
+        }
         const setSize = async (width: number, height: number) => {
             await ev(`const el=H.pane.element.nativeElement; Object.assign(el.style,{flex:'none',minWidth:'0',minHeight:'0',width:'${width}px',height:'${height}px'})`)
         }
@@ -81,6 +95,12 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
             await t.key('Escape', 'Escape', 27)
             const guest = windowsGuest(t, 'H.pane')
             metadata.remote = await guest.guest("Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' | Select-Object EditionID,DisplayVersion,CurrentBuildNumber,UBR | ConvertTo-Json -Compress")
+            const version = JSON.parse(metadata.remote as string)
+            expect(Number(version.CurrentBuildNumber), 'Windows 11 build (22000 or newer)').toBeGreaterThanOrEqual(22000)
+            expect(version.EditionID, 'Windows client edition').not.toMatch(/Server/i)
+            if (process.env.TRD_TEST_EXPECT_VERSION) expect(version.DisplayVersion, 'Actual Windows release').toBe(process.env.TRD_TEST_EXPECT_VERSION)
+            if (process.env.TRD_TEST_EXPECT_BUILD) expect(version.CurrentBuildNumber, 'Actual Windows build').toBe(process.env.TRD_TEST_EXPECT_BUILD)
+            remoteKey = `windows-${version.DisplayVersion}-${version.CurrentBuildNumber}.${version.UBR}`
             const directory = (await guest.guest("$d=Join-Path $env:TEMP ('tabby-visual-qa-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $d | Out-Null; $d")).trim()
             expect(directory).toMatch(/^[A-Za-z]:\\[^'\r\n]+\\tabby-visual-qa-[a-f0-9]+$/)
             const script = fs.readFileSync(path.join(fixtures, 'fixture.ps1'), 'utf8')
@@ -109,6 +129,8 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
         await expect.poll(async () => (await readState())?.ready, { timeout: 30_000, message: 'Remote fixture starts in the real desktop session' }).toBe(true)
         const initial = (await readState())!
         expect(initial.scale, 'Dedicated remote display scale').toBe(1)
+        // GNOME opens its overview on a fresh headless session; dismiss it through actual RDP input.
+        if (kind === 'linux') await t.key('Escape', 'Escape', 27)
         metadata.fixture = initial
         metadata.guestPixelOracle = kind === 'windows' ? 'CopyFromScreen in the same interactive RDP session' : 'Unavailable on this Wayland fixture; remote JSON describes application state, not independently captured guest pixels'
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true }); tracing = true
@@ -128,14 +150,14 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
             await guestCapture(name)
             if (name === 'actual') info.annotations.splice(info.annotations.findIndex(a => a.type === 'infrastructure'), 1)
             const state = (await readState())!
-            await assertFrame(state.sequence)
             const frame = await ev<CanvasInfo>('return H.canvas(H.pane)')
             ;(metadata.checkpoints as unknown[]).push({ name, state, frame })
             await info.attach(`${name}-raw-canvas`, { body: Buffer.from((await ev<string>('return H.canvasElement(H.pane).toDataURL("image/png")')).split(',')[1], 'base64'), contentType: 'image/png' })
             await info.attach(name, { body: await canvas.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' }), contentType: 'image/png' })
+            await assertFrame(state.sequence)
             if (baseline) {
                 const host = metadata.host as { version: string, electron: string }
-                const snapshot = `${kind}-${process.platform}-${process.arch}-tabby-${host.version}-electron-${host.electron}-${name}.png`
+                const snapshot = `${remoteKey}-${(metadata.client as ClientIdentity).platform}-${(metadata.client as ClientIdentity).arch}-tabby-${host.version}-electron-${host.electron}-${name}.png`
                 if (fs.existsSync(info.snapshotPath(snapshot))) await info.attach(`${name}-expected`, { path: info.snapshotPath(snapshot), contentType: 'image/png' })
                 await expect(canvas).toHaveScreenshot(snapshot, { maxDiffPixels: 0 })
             }
@@ -197,6 +219,7 @@ test(`Real RDP visual checkpoints: ${kind}`, async ({}, info) => {
         })
         expect(errors, 'Renderer exceptions').toEqual([])
     } finally {
+        await info.attach('final-window', { body: await page.screenshot({ timeout: 5000 }), contentType: 'image/png' }).catch(() => {})
         await info.attach('fixture-log', { body: (await fixtureLog().catch(() => 'Fixture log unavailable')).slice(-16000), contentType: 'text/plain' })
         await info.attach('environment', { body: JSON.stringify(metadata, null, 2), contentType: 'application/json' })
         await info.attach('rdp-log', { body: JSON.stringify(await ev('return H.pane ? RD.desktop.logOf(H.pane) : []').catch(() => []), null, 2), contentType: 'application/json' })
