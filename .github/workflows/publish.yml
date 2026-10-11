@@ -12,7 +12,7 @@ name: Publish
 # the dependencies' code: it takes the package by that hash (any job of the run can replace an artifact, and the
 # IronRDP jobs run a great deal of others' code), checks that it holds the tagged commit's files
 # (scripts/check-vendor.mjs: vendor/ against the commit's vendor/SHA256SUMS, not the package's own copy, and every other
-# committed file in it), and stages that very file. dist/ is as the package job built it: only a maintainer's own build
+# committed file in it, with the two metadata files projected to runtime-only form), and stages that very file. dist/ is as the package job built it: only a maintainer's own build
 # (`--same-as`, CONTRIBUTING.md) checks it before the staged package is approved.
 #
 # Actions are pinned to a commit, their tag in the comment: a tag can be moved to other code, a commit can't
@@ -52,7 +52,7 @@ jobs:
       - id: pack
         run: |
           mkdir -p "$RUNNER_TEMP/package"
-          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/package"
+          node scripts/pack.mjs --pack-destination "$RUNNER_TEMP/package"
           sum=$(sha256sum "$RUNNER_TEMP/package/tabby-rdp-${GITHUB_REF_NAME#v}.tgz" | cut -c1-64)
           echo "sha256=$sum" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

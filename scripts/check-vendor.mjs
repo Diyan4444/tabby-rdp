@@ -10,12 +10,13 @@
 //       .github/workflows/ironrdp.yml).
 //   node scripts/check-vendor.mjs package <package.tgz> [<revision>] [--same-as <package.tgz>]
 //       a package (npm pack's, or a staged release from npm stage download) holds the revision's files and nothing
-//       else: vendor/ as the revision's vendor/SHA256SUMS lists it, every other file but dist/ as in the revision. The
+//       else: vendor/ as the revision's vendor/SHA256SUMS lists it, runtime metadata derived from the revision, every other file but dist/ as committed. The
 //       revision is v<the package's version> unless named. dist/ is built, so it can only be compared with another
 //       build: --same-as checks every file, dist/ included, against a package made from the same revision.
 //
 // The unit tests (test/unit/vendor.ts) run these on made-up repositories and packages, and check the working tree
 // against the list.
+import { runtimeMetadata } from './package-metadata.mjs'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
@@ -382,7 +383,8 @@ export function packageFiles (tarball, problems) {
 }
 
 /** A package against a revision of the repository at root: vendor/ as that revision's vendor/SHA256SUMS lists it, and
- * every other file outside dist/ as in that revision; with sameAs, every file against that package's too. The list
+ * runtime metadata derived from the revision and other files outside dist/ as committed; with sameAs, every file
+ * against that package's too. The list
  * read is the repository's, never the package's own copy, which could only vouch for itself. */
 export function checkPackage (root, tarball, { revision, sameAs } = {}) {
     const problems = []
@@ -409,6 +411,20 @@ export function checkPackage (root, tarball, { revision, sameAs } = {}) {
     const format = git(root, ['rev-parse', '--show-object-format']).toString('utf8').trim()
     const blobId = data => createHash(format).update(`blob ${data.length}\0`).update(data).digest('hex')
 
+    // A committed format marker selects the narrowly defined metadata projection.
+    // Legacy releases still require the original metadata bytes, without exceptions.
+    const manifestEntry = committed.get('package.json')
+    const manifest = manifestEntry && plainBlob(manifestEntry)
+        ? JSON.parse(blob(root, manifestEntry.oid).toString('utf8')) : null
+    let metadata = {}
+    if (manifest?.tabbyRdp?.packageFormat !== undefined) {
+        const lockEntry = committed.get('npm-shrinkwrap.json')
+        if (!lockEntry || !plainBlob(lockEntry)) throw new Error('Missing committed runtime lock source')
+        metadata = runtimeMetadata(manifest, JSON.parse(blob(root, lockEntry.oid).toString('utf8')))
+        for (const name of Object.keys(metadata)) {
+            if (!files.has(name)) problems.push(`${name}: missing from the package`)
+        }
+    }
     let built = 0
     for (const [file, data] of files) {
         if (file.startsWith('dist/')) {
@@ -418,7 +434,7 @@ export function checkPackage (root, tarball, { revision, sameAs } = {}) {
         const entry = committed.get(file)
         if (!entry || !plainBlob(entry)) {
             problems.push(`${shown(file)}: not a file in ${revision}`)
-        } else if (entry.oid !== blobId(data)) {
+        } else if (metadata[file] ? !metadata[file].equals(data) : entry.oid !== blobId(data)) {
             problems.push(`${shown(file)}: not as in ${revision}`)
         }
     }
@@ -552,7 +568,7 @@ function main (args) {
             return error(`${tarball} is not ${result.revision}'s package: ${result.problems.length} problem${result.problems.length === 1 ? '' : 's'} (above).`)
         }
         console.log(`  vendor/: the ${result.vendor} files ${result.revision}'s ${MANIFEST} lists, as it records them, and nothing else`)
-        console.log(`  the other ${result.files - result.vendor - result.built} files outside dist/: as in ${result.revision}`)
+        console.log(`  the other ${result.files - result.vendor - result.built} files outside dist/: verified against ${result.revision} (runtime metadata projected when declared)`)
         console.log(options.sameAs
             ? `  dist/ and everything else: as in ${options.sameAs}`
             : `  dist/: ${result.built} files, built, so not compared (--same-as <a package built from ${result.revision}> compares them)`)

@@ -46,11 +46,11 @@ jobs:
       - name: Linux native smoke
         timeout-minutes: 3
         if: runner.os == 'Linux'
-        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --hidden smoke-host visual-smoke'
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --packed --hidden smoke-host visual-smoke'
       - name: Windows and macOS native smoke
         timeout-minutes: 3
         if: runner.os != 'Linux'
-        run: node --import tsx test/run.ts --hidden smoke-host visual-smoke
+        run: node --import tsx test/run.ts --packed --hidden smoke-host visual-smoke
       - name: Retain only this job's public GUI evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

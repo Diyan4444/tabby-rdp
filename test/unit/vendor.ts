@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
+import { runtimeMetadata } from '../../scripts/package-metadata.mjs'
 import { MANIFEST, checkBase, checkPackage, checkTree, compareRebuilt, sha256 } from '../../scripts/check-vendor.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -445,7 +446,9 @@ test('the publish check fails a tarball npm would read otherwise, rather than ch
  * exit code, what it printed, and what it added to the run's summary. */
 function command (dir: string, ...args: string[]): { status: number | null, output: string, summary: string } {
     fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true })
-    fs.copyFileSync(path.join(root, 'scripts/check-vendor.mjs'), path.join(dir, 'scripts/check-vendor.mjs'))
+    for (const script of ['check-vendor.mjs', 'package-metadata.mjs']) {
+        fs.copyFileSync(path.join(root, 'scripts', script), path.join(dir, 'scripts', script))
+    }
     const summary = `${fresh('summary')}.md`
     fs.writeFileSync(summary, '')
     // Without GITHUB_ACTIONS, errors come as plain lines rather than as annotations for the run around the tests.
@@ -519,4 +522,41 @@ test("the base commit has to be in IronRDP's history, not just fetchable through
     // No history, no answer: the build stops rather than go on unchecked.
     assert.throws(() => checkBase(write(fresh('base'), { 'ironrdp/BASE_COMMIT': `${first}\n` }), { upstream: `file://${upstream}-missing` }),
         /ironrdp\/BASE_COMMIT can't be checked: IronRDP's history \(file:\/\/.*-missing, master\) didn't come: /)
+})
+
+
+test('runtime publication excludes development tools and preserves the committed runtime lock', () => {
+    const manifest = { name: 'tabby-rdp', version: '1.2.3', tabbyRdp: { packageFormat: 1 },
+        dependencies: { runtime: '1.0.0' }, devDependencies: { browserTester: '2.0.0' }, scripts: { build: 'compiler' } }
+    const lock = { name: manifest.name, version: manifest.version, lockfileVersion: 3,
+        packages: { '': { ...manifest }, 'node_modules/runtime': { version: '1.0.0', integrity: 'sha512-runtime' },
+            'node_modules/browserTester': { version: '2.0.0', dev: true } } }
+    const before = JSON.stringify({ manifest, lock })
+    const metadata = runtimeMetadata(manifest, lock)
+    const published = JSON.parse(metadata['package.json'].toString())
+    const publishedLock = JSON.parse(metadata['npm-shrinkwrap.json'].toString())
+    assert.equal(published.devDependencies, undefined)
+    assert.equal(published.scripts, undefined)
+    assert.equal(publishedLock.packages[''].devDependencies, undefined)
+    assert.deepEqual(published.dependencies, manifest.dependencies)
+    assert.deepEqual(publishedLock.packages['node_modules/runtime'], lock.packages['node_modules/runtime'])
+    assert.equal(publishedLock.packages['node_modules/browserTester'], undefined)
+    assert.equal(JSON.stringify({ manifest, lock }), before, 'packing must not mutate build metadata')
+
+    const committed = { 'package.json': JSON.stringify(manifest), 'npm-shrinkwrap.json': JSON.stringify(lock) }
+    const dir = repository(BUILD, committed)
+    const contents = [...packaged().filter(([name]) => name !== 'package.json' && name !== 'README.md'),
+        ...Object.entries(metadata), ...Object.entries(DIST)]
+    const verify = (items: (readonly [string, string | Buffer])[]) =>
+        checkPackage(dir, tarball(entries(items)), { revision: 'HEAD' }).problems
+    assert.deepEqual(verify(contents), [])
+    assert.ok(verify(contents.filter(([name]) => name !== 'npm-shrinkwrap.json')).length)
+    assert.ok(verify(contents.map(([name, data]) => [name, name === 'package.json' ? committed[name] : data])).length,
+        'unfiltered development metadata must fail publication')
+    const altered = JSON.parse(metadata['npm-shrinkwrap.json'].toString())
+    altered.packages['node_modules/runtime'].integrity = 'sha512-different'
+    assert.ok(verify(contents.map(([name, data]) => [name, name === 'npm-shrinkwrap.json' ? JSON.stringify(altered) : data])).length,
+        'a changed runtime dependency must fail publication')
+    assert.throws(() => runtimeMetadata(manifest, { ...lock, version: '9.9.9' }), /disagree/)
+    assert.throws(() => runtimeMetadata({ ...manifest, tabbyRdp: { packageFormat: 2 } }, lock), /packageFormat/)
 })

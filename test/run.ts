@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { waitForPort } from './lib/cdp.js'
+import { npmCommand } from '../scripts/npm-command.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LINUX_SUITES = ['e2e', 'desk', 'resize', 'keyboard', 'focus', 'actions', 'clipboard', 'files', 'audio', 'microphone', 'graphics', 'reconnect', 'desktops', 'profiles', 'direct', 'certificates', 'status', 'wake', 'help', 'nested', 'vms', 'headless', 'takeover']
@@ -95,11 +96,12 @@ function makeSandbox (): string {
     fs.mkdirSync(path.join(plugins, 'node_modules'), { recursive: true })
     fs.writeFileSync(path.join(plugins, 'package.json'), '{}')
     if (flag('--packed')) {
-        const tarball = execFileSync('npm', ['pack', '--silent', '--pack-destination', dir], { cwd: ROOT }).toString().trim().split('\n').at(-1)
+        const tarball = execFileSync(process.execPath, ['scripts/pack.mjs', '--pack-destination', dir], { cwd: ROOT }).toString().trim().split('\n').at(-1)
         if (!tarball) {
             throw new Error('npm pack printed no file name')
         }
-        execFileSync('npm', ['install', '--no-audit', '--no-fund', '--silent', path.join(dir, tarball)], { cwd: plugins, stdio: 'inherit' })
+        const npm = npmCommand()
+        execFileSync(npm.file, [...npm.args, 'install', '--no-audit', '--no-fund', '--silent', path.join(dir, tarball)], { cwd: plugins, stdio: 'inherit' })
     } else {
         fs.symlinkSync(ROOT, path.join(plugins, 'node_modules', 'tabby-rdp'), process.platform === 'win32' ? 'junction' : 'dir')
     }
@@ -248,7 +250,7 @@ for (const name of selected) {
             const child = spawn(process.execPath, command, {
                 env: {
                     ...process.env, TRD_CDP_PORT: String(port),
-                    ...(name.startsWith('visual-') ? { TRD_QA_TEST: name } : {}),
+                    ...(name.startsWith('visual-') ? { TRD_QA_TEST: name, TRD_TEST_PACKED: flag('--packed') ? '1' : '0' } : {}),
                     ...(expectedXterm ? { TRD_SMOKE_EXPECT_XTERM: expectedXterm } : {}),
                     ...(flag('--require-rdp') ? { TRD_SMOKE_REQUIRE_RDP: '1' } : {}),
                 },

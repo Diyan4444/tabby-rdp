@@ -94,8 +94,16 @@ security fixes and for bugs that make the plugin unusable; everything else waits
 minor version (see the milestones).
 
 **Runtime dependencies.** Pin runtime dependencies to exact versions and commit changes to `npm-shrinkwrap.json`.
-The shrinkwrap replaces `package-lock.json`: npm uses it for development and includes it in the published package,
-so plugin installs retain the reviewed versions, download URLs and integrity hashes. Upgrade dependencies through
+The source shrinkwrap replaces `package-lock.json` and locks development and runtime dependencies. Build with Node 22.12
+or newer on the Node 22 line (CI uses Node 22). Angular 21.2.25 is a development dependency used for type checking;
+Tabby supplies Angular at runtime. The plugin uses TypeScript compilation, not Angular template compilation.
+
+Create distributable packages with `npm run pack:release -- --pack-destination <directory>`, not a direct `npm pack`.
+The packer stages files without changing the checkout, removes development dependencies and build scripts from the
+published manifest, and removes development-only entries from the published shrinkwrap. Runtime dependency versions,
+download URLs and integrity hashes are preserved. Playwright and its browser installer helpers belong to QA, not
+plugin installations. CI audits the complete development tree too; excluding tools from publication does not replace
+keeping those tools patched. Upgrade dependencies through
 a reviewed change, run `npm ci --ignore-scripts`, build, and check the packed package before releasing.
 
 **Version metadata.** Keep `package.json` and the root entries in `npm-shrinkwrap.json` on the same version. The
@@ -104,7 +112,7 @@ migration limits; raise the floor only for a migration that prevents older packa
 data. Version 0.5.1 is the explicitly supported baseline for packages that predate these fields.
 Preview versions use `<version>-beta.<number>` or `<version>-rc.<number>`. Both use npm's `beta` tag, which the
 plugin's Preview channel follows; stable versions use `latest`. The release workflow validates this routing and
-compatibility policy before staging. A candidate can be built with `npm pack` without creating or pushing a tag.
+compatibility policy before staging. A candidate can be built with `npm run pack:release` without creating or pushing a tag.
 
 **How.** Pushing a tag `v<version>` (matching `version` in package.json) runs [`publish.yml`](.github/workflows/publish.yml),
 which builds the package and **stages** it on npm, with provenance. It goes live once a maintainer approves it: on
@@ -116,8 +124,9 @@ output, `vendor/SHA256SUMS` included, before tagging if the patches changed (it 
 commit against IronRDP's history, even with IronRDP and the tools already there). The package is built in a job of its
 own, which reports the package's SHA-256; the job that stages it takes the package by that hash (any job of the run
 can replace an artifact, the IronRDP jobs with their many builds and tests included), and checks it against the tagged
-commit: `vendor/` as the commit's `vendor/SHA256SUMS` lists it, every other file but `dist/` as committed, and nothing
-more. `dist/` is as the package job built it: nothing in the workflow checks it against another build.
+commit: `vendor/` as the commit's `vendor/SHA256SUMS` lists it, the two runtime metadata files as deterministically
+derived from the committed sources, every other file but `dist/` as committed, and nothing more. `dist/` is as the
+package job built it: nothing in the workflow checks it against another build.
 
 That check runs in the job that publishes, which can't vouch for itself (its Node.js and npm are whatever their download
 served for 26.8.2), and a package's own `vendor/SHA256SUMS` can't vouch for the package. So before approving, check the
@@ -127,7 +136,7 @@ against a build of your own:
 ```sh
 npm stage download <stage-id>     # saves tabby-rdp-<version>-<stage-id>.tgz
 git worktree add /tmp/tabby-rdp-v<version> v<version>     # the tag, built here: tabby-rdp-<version>.tgz
-(cd /tmp/tabby-rdp-v<version> && npm ci --ignore-scripts && npm run build && npm pack --ignore-scripts)
+(cd /tmp/tabby-rdp-v<version> && npm ci --ignore-scripts && npm run build && npm run pack:release)
 node scripts/check-vendor.mjs package tabby-rdp-<version>-<stage-id>.tgz --same-as /tmp/tabby-rdp-v<version>/tabby-rdp-<version>.tgz
 ```
 
@@ -136,8 +145,8 @@ After npm approval, verify the published version and its dist-tag, replace the d
 with installation instructions, and publish the draft. Mark only a stable release as GitHub's latest release.
 
 It finds the tag by the package's version and reads the list and the files from git, never from the package; any file
-the tag doesn't have, or has otherwise, or a `vendor/` file missing, fails it, as does a tarball other than the plain
-kind npm pack writes: one gzip member that ends where the file does, holding plain tar, files only (a folder entry
+the tag doesn't have, or has otherwise (apart from the declared runtime metadata projection), or a `vendor/` file
+missing, fails it, as does a tarball other than the plain kind npm pack writes: one gzip member that ends where the file does, holding plain tar, files only (a folder entry
 fails, an extractor makes a folder at its path) and ending in its empty blocks (gzip and tar readers differ on the rest,
 and npm's could install files the check never saw). `dist/` is built, so only another build can vouch for it:
 `--same-as` compares every file of the two packages, `dist/` included. It is the only check of `dist/` that doesn't take
