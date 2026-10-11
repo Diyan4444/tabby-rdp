@@ -57,6 +57,14 @@ PYID`)).trim())
             await ev(`const el=H.pane.element.nativeElement; Object.assign(el.style,{flex:'none',minWidth:'0',minHeight:'0',width:'${width}px',height:'${height}px'})`)
         }
         await setSize(800, 600)
+        // Tabby's new-tab animation can temporarily transform the pane. Negotiate the
+        // initial desktop only after its visible geometry settles; live resize stays observed below.
+        let stableSizeSamples = 0
+        await expect.poll(async () => {
+            const rect = await ev<{ width: number, height: number }>('const r=H.pane.element.nativeElement.getBoundingClientRect(); return {width:r.width,height:r.height}')
+            stableSizeSamples = Math.abs(rect.width-800)<0.05 && Math.abs(rect.height-600)<0.05 ? stableSizeSamples+1 : 0
+            return stableSizeSamples >= 3
+        }, { intervals: [100], message: 'Initial native Tabby pane geometry has settled' }).toBe(true)
         // Persistent native clients remember their last desktop behind an SSH host.
         // Select the host's own GNOME desktop explicitly after a Windows-via-SSH run.
         let desktopId = 'own'
@@ -158,6 +166,8 @@ PYID`)).trim())
             await info.attach(name, { body: await canvas.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' }), contentType: 'image/png' })
             await assertFrame(state.sequence)
             if (baseline) {
+                expect([state.width, state.height], 'Remote checkpoint uses the requested resolution').toEqual(
+                    name === 'resized' || name === 'reconnected' ? [900, 650] : [800, 600])
                 const host = metadata.host as { version: string, electron: string }
                 const snapshot = `${remoteKey}-${(metadata.client as ClientIdentity).platform}-${(metadata.client as ClientIdentity).arch}-tabby-${host.version}-electron-${host.electron}-${name}.png`
                 if (fs.existsSync(info.snapshotPath(snapshot))) await info.attach(`${name}-expected`, { path: info.snapshotPath(snapshot), contentType: 'image/png' })
