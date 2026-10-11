@@ -1,0 +1,61 @@
+name: Native Tabby QA
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-qa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      # No OpenAI/Codex credentials, private RDP credentials or network tunnels in hosted jobs.
+      TRD_QA_AI_PROVIDER: responses
+      TRD_QA_UPDATE_BASELINES: '0'
+      TRD_QA_RUN_DIR: ${{ runner.temp }}/tabby-qa-evidence
+      PLAYWRIGHT_HTML_OPEN: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck:test
+      - run: npm run test:unit
+      - name: Install pinned official Tabby
+        run: node scripts/qa/install-host.mjs
+      - name: Linux display dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox libgtk-3-0 libnss3 libasound2t64 libgbm1
+      - name: Linux native smoke
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x900x24' sh -c 'openbox >/dev/null 2>&1 & node --import tsx test/run.ts --hidden smoke-host visual-smoke'
+      - name: Windows and macOS native smoke
+        if: runner.os != 'Linux'
+        run: node --import tsx test/run.ts --hidden smoke-host visual-smoke
+      - name: Retain only this job's public GUI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-qa-${{ matrix.os }}
+          path: ${{ runner.temp }}/tabby-qa-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false

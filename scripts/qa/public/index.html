@@ -2,12 +2,17 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tabby-RDP · Visual QA</title><link rel="stylesheet" href="/style.css"></head>
 <body>
-<header><div class="brand">Tabby-RDP <span>/ Engineering</span></div><span class="pill">PHASE 4 · AI VISUAL REVIEW</span></header>
+<header><div class="brand">Tabby-RDP <span>/ Engineering</span></div><span class="pill">PHASE 5 · AUTOMATED QA</span></header>
 <main>
 <div class="intro"><div><p class="eyebrow">VISUAL QUALITY</p><h1>See what the tests see.</h1><p class="muted">Test native macOS, Windows and Linux Tabby clients against dedicated remote desktops. Inspect screenshots, comparisons and execution traces.</p></div></div>
 <p id="message" role="status" aria-live="polite"></p>
 <form id="login"><label for="token">Dashboard access token</label><div class="login-row"><input id="token" type="password" required autocomplete="current-password" placeholder="Token from the server’s .qa/token file"><button>Sign in</button></div><p class="muted">Access expires after 8 hours. Results and execution controls require authentication.</p></form>
 <div id="workspace" hidden>
+<section class="mutation-panel" aria-label="Automation"><h2>Unattended campaigns</h2>
+<p id="automation-status" class="muted"></p><div class="actions"><select id="automation-profile" aria-label="Campaign profile"></select><button id="automation-start">Run campaign profile</button><button id="automation-pause" class="secondary">Pause schedules</button><button id="automation-cancel" class="secondary" hidden>Cancel batch</button></div>
+<p id="automation-schedules" class="muted"></p><p id="retention-status" class="muted"></p><p id="github-status" class="muted"></p>
+<div id="hosted-jobs"></div><div id="automation-jobs"></div></section>
+<section class="mutation-panel" aria-label="Historical health"><h2>Historical health</h2><p class="muted">Compare the same environment across runs. Mixed pass/fail results on a clean commit and baseline are suspected flakiness, not a diagnosis. Infrastructure failures are counted separately.</p><label for="history-commit">Filter by commit prefix</label><input id="history-commit" placeholder="All commits" maxlength="40"><div id="health-history"></div></section>
 <section class="controls"><div><label for="environment">Test environment</label><select id="environment"></select><p id="coverage" class="muted"></p></div><div class="actions"><button id="run">Run visual test</button><button id="cancel" class="secondary" hidden>Cancel run</button></div></section>
 <section id="mutations-panel" class="mutation-panel" aria-label="Test the Tests">
 <h2>Test the Tests</h2><p class="muted">Select defects for the RDP environment above. Each campaign runs healthy controls before and after, restores each defect, and records visible manifestation independently. Synthetic error dialogs test overlays; they do not crash Tabby.</p>

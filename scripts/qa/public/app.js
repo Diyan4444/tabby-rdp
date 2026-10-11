@@ -4,6 +4,7 @@ let lastDetail = ''
 let mutationCatalogLoaded = false
 let aiState = {}
 let executionActive = false
+let currentData = null
 const runLabel = run => run.mutations && run.status === 'passed' ? 'Campaign completed' : labels[run.status]
 const labels = { passed: 'Passed', failed: 'Failed', skipped: 'Skipped', 'infrastructure-failed': 'Infrastructure failure', cancelled: 'Cancelled', running: 'Running', 'not-run': 'Not executed', timedOut: 'Timed out', interrupted: 'Interrupted' }
 function node (tag, text, className) {
@@ -45,7 +46,7 @@ function showAI(run, detail) {
     button.onclick = async () => { try { await api('/api/ai/reviews', { runId: run.id }); message(); await refresh() } catch (error) { message(error) } }
     section.append(button)
     const review = run.ai
-    if (!review) section.append(node('p', 'Not evaluated. Screenshot evidence is sent to OpenAI only when review is requested; logs and traces are retained locally.', 'muted'))
+    if (!review) section.append(node('p', 'Not evaluated. Screenshot evidence is sent to OpenAI for requested or configured automatic reviews; raw logs and traces remain local.', 'muted'))
     else {
         section.append(node('p', `${review.status} · ${review.detector.model} · ${review.detector.version} · ${new Date(review.startedAt).toLocaleString()}`))
         section.append(link('Review JSON ↗', artifactURL(run, `ai-reviews/${review.id}.json`)))
@@ -101,7 +102,28 @@ function showRun (run) {
     const links = node('div', undefined, 'links')
     links.append(link('Execution log ↗', artifactURL(run, 'execution.log')))
     if (run.tests.some(t => t.status !== 'not-run')) links.append(link('Playwright report & trace viewer ↗', artifactURL(run, 'report/index.html')))
+    if (run.github?.url) links.append(link('Commit on GitHub ↗',run.github.url))
+    for (const pr of run.github?.pullRequests || []) links.append(link(`PR #${pr.number} ↗`,pr.url))
     detail.append(links)
+    if (run.automation) detail.append(node('p', `${run.automation.profile} · ${run.automation.trigger.kind} · batch ${run.automation.jobId}`, 'muted'))
+    if (run.baselineDigest) detail.append(node('code', 'Baseline set SHA-256: ' + run.baselineDigest))
+    const investigation = node('section'); investigation.id='investigation'
+    investigation.append(node('h3','Failure investigation'))
+    const investigateButton = node('button','Investigate retained evidence','secondary');investigateButton.id='investigate-run'
+    investigateButton.disabled=!!run.mutations || run.stage!=='finished'
+    investigateButton.onclick=async()=>{try{await api('/api/investigations',{runId:run.id});await refresh()}catch(error){message(error)}}
+    investigation.append(investigateButton)
+    if(run.investigation) {
+        const finding=run.investigation
+        investigation.append(node('p',finding.status),link('Investigation and artifact receipts ↗',artifactURL(run,'investigation.json')),
+            node('p',`Observed diagnostics: ${finding.facts.diagnosticSignals.join('; ') || 'No recognized diagnostic signal'}`),
+            node('p',`${finding.facts.screenshots} images · ${finding.facts.traces} traces · ${finding.facts.logs} logs · ${finding.facts.environmentReports} environment reports`,'muted'))
+        if(finding.review) investigation.append(node('p','AI observations: '+finding.review.observations),node('p','Hypotheses: '+finding.review.hypotheses),node('p','Limits: '+finding.review.limitations,'muted'))
+        if(finding.reason) investigation.append(node('p',finding.reason,'reason'))
+        if(finding.history) investigation.append(node('pre',JSON.stringify(finding.history,null,2),'metrics'))
+        investigation.append(node('p',finding.limitation,'muted'))
+    } else investigation.append(node('p','Failed tests are investigated automatically. Diagnostics and AI findings remain separate from the test verdict.','muted'))
+    detail.append(investigation)
     showAI(run, detail)
     if (run.mutations) {
         detail.append(node('h3', 'Mutation detection results'))
@@ -141,7 +163,9 @@ function showRun (run) {
 }
 async function refresh () {
     const data = await api('/api/runs')
-    aiState = data.ai || {}; executionActive = !!data.active || !!aiState.active
+    currentData = data
+    showAutomation(data)
+    aiState = data.ai || {}; executionActive = !!data.active || !!aiState.active || !!data.automation?.active
     $('ai-status').textContent = `${aiState.configured ? 'Configured' : 'Not configured: ' + (aiState.provider === 'codex' ? 'Codex ChatGPT sign-in required' : 'OpenAI API key required')} · ${aiState.model || ''} · ${aiState.provider === 'codex' ? `ChatGPT subscription · ${aiState.requests}/${aiState.maxRequests} review requests · ${aiState.tokens} tokens reported` : `estimated $${(aiState.estimatedUSD || 0).toFixed(4)} + $${(aiState.reservedUSD || 0).toFixed(2)} reserved / $${aiState.budgetUSD || 0} lifetime limit`}${aiState.active ? ' · Reviewing screenshots…' : ''}`
     $('ai-cancel').hidden = !aiState.active
     const aiMetrics = aiState.metrics || {}
@@ -183,7 +207,7 @@ async function refresh () {
     const history = $('history'); history.replaceChildren()
     if (!data.runs.length) history.append(node('p', 'No runs yet. Execute the visual test to begin.', 'muted'))
     if (!selected || !data.runs.some(r => r.id === selected)) selected = data.runs[0]?.id
-    for (const run of data.runs) {
+    for (const run of data.runs.filter(r=>r.commit.startsWith($('history-commit').value.trim()))) {
         const row = node('button', undefined, `run-row${selected === run.id ? ' selected' : ''}`)
         row.dataset.runId = run.id
         row.append(node('span', (run.mutations ? 'Campaign · ' : '') + (run.environment || 'Local Tabby')), node('span', runLabel(run), `status ${run.status}`), node('span', new Date(run.startedAt).toLocaleString(), 'muted'), node('code', run.commit.slice(0, 8) + (run.dirty ? ' + changes' : '')))
@@ -195,7 +219,46 @@ async function refresh () {
     if (run) showRun(run)
     if ($('reproduce-campaign')) $('reproduce-campaign').disabled=executionActive
     if ($('ai-review-run')) $('ai-review-run').disabled=executionActive || !aiState.configured || run?.stage !== 'finished'
-    if (aiState.active) { $('run').disabled = true; $('campaign').disabled = true }
+    if (executionActive) { $('run').disabled = true; $('campaign').disabled = true }
+    if($('investigate-run')) $('investigate-run').disabled=executionActive || !!run?.mutations || run?.stage!=='finished'
 }
+function showAutomation(data) {
+    const a=data.automation
+    if(!a)return
+    const choice=$('automation-profile').value
+    $('automation-profile').replaceChildren(...a.profiles.map(p=>{const o=node('option',`${p.name} · ${p.steps} runs`);o.value=p.id;return o}))
+    if(choice)$('automation-profile').value=choice
+    $('automation-status').textContent=`${a.active?'Batch running':a.paused?'Schedules paused':'Scheduler ready'} · clean checkout required · AI findings remain advisory${a.error?' · '+a.error:''}`
+    $('automation-start').disabled=!!a.active || !!data.active || !!data.ai.active
+    $('automation-pause').textContent=a.paused?'Resume schedules':'Pause schedules'
+    $('automation-cancel').hidden=!a.active
+    $('automation-schedules').textContent=a.schedules.length?a.schedules.map(s=>`${s.id}: next ${new Date(a.due[s.id]).toLocaleString()}`).join(' · '):'No recurring schedules configured'
+    $('retention-status').textContent=data.retention?`Storage: ${data.retention.runs} runs · ${(data.retention.bytes/1e9).toFixed(2)} GB / ${(data.retention.policy.maxBytes/1e9).toFixed(1)} GB · ${data.retention.capacityAvailable?'Capacity available':'Capacity blocked; archive protected evidence'}`:'Retention checks run before execution'
+    $('github-status').textContent=data.github?`GitHub ${data.github.status} · ${data.github.commit.slice(0,12)} · ${data.github.pullRequests.length} associated PRs · ${data.github.ci.length} CI records`:'GitHub integration disabled or awaiting lookup'
+    const hosted=$('hosted-jobs');hosted.replaceChildren()
+    if(data.github?.hosted){hosted.append(node('h3','GitHub-hosted native checks'),node('p',data.github.hosted.coverage,'muted'))
+        for(const run of data.github.hosted.runs){hosted.append(link(`Hosted run ${run.id}: ${run.conclusion || run.status} ↗`,run.url));for(const job of run.jobs)hosted.append(node('p',`${job.name}: ${job.conclusion || job.status}`),link('Job log and evidence ↗',job.url))}}
+    const jobs=$('automation-jobs');jobs.replaceChildren()
+    for(const job of [...a.jobs].reverse().slice(0,10)) {
+        const d=node('details');d.append(node('summary',`${job.profile} · ${job.status} · ${job.trigger.kind} · ${new Date(job.startedAt).toLocaleString()}`))
+        if(job.reason)d.append(node('p',job.reason,'reason'))
+        for(const step of job.steps) {const p=node('p',`${step.test}${step.mutations?' · mutation campaign':''}: ${step.status}${step.aiStatus?' · AI '+step.aiStatus:''}`);if(step.runId){const b=node('button','View run','secondary');b.onclick=()=>{selected=step.runId;lastDetail='';refresh().catch(message)};p.append(document.createTextNode(' '),b)};d.append(p)}
+        jobs.append(d)
+    }
+    const table=node('table');table.append(node('caption','Run outcomes by environment'))
+    const tr=node('tr');for(const title of ['Environment','Latest','App failures','Infrastructure','Median','Possible flakes'])tr.append(node('th',title));table.append(tr)
+    for(const group of data.history || []) {
+        const row=node('tr');for(const value of [group.test,group.latest?.status,group.applicationFailures,group.infrastructureFailures,group.medianDurationMs===null?'—':(group.medianDurationMs/1000).toFixed(1)+'s',group.suspectFlakes.length])row.append(node('td',String(value)));table.append(row)
+    }
+    $('health-history').replaceChildren(table)
+}
+$('history-commit').oninput=()=>refresh().catch(message)
+$('automation-start').onclick=async()=>{try{
+    // The server still verifies HEAD and cleanliness before any step executes.
+    const commit=currentData.source.commit
+    await api('/api/automation/start',{profile:$('automation-profile').value,commit});await refresh()
+}catch(error){message(error)}}
+$('automation-pause').onclick=async()=>{try{await api('/api/automation/pause',{paused:!currentData.automation.paused});await refresh()}catch(error){message(error)}}
+$('automation-cancel').onclick=async()=>{try{await api('/api/automation/cancel',{});await refresh()}catch(error){message(error)}}
 refresh().catch(message)
 setInterval(() => { if (!$('workspace').hidden) refresh().catch(message) }, 2000)

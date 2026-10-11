@@ -584,7 +584,7 @@ Update it after each completed phase.
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
 | 4. AI Visual Intelligence | Complete | `c9b87f9` | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
-| 5. Full Automation | Pending | — | — |
+| 5. Full Automation | In Progress | — | Implementation and hosted/private acceptance underway. |
 
 Valid statuses:
 
@@ -1164,6 +1164,32 @@ Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI
   service account/session; do not export personal authentication to public CI. A model alias can evolve; bump detector
   version/invalidate cache deliberately when requalifying behavior. Preserve misses, independent controls and source
   truth separation, and use disjoint evidence when tuning before considering blocking AI judgments.
+
+### Phase 5 — implementation and acceptance in progress
+
+- Extend the existing serialized server with persisted fixed smoke/matrix/nightly/weekly profiles, schedules,
+  bounded batch history, cancellation and interrupted-batch recovery. Dirty or changed checkouts block automatic
+  execution; missed schedule intervals coalesce without replaying an interrupted batch.
+- Standard GitHub-hosted Linux x64, Windows x64 and macOS ARM64 jobs run builds, unit tests and actual native Tabby
+  functional/settings smoke. Official Tabby 1.0.236 assets are SHA-256 pinned. Hosted screenshots/traces are smoke
+  evidence, not reviewed baseline/RDP qualification. Existing strict private baselines remain unchanged.
+- **Credential boundary:** no OpenAI/Codex login, API key, private RDP configuration or tunnel reaches GitHub jobs.
+  They use fresh hosted machines, read-only repository permission, checkout credentials disabled, and upload only
+  their own new temporary evidence directory with seven-day retention. Pro-backed AI stays on the private service.
+- GitHub lookup is read-only. Record commit/PR/CI context and hosted job outcomes in the dashboard. A successful CI
+  event can trigger private smoke (or full matrix for main) only when the exact commit is already provisioned in a
+  clean operator-owned checkout. No automatic checkout or execution of arbitrary public PR code on private machines.
+- Automatic failed-run investigations inventory/hash screenshots, traces, environment reports and logs. AI receives
+  screenshot evidence plus bounded allowlisted diagnostic signals, never raw log text/credentials or mutation truth.
+  Investigations are advisory and separate from detector-effectiveness evaluations. Historical first-bad/last-good
+  observations are qualified by target, clean source and baseline digest; they do not establish causal commits.
+- Retention defaults: ordinary passes 14 days, failures/campaigns 90 days; latest target/mode/status and active records
+  protected. Pressure can evict routine passes older than a day; if protected evidence fills capacity, execution
+  blocks rather than deleting it. Keep bounded deletion receipts; archive ignored runtime evidence separately.
+- Deployment uses a logged-in macOS LaunchAgent with existing private settings and local sign-in. No personal
+  authentication is copied into its plist. No new public self-hosted runner or external messages are required.
+
+Acceptance results and remaining limits will be recorded after execution.
 
 ## 17. Execution Instructions for Codex / Astra High
 

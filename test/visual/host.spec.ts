@@ -3,7 +3,8 @@ import { clientIdentity } from './identity.js'
 import fs from 'node:fs'
 import type { HostSnapshot } from '../../src/hostCompat.js'
 
-test('Remote Desktop settings in real Tabby', async ({}, info) => {
+const hostedSmoke = process.env.TRD_QA_TEST === 'visual-smoke'
+test(hostedSmoke ? 'Native Tabby settings smoke (no baseline qualification)' : 'Remote Desktop settings in real Tabby', async ({}, info) => {
     info.annotations.push({ type: 'infrastructure', description: 'Connecting to the isolated Tabby browser' })
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${process.env.TRD_CDP_PORT}`)
     const context = browser.contexts()[0]
@@ -35,8 +36,13 @@ test('Remote Desktop settings in real Tabby', async ({}, info) => {
         const name = `${key}/settings-viewport.png`
         // Capture the visible viewport: Electron cannot paint a tall offscreen element by scrolling a screenshot.
         await info.attach('actual', { body: await page.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' }), contentType: 'image/png' })
-        if (fs.existsSync(info.snapshotPath(name))) await info.attach('expected', { path: info.snapshotPath(name), contentType: 'image/png' })
-        await expect(page).toHaveScreenshot(name)
+        if (!hostedSmoke && fs.existsSync(info.snapshotPath(name))) await info.attach('expected', { path: info.snapshotPath(name), contentType: 'image/png' })
+        if (hostedSmoke) {
+            info.annotations.push({ type: 'coverage', description: 'Real native settings visibility and renderer checks with screenshot/trace. No reviewed hosted-runner baseline; no RDP coverage.' })
+            expect(host.version).toBe('1.0.236')
+            expect(client.platform).toBe(process.platform)
+            expect(client.arch).toBe(process.arch)
+        } else await expect(page).toHaveScreenshot(name)
         expect(errors, 'renderer exceptions').toEqual([])
     } finally {
         if (!page.isClosed()) await info.attach('window', { body: await page.screenshot({ scale: 'css' }), contentType: 'image/png' }).catch(() => {})

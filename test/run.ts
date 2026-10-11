@@ -19,7 +19,7 @@ import { waitForPort } from './lib/cdp.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LINUX_SUITES = ['e2e', 'desk', 'resize', 'keyboard', 'focus', 'actions', 'clipboard', 'files', 'audio', 'microphone', 'graphics', 'reconnect', 'desktops', 'profiles', 'direct', 'certificates', 'status', 'wake', 'help', 'nested', 'vms', 'headless', 'takeover']
-const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host', 'visual-linux', 'visual-windows']
+const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host', 'visual-smoke', 'visual-linux', 'visual-windows']
 
 const args = process.argv.slice(2)
 const flag = (name: string) => args.includes(name)
@@ -133,7 +133,10 @@ function teardown () {
     if (tabby && !flag('--keep')) {
         // Detached: the whole process group goes, so a Tabby that started helpers doesn't leave them behind.
         if (tabby.pid !== undefined) {
-            try { process.kill(-tabby.pid, 'SIGKILL') } catch { }
+            try {
+                if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(tabby.pid), '/T', '/F'], { stdio: 'ignore' })
+                else process.kill(-tabby.pid, 'SIGKILL')
+            } catch { }
         }
         try { tabby.kill('SIGKILL') } catch { }
         tabby = null

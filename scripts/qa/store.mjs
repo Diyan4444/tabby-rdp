@@ -43,6 +43,7 @@ export function recoverRuns (directory) {
             run.status = 'infrastructure-failed'
             run.reason = 'Dashboard stopped before completion; result is unverified. Run again.'
             run.finishedAt = new Date().toISOString()
+            run.stage = 'finished'
             writeJSON(path.join(directory, run.id, 'run.json'), run)
         }
     }

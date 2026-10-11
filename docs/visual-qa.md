@@ -1,4 +1,4 @@
-# Visual QA operations (Phases 1–4)
+# Visual QA operations (Phases 1–5)
 
 The dashboard runs native macOS, Windows and Linux Tabby clients against **real Windows, GNOME/GRD and Xfce/xrdp desktops through IronRDP**, plus local settings checks. Select a client/desktop combination before running. Existing CDP suites remain available through `npm test`.
 
@@ -22,8 +22,8 @@ any run to see its status, source commit/dirty flag, duration, actual/expected s
 log, and Playwright HTML report. Open a test in the report and select its trace thumbnail to use the locally hosted
 trace viewer. Downloadable `trace.zip` also works with `npx playwright show-trace <file>`.
 
-The dashboard and all evidence are served locally. Explicit **AI review** sends selected PNGs and independent fixture
-sequence values to OpenAI; ordinary tests do not upload evidence. Logs, traces and mutation labels remain local.
+The dashboard and all evidence are served locally. Requested and configured automatic **AI reviews** send selected PNGs and independent fixture
+sequence values to OpenAI. Failed-run investigations add allowlisted diagnostic signal names; raw logs, traces, credentials and mutation labels remain local.
 DOM replay of Electron `file://` pages can have missing local fonts/icons and a checkerboard canvas placeholder; use the actual PNG and trace filmstrip
 for pixel evidence. The trace still records real actions, timings, assertions, source and DOM snapshots.
 
@@ -72,9 +72,7 @@ The result index is atomically replaced. Passed requires an executed passing tes
 files, a passing reporter result, and exit zero. Failed assertions, skipped tests, launch/build/report failures,
 not-executed tests, and cancellation remain distinct. A missing baseline is an explicit failing visual assertion.
 
-There is a 100-run capacity limit and a 2 MB log limit per command. Archive/remove old completed run directories
-while the service is stopped when it reaches capacity. Nothing silently deletes failure evidence. Automatic
-retention, broader suites, CI artifact ingestion and long-term trends belong to later phases.
+There is a 2 MB log limit per command. Phase 5 retention and capacity are described below; protected evidence is never removed merely to make another test pass.
 
 ## Baselines and local commands
 
@@ -372,7 +370,7 @@ for client in macos windows linux; do
 done
 ```
 
-Each run consumes one of the dashboard's 100 history slots. Keep previous failure evidence when archiving history.
+Each run contributes to the retention/capacity policy below. Keep previous failure evidence when archiving history.
 
 ## Test the Tests (Phase 3)
 
@@ -408,7 +406,7 @@ assertion timeout; it is **not** exact repaint or algorithm-only latency. No sta
 catalog, AI judgment, scheduling or automatic issue creation is claimed.
 
 Authenticated `POST /api/campaigns` accepts only `{test, mutations: [{id, value}]}` from the fixed catalog. It shares
-the existing single-run guard, cancellation, protected artifacts and 100-run capacity. One campaign occupies one run.
+the existing single-run guard, cancellation, protected artifacts and retention/capacity policy. One campaign occupies one run.
 Campaigns have a 900-second test / 960-second server deadline. Canvas/CSS hooks self-restore after 30 seconds if
 normal cleanup is interrupted; remote missing-control injection also expires after 30 seconds. The fixture exits
 after 20 minutes for campaigns (five minutes for normal tests); forced termination can leave its temporary directory
@@ -546,3 +544,84 @@ status and mobile layout, then repeats each review to verify local cache hits wi
 records measured outcomes, including misses and false positives; it does not require or manufacture 100% detection.
 `--unconfigured` tests only the missing-API-key path with the Responses provider. Unit/HTTP tests use isolated synthetic
 contract responses and cannot establish AI effectiveness. Keep those receipts separate from live-provider acceptance.
+
+
+## Unattended operation (Phase 5)
+
+Copy `scripts/qa/automation.example.json` into the private configuration directory, set future UTC `firstAt` values,
+then set `TRD_QA_AUTOMATION_FILE` when starting the server. The example runs representative tests nightly and expanded
+mutations weekly. `everyMinutes` is a fixed UTC interval (no local daylight-saving shift). Restart retains due times;
+changing a schedule's ID establishes a new first occurrence. Pause/resume and cancel are available in the dashboard.
+A manual campaign profile is also available; it requires the exact clean current commit.
+
+Profiles reuse existing suites: `smoke` runs all three native settings checks; `matrix` runs all 18 cells; `nightly`
+runs three representative RDP cells, a macOS/Ubuntu crop campaign with AI and a restored healthy lifecycle; `weekly`
+runs healthy/all-13-mutation/healthy on each of the three representative cells. AI request/budget limits from Phase 4
+remain persistent, with no automatic increase or reset. An exhausted AI limit makes a batch require attention;
+passing deterministic tests do not imply completed AI evaluation. No infinite retries or catch-up queues.
+
+On the current macOS operator host, with `.qa/private/{environments,targets,automation}.json` present:
+
+```sh
+node scripts/qa/service.mjs install
+node scripts/qa/service.mjs status
+node scripts/qa/service.mjs restart
+node scripts/qa/service.mjs stop
+```
+
+This installs a user LaunchAgent from `.qa/service.plist`, keeps the local Codex sign-in in its normal credential
+store, and restarts the server after a crash while the user session remains available. It needs an awake machine,
+GUI session, running native clients and existing SSH forwards. It does not provision or restart VMs/tunnels.
+The installer also writes its own plist under `~/Library/LaunchAgents`, so it starts again at user login.
+`stop` unloads it for the current session; remove that named plist to disable future login startup.
+For a Linux operator, use the same environment and Node entry point under an existing systemd user service plus
+Xvfb; that deployment is not covered by the macOS installer acceptance.
+
+The service refuses a second owner of the data directory. Tests, reviews, investigations and profile batches share
+one execution lock. A restart marks active work interrupted/unverified and does not replay it. Source changes during
+an automatic batch stop further steps; never edit the dedicated checkout while tests run. A blocked schedule retains
+its reason and advances to its next occurrence rather than repeatedly consuming resources.
+
+### Hosted CI and the private credential boundary
+
+`.github/workflows/visual-qa.yml` runs on pushes, PRs and manual dispatch using standard GitHub-hosted Ubuntu 24.04 x64,
+Windows 2025 x64 and macOS 15 ARM64. It checks the build/types/unit suite, installs checksum-pinned official Tabby,
+and runs existing `smoke-host` plus `visual-smoke`. The latter reuses actual settings navigation, renderer checks,
+client identity, screenshots and traces; it explicitly does not perform a reviewed hosted baseline comparison.
+It cannot establish real RDP rendering without a remote desktop. Missing private credentials are never treated as
+passing private-RDP coverage. Hosted environment-specific baselines require separate review before enabling them.
+
+No OpenAI secret or login, private configuration, local cache or RDP network access is supplied to hosted workflows.
+Checkout has credential persistence disabled. Uploads include only the job's temporary `tabby-qa-evidence` directory,
+with seven-day retention, never a checkout-wide glob or `.qa/`. Public screenshots must use only the isolated dummy
+smoke profile. AI remains local to the private service. Standard runners are free for public repos; larger runners
+are billed. See [GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+With `github:true`, the private server queries GitHub using the operator's existing `gh` read access every five
+minutes while idle. It records PR links, CI state and hosted-job links for the current commit. Hosted artifact links
+open GitHub; untrusted workflow HTML/scripts are not imported into the authenticated private dashboard origin.
+A successful existing `ci.yml` run triggers private smoke (main push: matrix) once per observed CI run, only for an
+identical clean checked-out commit. The operator provisions that checkout; public PRs are never automatically
+checked out on machines holding private access. No GitHub issue/comment/status is automatically posted.
+
+### Evidence history, investigations and retention
+
+The dashboard shows per-environment history, median duration, application versus infrastructure failures and
+suspected mixed pass/fail results on the same clean commit/baseline digest. Filter run history by commit prefix.
+Run evidence retains the digest of the reviewed baseline set. The first observed bad commit is a historical bound,
+not causal attribution; environment changes can still explain a difference. No automatic bisection is claimed.
+
+Failed ordinary runs trigger `investigation.json` automatically. It contains SHA-256 receipts and links for bounded
+screenshots, diffs, trace, logs and environment attachments, recognized diagnostic signals, available GitHub context,
+and comparable history. One private AI call uses an eligible failure image plus fixed diagnostic signal names.
+Raw file text, addresses and credentials are not uploaded. Without eligible images, the record says so; without
+model access/budget, investigation fails visibly while preserving diagnostics. Manual investigation of retained
+ordinary evidence is available too. Investigations never enter mutation sensitivity/false-positive denominators.
+
+Default retention is 14 days for ordinary passes and 90 days for failures/campaigns. The latest result of each
+scenario/mode/status, active work and current batch evidence are protected. Under pressure, ordinary passes older
+than one day may be removed earlier; failures retain the full minimum. The default capacity is 500 runs / 10 GB.
+Protected evidence can make this a soft storage ceiling: new runs block until the operator archives it. A single
+run may cross the threshold before the next admission check. Deletion receipts retain the last 1000 removals;
+automation state retains 200 batches. AI caches/reviews remain bounded by their existing request/history caps.
+Back up `.qa/runs`, `.qa/automation`, and AI cache/ledger together, privately; never reset a ledger to bypass limits.
