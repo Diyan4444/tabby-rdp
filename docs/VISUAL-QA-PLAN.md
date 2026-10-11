@@ -584,7 +584,7 @@ Update it after each completed phase.
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Complete | `8049878` + `e9c106e` | Dashboard healthy → 13-mutation campaign → report/trace → healthy passed on macOS, Windows and Linux native clients; 39/39 manifested defects detected, zero false positives in six controls. Reproduction and alternate crop parameter also passed. |
 | 4. AI Visual Intelligence | Complete | `c9b87f9` | Live Pro-backed Codex reviews: 32/39 detected, 0/12 control false positives across three clients; real crash dialog and failed-test review demonstrated. |
-| 5. Full Automation | In Progress | — | Implementation and hosted/private acceptance underway. |
+| 5. Full Automation | Complete | `8dabba3` through `789e37d` | Timer-driven real RDP/mutation/AI campaign, recurring native checks across restart, automatic failure investigation, GitHub-triggered private checks and three hosted native jobs demonstrated. Known Windows guest failure remains visible. |
 
 Valid statuses:
 
@@ -1165,31 +1165,114 @@ Model **`gpt-6-luna`**, low reasoning; detector **`visual-review-1-codex`**, CLI
   version/invalidate cache deliberately when requalifying behavior. Preserve misses, independent controls and source
   truth separation, and use disjoint evidence when tuning before considering blocking AI judgments.
 
-### Phase 5 — implementation and acceptance in progress
+### Phase 5 — Full Automation (complete, 2026-10-11)
 
-- Extend the existing serialized server with persisted fixed smoke/matrix/nightly/weekly profiles, schedules,
-  bounded batch history, cancellation and interrupted-batch recovery. Dirty or changed checkouts block automatic
-  execution; missed schedule intervals coalesce without replaying an interrupted batch.
-- Standard GitHub-hosted Linux x64, Windows x64 and macOS ARM64 jobs run builds, unit tests and actual native Tabby
-  functional/settings smoke. Official Tabby 1.0.236 assets are SHA-256 pinned. Hosted screenshots/traces are smoke
-  evidence, not reviewed baseline/RDP qualification. Existing strict private baselines remain unchanged.
-- **Credential boundary:** no OpenAI/Codex login, API key, private RDP configuration or tunnel reaches GitHub jobs.
-  They use fresh hosted machines, read-only repository permission, checkout credentials disabled, and upload only
-  their own new temporary evidence directory with seven-day retention. Pro-backed AI stays on the private service.
-- GitHub lookup is read-only. Record commit/PR/CI context and hosted job outcomes in the dashboard. A successful CI
-  event can trigger private smoke (or full matrix for main) only when the exact commit is already provisioned in a
-  clean operator-owned checkout. No automatic checkout or execution of arbitrary public PR code on private machines.
-- Automatic failed-run investigations inventory/hash screenshots, traces, environment reports and logs. AI receives
-  screenshot evidence plus bounded allowlisted diagnostic signals, never raw log text/credentials or mutation truth.
-  Investigations are advisory and separate from detector-effectiveness evaluations. Historical first-bad/last-good
-  observations are qualified by target, clean source and baseline digest; they do not establish causal commits.
-- Retention defaults: ordinary passes 14 days, failures/campaigns 90 days; latest target/mode/status and active records
-  protected. Pressure can evict routine passes older than a day; if protected evidence fills capacity, execution
-  blocks rather than deleting it. Keep bounded deletion receipts; archive ignored runtime evidence separately.
-- Deployment uses a logged-in macOS LaunchAgent with existing private settings and local sign-in. No personal
-  authentication is copied into its plist. No new public self-hosted runner or external messages are required.
+**Implementation and decisions:**
 
-Acceptance results and remaining limits will be recorded after execution.
+- The existing serialized server now has persisted fixed smoke/matrix/nightly/weekly profiles, schedules, pause,
+  cancellation, bounded batch history and interrupted-batch recovery. Clean exact source is required and checked
+  between steps. Missed intervals coalesce; interrupted work is not replayed. Other independent targets still run
+  after a target fails, and an incomplete AI review makes the batch require attention.
+- Standard hosted Ubuntu 24.04 x64, Windows 2025 x64 and macOS 15 ARM64 jobs build/typecheck and exercise actual
+  native Tabby functional/settings smoke using SHA-256-pinned official Tabby 1.0.236. Screenshots, renderer identity,
+  plugin digest and traces are retained. These jobs qualify native smoke, not reviewed hosted baselines or RDP.
+  Full unit tests remain required by the existing Linux CI workflow. No dependency or production plugin change.
+- **Credential boundary:** no OpenAI/Codex login, API key, private RDP configuration or tunnel is supplied to GitHub.
+  Fresh standard runners use read-only repository permission and checkout credential persistence disabled. Uploads
+  include only each job's newly created temporary evidence directory, with seven-day retention. The installer rejects
+  private credential/configuration environment variables. Pro-backed AI and its existing sign-in stay on the private
+  service; the authentication store was not read/copied into commits, artifacts or the LaunchAgent plist.
+- GitHub lookup is read-only. Commit/PR/CI context and hosted job links appear in the dashboard. Successful existing
+  CI triggers private smoke (main push: matrix) once per observed CI run, only for an identical clean operator-owned
+  checkout. No automatic checkout of arbitrary public PR code on private machines; no issue/comment publication.
+  Hosted reports remain on GitHub, outside the authenticated private dashboard origin.
+- Automatic failed-run investigations inventory/hash screenshots, diffs, traces, environment reports and logs.
+  AI receives a failure/reference image pair when available plus bounded allowlisted diagnostic signals, never raw
+  log text or mutation truth. Findings are advisory and excluded from mutation-effectiveness denominators. First-bad/
+  last-good history is qualified by target, clean source and baseline digest; it is not proof of a causal commit.
+- Retention defaults: ordinary passes 14 days; failures/campaigns 90 days; 500 runs / 10 GB. Latest target/mode/status
+  and active/current-batch records are protected. Pressure may evict routine passes older than a day; protected
+  capacity exhaustion blocks new work. Deletion receipts retain 1000 entries, batch history 200. A single active
+  run can exceed the storage ceiling before the next admission check. Ignored runtime evidence needs private backup.
+- A logged-in macOS LaunchAgent now owns the service at <http://127.0.0.1:4317>, persists across login and restarts
+  after crashes. Its plist contains configuration paths, not copied credentials. It still needs an awake GUI session,
+  available native clients and existing SSH forwards; VM/tunnel lifecycle remains an operator responsibility.
+
+**Actual acceptance evidence:**
+
+- Scheduled nightly batch **`168543f1-5ee7-4112-9f16-e0225f2e317f`**, clean **`8dabba3`**, ran without manual
+  test dispatch. macOS→Ubuntu GNOME and Linux→Rocky Xfce/xrdp passed. Windows→Windows 11 correctly failed a
+  **679-pixel** comparison because an **Activate Windows watermark** appeared in the guest. Its automatic
+  investigation completed, and the batch honestly reports **attention** rather than all-green health.
+- That batch's macOS/Ubuntu crop campaign **`2026-10-11T13-59-39.567Z-943c672b`** manifested and deterministically
+  caught **1/1 defect**, with **0/2 healthy-control false positives**, then restored the healthy lifecycle in
+  **`2026-10-11T13-59-55.431Z-53db0731`**. AI completed five observations using existing cache: **0/1 crop
+  detected, 0/4 healthy-control false positives**. The known AI miss remains visible; no new inference is claimed.
+- `scripts/qa/automation-acceptance.mjs` inspected the actual scheduled batch, opened campaign images and a failed
+  investigation, and captured desktop/390-pixel mobile views with **zero browser errors or horizontal overflow**.
+  Screenshots were visually reviewed. Receipts: `.qa/phase5-scheduled-acceptance.json` and
+  `.qa/phase5-{dashboard,mobile,evidence,investigation}.png`.
+- A temporary one-minute schedule produced **two distinct timer-driven batches**, six native baseline checks all
+  passed on clean **`3d94633`**, with a service restart between batches and identical persisted next-due time.
+  Overlapping manual execution returned **409**. Batch IDs: **`ee3909c2-a215-4d40-b1c0-548908a15995`** and
+  **`6fa516e9-6646-4d68-a29a-d9d3061ab372`**; receipt `.qa/phase5-recurrence.json`. Temporary schedule removed.
+- An actual service SIGKILL during startup of **`2026-10-11T14-04-43.542Z-0ca21d35`** was recovered by launchd.
+  The run became **infrastructure-failed / finished / test not run**, without replay, changed due times or extra AI
+  requests. Receipt `.qa/phase5-recovery.json`. Interrupted batch-step semantics also have persisted-state tests.
+- Fresh automatic investigation **`2026-10-11T14-20-55.516Z-fa8cac65`** on clean **`0ad379d`** retained the real
+  Windows failure, reference/actual hashes, trace/log inventory and only the screenshot-mismatch diagnostic signal.
+  A live private Codex review identified the activation watermark as an overlay. Receipt
+  `.qa/phase5-failure-acceptance.json`. Earlier investigation records remain intact: the initial unpaired full-window
+  review missed the watermark; an early diagnostic pattern mistook configured assertion timeouts for actual timeouts.
+  Image-pair selection and that diagnostic matcher were corrected, with no baseline change or hidden retry-to-green.
+- GitHub-hosted run **[38147252471](https://github.com/meanaverage/tabby-rdp/actions/runs/38147252471)** on clean
+  **`789e37d`** passed **all three native OS jobs**; existing CI
+  **[38147252455](https://github.com/meanaverage/tabby-rdp/actions/runs/38147252455)** also passed. All hosts reported
+  Tabby **1.0.236**, Electron **43.7.0**, xterm major **6**, with Linux/Windows x64 and macOS ARM64. Actual settings
+  screenshots from the preceding all-green **`0ad379d`** hosted run were visually inspected on all three OSes.
+  Downloaded final artifacts are retained privately in `.qa/phase5-hosted-789e37d/` as well as GitHub's seven-day store.
+- Successful CI **38147252455** automatically triggered private smoke batch
+  **`b21eda11-799f-4695-913e-ed5ddd0f974f`** on the same clean **`789e37d`**: **all three native baseline checks
+  passed**. Receipt `.qa/phase5-github-trigger-final.json`. A separate actual read-only GitHub lookup associated
+  published commit `ead516037c6b9a9e8abc4df80a9e7f8c8426e6d4` with closed PR **#76** and its successful CI;
+  `.qa/phase5-github-context.json`. This branch has no PR; that historical association is not invented current-PR coverage.
+- The preceding GitHub-triggered batch **`47be16e4-b148-449d-b561-678d88b8a2b1`** caught a **25,299-pixel** Windows
+  settings difference and automatically investigated it. Direct DOM inspection confirmed a retained **20-pixel scroll
+  offset** in the persistent client. The settings test now establishes scroll-top zero before capture; no styles,
+  tolerances or reviewed baselines changed. All three private checks passed after correction, both manually and via
+  the fresh CI trigger above. The original failure stays retained in `.qa/phase5-github-trigger-acceptance.json`.
+
+**Validation, development findings and handoff:**
+
+- **28 QA tests passed**, covering schedules/coalescing/restart, source changes, serialization, retention deletion/
+  protection/audit, history bounds, evidence containment, diagnostic allowlists, GitHub outage/exact source and
+  hosted credential boundaries, alongside earlier HTTP/AI contracts. **581 unit tests passed, 3 skipped, 0 failed**;
+  test typechecking passed. Existing CI also passed on the final implementation. No screenshot baseline changed.
+- Hosted execution exposed and resolved real setup/test issues: Linux needed its packaged sandbox permissions and
+  D-Bus/display services; fresh clients needed an empty SSH config; Windows plugin linking/cleanup required native
+  handling. Functional scrollback/background assertions now use real PTY output because synthetic injected output
+  was overwritten by ConPTY. Windows command-editor probe input is cleared before the scrollback command.
+- Exploratory hosted full-unit runs revealed existing Unix-path/shell/fixture assumptions on Windows and certificate
+  fixture/tooling differences on macOS. Those failed runs remain in GitHub history; full cross-platform unit-suite
+  portability is **not qualified** by the final native-smoke workflow. Local private Windows functional-smoke
+  diagnostics also encountered persistent-client SSH/default-shell fixture setup; they are not claimed as full passes.
+- Credential scanning found **zero matches** in 333 tracked/nonignored files for actual private QA passwords/key
+  material. Downloaded hosted evidence scan covered **1,621 files/ZIP members (1,292 ZIP members)** with zero matches
+  for credential patterns, actual private QA secrets or the dashboard token. No OpenAI authentication store was read.
+- Permanent scheduling is **enabled**: next nightly **2026-10-12 13:58:13 UTC**, next weekly
+  **2026-10-18 13:57:28 UTC**. GitHub polling is enabled. The expanded weekly profile is configured/contract-tested;
+  its full 13-mutation campaign on three clients was not newly run as a weekly timer event during this phase.
+- The private Windows RDP guest's activation watermark remains a known environmental failure. Do not update a
+  baseline or mask it to make health appear green; arrange legitimate guest activation separately. AI crop sensitivity
+  remains limited, confidence is uncalibrated, and AI findings do not block deterministic acceptance.
+- Phase **2b KDE/KRDP remains pending**. H.264, broader RDP scenarios and x86_64 **RDP** coverage remain unqualified;
+  hosted x64 native smoke does not close those gaps. Direct paid API transport remains contract-tested only.
+- Source/history/retention use the existing private checkout and `.qa` store. Back up that ignored evidence privately;
+  the LaunchAgent does not deploy new commits or provision VMs. Before editing or updating this checkout, pause
+  automation and wait for active work. Refer to `docs/visual-qa.md` for operation and browser acceptance commands.
+- Phase 5 implementation is committed through **`789e37d`** on `feat/visual-qa-platform-matrix`; hosted workflow
+  integration was pushed for actual execution. No merge/release, new self-hosted runner, or other thread's VM change.
+  Stop here; future environment qualification is separate work.
 
 ## 17. Execution Instructions for Codex / Astra High
 

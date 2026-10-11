@@ -585,11 +585,13 @@ its reason and advances to its next occurrence rather than repeatedly consuming 
 ### Hosted CI and the private credential boundary
 
 `.github/workflows/visual-qa.yml` runs on pushes, PRs and manual dispatch using standard GitHub-hosted Ubuntu 24.04 x64,
-Windows 2025 x64 and macOS 15 ARM64. It checks the build/types/unit suite, installs checksum-pinned official Tabby,
+Windows 2025 x64 and macOS 15 ARM64. It checks the build/types, installs checksum-pinned official Tabby,
 and runs existing `smoke-host` plus `visual-smoke`. The latter reuses actual settings navigation, renderer checks,
 client identity, screenshots and traces; it explicitly does not perform a reviewed hosted baseline comparison.
 It cannot establish real RDP rendering without a remote desktop. Missing private credentials are never treated as
 passing private-RDP coverage. Hosted environment-specific baselines require separate review before enabling them.
+The full unit suite remains required by the existing Linux `ci.yml` workflow. Exploratory full-suite runs on hosted
+Windows/macOS exposed fixture/tooling portability failures; native smoke success does not qualify those unit suites.
 
 No OpenAI secret or login, private configuration, local cache or RDP network access is supplied to hosted workflows.
 Checkout has credential persistence disabled. Uploads include only the job's temporary `tabby-qa-evidence` directory,
@@ -606,7 +608,7 @@ checked out on machines holding private access. No GitHub issue/comment/status i
 
 ### Evidence history, investigations and retention
 
-The dashboard shows per-environment history, median duration, application versus infrastructure failures and
+The dashboard shows per-environment history, median duration, test versus infrastructure failures and
 suspected mixed pass/fail results on the same clean commit/baseline digest. Filter run history by commit prefix.
 Run evidence retains the digest of the reviewed baseline set. The first observed bad commit is a historical bound,
 not causal attribution; environment changes can still explain a difference. No automatic bisection is claimed.
@@ -625,3 +627,17 @@ Protected evidence can make this a soft storage ceiling: new runs block until th
 run may cross the threshold before the next admission check. Deletion receipts retain the last 1000 removals;
 automation state retains 200 batches. AI caches/reviews remain bounded by their existing request/history caps.
 Back up `.qa/runs`, `.qa/automation`, and AI cache/ledger together, privately; never reset a ledger to bypass limits.
+
+### Reproduce the scheduled browser acceptance
+
+After a real scheduled `nightly` batch completes, inspect its retained mutation, restored healthy run, automatic
+investigations and responsive dashboard with:
+
+```sh
+TRD_QA_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  node scripts/qa/automation-acceptance.mjs <nightly-batch-id>
+```
+
+Omit `TRD_QA_BROWSER` when the Playwright-managed Chromium is installed. The observer does not launch a campaign or
+make AI requests. It preserves real failed results and requires completed investigations for them. Receipts and
+screenshots remain in `.qa/`; see the Phase 5 handoff in `VISUAL-QA-PLAN.md` for exact accepted runs and known limits.
