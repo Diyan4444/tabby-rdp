@@ -103,7 +103,8 @@ node scripts/qa/acceptance.mjs
 
 This signs in through the UI, clicks Run, waits for Passed, verifies screenshot loading, opens the HTML report and
 its trace viewer, verifies the recorded screenshot assertion, and checks the dashboard at 390 px width. It writes
-`<test>-acceptance.json`, `<test>-dashboard.png`, `<test>-mobile.png`, and `<test>-trace.png` to the data directory.
+`<test>-acceptance.json`, `<test>-dashboard.png`, `<test>-mobile.png`, `<test>-mobile-evidence.png`, and `<test>-trace.png`
+to the data directory. Mobile captures are bounded overview/evidence views so growing history does not require a huge screenshot.
 A fresh run consumes one history slot. The dashboard itself needs no downloaded Playwright browser: its test attaches
 to the existing Tabby. Only this browser acceptance script needs Chromium/Chrome.
 
@@ -335,8 +336,37 @@ SELinux remains enforcing. Its tested versions are Rocky **9.8**, Xfce **4.18.3*
 Each `visual-{macos,windows,linux}-rocky9` target supplies `TRD_TEST_USER=tabbyxrdp`, `TRD_TEST_XRDP_USER=tabbyxrdp`,
 `TRD_TEST_XRDP_PASSWORD`, and the existing SSH settings as seen by that client. The test verifies real xrdp discovery,
 exercises its certificate-bound non-NLA consent through the normal UI, and locates the actual Xfce/Xorg session.
-It requires xrdp 0.10 or newer for live resize, reuses the GTK fixture on X11, and closes the test's Xfce session afterward.
+It requires xrdp 0.10 or newer for live resize, reuses the GTK fixture on X11, and closes the test's Xfce session during normal cleanup.
+Forced cancellation can leave that account's Xfce session until operator cleanup; the fixture itself times out after five minutes.
 Remote JSON and client screenshots are captured; no independent Linux guest pixel oracle is claimed.
 
 Fedora KDE Plasma/KRDP is the planned third Linux RDP stack in [the plan](VISUAL-QA-PLAN.md#planned-third-linux-stack--fedora-kde-plasma--krdp).
 It remains Pending and has no passing dashboard cell. Its session and H.264 requirements must be qualified separately.
+
+### Executed matrix (2026-10-11)
+
+All 18 browser workflows passed on clean commits `43a487f` / `8c4dd7c`, with identical RDP implementation and plugin content,
+zero lifecycle retries and baseline writes disabled. Only the mobile acceptance capture helper changed between those commits.
+
+| Native Tabby client | Settings | Ubuntu / GNOME 46 | Fedora / GNOME 50 | Debian 13.7 / GNOME 48 | Rocky 9 / Xfce / xrdp | Windows 11 |
+|---|---|---|---|---|---|---|
+| macOS ARM64 | Pass | Pass | Pass | Pass | Pass | Pass |
+| Windows ARM64 | Pass | Pass | Pass | Pass | Pass | Pass |
+| Linux ARM64 (Ubuntu) | Pass | Pass | Pass | Pass | Pass | Pass |
+
+Exact run IDs, validation, cleanup and remaining limits are in [the plan handoff](VISUAL-QA-PLAN.md#phase-2-extension--distro-and-native-client-coverage-2026-10-11).
+These are fifteen RDP lifecycles and three local UI checks, not x86_64 or H.264 qualification. macOS is a native client target;
+Linux and Windows supply the remote server roles. Native Linux runs in Xvfb, separately from its host's GRD session.
+Dedicated native clients remain running for dashboard use; their launcher/operator owns shutdown and profile cleanup.
+
+To repeat the whole matrix against the configured dashboard, serialize it:
+
+```sh
+for client in macos windows linux; do
+  for desktop in host ubuntu2404 fedora44 debian13 rocky9 windows11; do
+    node scripts/qa/acceptance.mjs "visual-$client-$desktop" || exit
+  done
+done
+```
+
+Each run consumes one of the dashboard's 100 history slots. Keep previous failure evidence when archiving history.

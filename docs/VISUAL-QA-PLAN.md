@@ -580,7 +580,7 @@ Update it after each completed phase.
 |---|---|---|---|
 | 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
 | 2. Real RDP Validation | Complete | `439d9d0` | Clean-commit browser workflows executed Windows 11 and Ubuntu GNOME RDP tests, compared reviewed screenshots, and opened reports/traces on 2026-10-10 PDT. |
-| 2a. Distro/native-client expansion | In Progress | — | Expanded matrix acceptance underway. |
+| 2a. Distro/native-client expansion | Complete | `277874f` + `43a487f` + `8c4dd7c` | All 18 clean-checkout browser workflows passed: three native clients, five RDP servers each, plus settings. Exact receipts below. |
 | 2b. Fedora KDE Plasma / KRDP | Pending | — | Third Linux desktop/RDP stack requested; requires its own session, codec and three-native-client acceptance evidence. |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
@@ -807,7 +807,7 @@ The document must serve as a durable handoff between independent Codex sessions.
 
 ### Phase 2 extension — distro and native-client coverage (2026-10-11)
 
-**Scope:** user-requested expansion of Phase 2, not Phase 3. Status: In Progress pending dashboard acceptance.
+**Scope:** user-requested expansion of Phase 2, not Phase 3. Status: **Complete**, with all 18 browser workflows accepted on 2026-10-11.
 
 - Added fixed matrix cells for macOS, Windows and Linux **native Tabby clients**, each with settings UI plus
   Ubuntu 24.04/GNOME 46, Fedora 44/GNOME 50, Debian 13.7/GNOME 48, Rocky 9/Xfce/xrdp and Windows 11 remote desktops.
@@ -823,7 +823,8 @@ The document must serve as a durable handoff between independent Codex sessions.
 - Added distro-aware package/image provisioning and a small native-client launcher/bundle command. No extra
   service, job queue or parallel test framework. Native client sessions are operator-managed and explicitly stopped.
 - The initial fifteen-cell GNOME/Windows matrix passed browser acceptance on clean implementation commits.
-  The user subsequently added Rocky/Xfce/xrdp; its preparation and final eighteen-cell acceptance remain in progress.
+  The user subsequently added Rocky/Xfce/xrdp; all eighteen cells then passed fresh browser acceptance with the
+  final shared RDP test implementation and 63 reviewed baselines (three settings plus fifteen RDP cells × four checkpoints).
 - Provisioning findings retained in `.qa/`: Fedora's shim was rejected by the installed ARM Secure Boot firmware;
   its disposable VM explicitly uses non-Secure-Boot AAVMF. Windows portable ARM64 required Microsoft's signed
   Visual C++ ARM64 runtime. First-login GNOME welcome dialogs and overview obscured correct framebuffer content;
@@ -845,6 +846,61 @@ The document must serve as a durable handoff between independent Codex sessions.
   could change the requested viewport. The fixes track failed tabs, select the own Linux desktop explicitly, wait for
   initial geometry and scope the fixed viewport to the owned QA pane. Actual dimensions are asserted. No screenshot
   tolerance, masks or retries were added. Separate failures and corrective commits remain in the evidence history.
+
+**Final acceptance and handoff:**
+
+- All **18** workflows signed in, selected the client/desktop, executed the test, verified Passed and image loading,
+  opened the report and local trace viewer, and checked mobile layout. The first eleven receipts use clean commit
+  `43a487f`; Windows→Windows and all six Linux-client receipts use clean `8c4dd7c`. The only difference between these
+  commits is bounded mobile dashboard screenshot capture in the browser acceptance helper. RDP assertions, plugin
+  bytes and all baselines are identical. Every lifecycle has zero retries; baseline writes were disabled.
+- Windows→Windows run `2026-10-11T10-52-06.695Z-37d16a89` passed RDP checks, but its browser demonstration failed at
+  Chrome's full-page mobile capture. That passing RDP record and the separate acceptance error remain retained.
+  `8c4dd7c` captures mobile overview/evidence separately; the complete workflow was then rerun successfully below.
+  This was not relabeled as an RDP failure and no pixel tolerance changed.
+- Validation: plugin/test typechecking passed; **580 unit tests passed, 3 skipped, 0 failed**; **7 QA contract tests
+  passed**; shell syntax and diff checks passed. A real failed SSH connection was separately verified to remove its
+  owned tab and preserve existing tabs. All twelve Rocky baselines were reviewed: tab-return bytes equal initial
+  bytes, and reconnect bytes equal resized bytes. The existing 51 baseline files were not changed.
+- Executed server identities: Ubuntu **24.04.5 / GNOME 46.0 / GRD 46.3**; Fedora **44 / GNOME 50.5 / GRD 50.2**;
+  Debian **13.7 / GNOME 48.7 / GRD 48.1**; Rocky **9.8 / Xfce 4.18.3 / xrdp 0.10.6.1 / xorgxrdp 0.10.5**;
+  Windows **11 Pro 26H2 / 26300.9457**. All native clients were ARM64. The installed plugin content digest matched
+  across every run: `af02b30405df3a651792b131a36192ee51fdce196275489a66cd253cbf8a505b`.
+- The eighteen receipts retain **774 attachments**. Evidence: `.qa/runs/<IDs below>/`,
+  `.qa/visual-<client>-<target>-acceptance.json`, matching dashboard/mobile/trace PNGs,
+  `.qa/matrix-validation.json` and `.qa/matrix-18-acceptance.log`. Final desktop/mobile views and actual images were
+  visually inspected. Earlier failures remain available. Runtime evidence is ignored and must be backed up separately.
+- Cleanup verified: zero fixture directories on all four Linux guests; zero Windows fixture tasks/directories;
+  zero owned SSH panes or temporary sizing styles on native Windows/Linux clients; no remaining test Xfce session.
+  Scanned **4,042 artifact files and 13,532 ZIP members** for the actual test/admin passwords and private-key content
+  (including UTF-16/base64 forms): zero matches. Dedicated guests, native clients, SSH forwards and the dashboard
+  remain available; no other thread's guest was modified. Private lifecycle details are in `.qa/private/`.
+- Remaining scope: x86_64 clients, H.264, independent Linux guest pixels and the broader Phase 2 scenarios already
+  listed above. Windows unactivated-guest overlays and installer provenance remain disclosed limitations. Fedora
+  KDE/KRDP is **planned only** below. No Phase 3 mutation, AI, scheduler or new VM-control API was implemented.
+
+**Accepted runs** (durations are whole test-run times, not repaint latency):
+
+| Target | Clean run ID | Seconds |
+|---|---|---:|
+| visual-macos-host | `2026-10-11T10-46-34.712Z-f782a9ee` | 3.6 |
+| visual-macos-ubuntu2404 | `2026-10-11T10-46-41.888Z-bf325b96` | 14.3 |
+| visual-macos-fedora44 | `2026-10-11T10-47-01.101Z-9a529004` | 14.7 |
+| visual-macos-debian13 | `2026-10-11T10-47-20.300Z-3463f2d6` | 14.1 |
+| visual-macos-rocky9 | `2026-10-11T10-47-39.628Z-c2054e76` | 17 |
+| visual-macos-windows11 | `2026-10-11T10-48-00.819Z-3499bc91` | 144.8 |
+| visual-windows-host | `2026-10-11T10-50-30.312Z-23fd5ea4` | 3.8 |
+| visual-windows-ubuntu2404 | `2026-10-11T10-50-37.879Z-d234af39` | 17.6 |
+| visual-windows-fedora44 | `2026-10-11T10-50-58.999Z-c7b39800` | 18.6 |
+| visual-windows-debian13 | `2026-10-11T10-51-22.325Z-366f5001` | 17.5 |
+| visual-windows-rocky9 | `2026-10-11T10-51-43.531Z-e64c6b38` | 19.5 |
+| visual-windows-windows11 | `2026-10-11T10-56-33.730Z-64078b2d` | 159.3 |
+| visual-linux-host | `2026-10-11T10-59-17.099Z-f9186af6` | 3.6 |
+| visual-linux-ubuntu2404 | `2026-10-11T10-59-24.119Z-c02ff358` | 17.1 |
+| visual-linux-fedora44 | `2026-10-11T10-59-45.286Z-406aba02` | 17.9 |
+| visual-linux-debian13 | `2026-10-11T11-00-08.544Z-87f9aea1` | 17.1 |
+| visual-linux-rocky9 | `2026-10-11T11-00-29.713Z-63e3b123` | 18.7 |
+| visual-linux-windows11 | `2026-10-11T11-00-52.867Z-19dc2789` | 152.9 |
 
 ### Planned third Linux stack — Fedora KDE Plasma / KRDP
 
