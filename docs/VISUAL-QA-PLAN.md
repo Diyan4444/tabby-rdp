@@ -578,7 +578,7 @@ Update it after each completed phase.
 
 | Phase | Status | Commit | Acceptance |
 |---|---|---|---|
-| 1. Foundation | Complete | Phase 1 implementation commit (recorded in handoff below) | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
+| 1. Foundation | Complete | `fac5dba` + `415f29d` | Browser sign-in → execute real Tabby settings test → Passed → actual/expected PNGs → self-hosted trace viewer demonstrated on 2026-10-10 PDT. |
 | 2. Real RDP Validation | Pending | — | — |
 | 3. Defect Injection | Pending | — | — |
 | 4. AI Visual Intelligence | Pending | — | — |
@@ -683,15 +683,16 @@ Do not represent incomplete work as complete.
 - Implementation: `scripts/qa/{server,store}.mjs`, static UI in `scripts/qa/public/`, Playwright config/spec/reporter
   and reviewed PNG in `test/visual/`, `visual-host` integration in `test/run.ts`, package commands, API/lifecycle
   tests and one validation step in existing CI. Operations: [visual-qa.md](visual-qa.md).
-- Commit: the Phase 1 implementation commit is recorded after final commit validation; find it with
-  `git log --oneline --grep='establish Phase 1 visual QA foundation'`. All source changes and this initial acceptance
-  record are in that commit. Later phases remain Pending.
-- Actual acceptance: browser-driven run **`2026-10-11T05-31-46.756Z-f79f9c74`**, about 3.7 seconds end to end, passed
-  the real Tabby settings screenshot comparison. The browser script signed in, clicked Run, loaded actual/expected
+- Commits: **`fac5dba`** establishes the foundation; **`415f29d`** stabilizes the settings viewport and improves
+  the acceptance script's run selection/failure handling. This subsequent documentation commit records the final
+  clean-commit evidence. Later phases remain Pending.
+- Actual acceptance: **three consecutive full browser workflows passed on clean commit `415f29d`**, each with
+  zero test retries and the same reviewed baseline. Run IDs: `2026-10-11T05-38-37.268Z-269fb6e1`,
+  `2026-10-11T05-38-44.436Z-3a264874`, and **`2026-10-11T05-38-51.621Z-76b2e9b7`**. The script signed in, clicked Run,
+  verified that the newly created run was selected, waited for its terminal Passed status, loaded actual/expected
   screenshots, opened Playwright's report, followed its trace link, and found the recorded `toHaveScreenshot`
-  assertion. Desktop/mobile dashboard captures and the trace viewer were visually inspected. The run records base
-  commit `ead5160` plus uncommitted Phase 1 changes; no clean-commit coverage is implied by that run.
-- Evidence: `.qa/runs/2026-10-11T05-31-46.756Z-f79f9c74/` contains result JSON, host JSON, PNGs, trace and HTML report.
+  assertion. Desktop/mobile dashboard captures and the trace viewer were visually inspected during acceptance.
+- Evidence: `.qa/runs/2026-10-11T05-38-51.621Z-76b2e9b7/` contains result JSON, host JSON, PNGs, trace and HTML report.
   `.qa/acceptance.json`, `dashboard-acceptance.png`, `dashboard-mobile.png`, `trace-acceptance.png` record the browser
   demonstration. These generated artifacts are intentionally untracked; rerun `scripts/qa/acceptance.mjs` to reproduce.
 - Validation: build + plugin/test typecheck passed; existing unit suite **578 passed, 3 skipped, 0 failed** (the skips
@@ -699,8 +700,15 @@ Do not represent incomplete work as complete.
   three QA tests passed, covering auth/origin/Host checks, catalog enforcement, concurrency, cancellation, protected
   artifacts, path containment, persistent history, recovery classification and a real launcher failure with the
   test correctly marked Not executed. CI now runs these same QA contract tests; no visual CI execution is claimed.
+- Validation caught a real checkpoint-stability failure in run `2026-10-11T05-36-53.716Z-703eb4ae` on `fac5dba`:
+  help-topic navigation scheduled smooth scrolling and changed the captured scroll position. The dashboard retained
+  a Failed result, 19,430 differing pixels, expected/actual/diff images and trace. This was test setup nondeterminism,
+  not an established application regression. `415f29d` uses ordinary Settings navigation and requires the heading
+  fully in view. The baseline bytes and zero-difference tolerance were not changed; the three clean runs above
+  validate the correction. This historical failure remains visible rather than being deleted or relabeled Passed.
 - Negative baseline check: temporarily removed the reviewed PNG, executed normal `visual-host`, verified a failing
   result with screenshot/trace evidence and no baseline creation, then restored the identical reviewed bytes.
+  Baseline SHA-256: `4bc0b2bad2d4743b0e21e96ef7c31bad14acea16b7495da104c412e15725e202`.
   No defect injection framework or mutation campaign was implemented.
 - Next phase: read this entire plan and `docs/visual-qa.md`; provision/identify dedicated Windows and GNOME desktops,
   reuse the existing RDP suites/runner, and expand the fixed catalog and structured results deliberately. Do not
