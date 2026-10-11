@@ -1,0 +1,300 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:02:45 -0700
+Subject: [PATCH 42/51] fix(egfx): track only the surfaces the compositor can
+ hold
+
+The compositor refuses a surface larger than 16384 pixels on either edge
+(MAX_SURFACE_DIM), but the client recorded it anyway: in its surfaces,
+and, with an external H.264 decoder, in the sizes that bound a frame's
+regions. A server could create a 65535x65535 surface and send H.264 to
+it: each frame was handed to the decoder, its regions clipped to a size
+no pixels were allocated for, decoded, read back, and then dropped.
+Re-creating an existing surface that large did more: the compositor
+returned before removing the surface it replaced, so the old one stayed
+mapped and drew the commands meant for the new one, while the client
+took the id for 65535x65535.
+
+Client and compositor now share the compositor's limit
+(Compositor::holds_surface). A CreateSurface beyond it leaves no surface
+under its id on either side, and the surface it replaces goes with it:
+commands for the id fail as they do for any unknown surface. The limit
+itself is unchanged; 16384 is twice the width of an 8K display. A
+surface the compositor's byte budget refuses is still tracked, as
+before.
+
+The fuzzing oracle that mirrors the client's surface state follows.
+---
+ crates/ironrdp-egfx/src/client.rs             | 29 +++++++-
+ crates/ironrdp-egfx/src/compositor.rs         | 68 ++++++++++++++++---
+ crates/ironrdp-fuzzing/src/oracles/mod.rs     |  7 ++
+ .../tests/egfx/client.rs                      | 44 ++++++++++++
+ .../tests/egfx/external_h264.rs               | 35 ++++++++++
+ 5 files changed, 170 insertions(+), 13 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index a648b226..418b0214 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -483,7 +483,8 @@ pub struct GraphicsPipelineClient {
+     /// `EndFrame`s in `queue`: frames received but not yet processed.
+     queued_frame_ends: u32,
+     /// Surface sizes as of the commands received so far, which can be ahead of `surfaces` while commands wait in
+-    /// `queue`: a frame is handed out when it arrives, and its regions are bounded by its surface then.
++    /// `queue`: a frame is handed out when it arrives, and its regions are bounded by its surface then. Like
++    /// `surfaces`, it leaves out surfaces too large for the compositor.
+     received_surfaces: BTreeMap<u16, (u16, u16)>,
+ }
+ 
+@@ -635,8 +636,13 @@ impl GraphicsPipelineClient {
+     fn enqueue(&mut self, pdu: GfxPdu) -> PduResult<()> {
+         match &pdu {
+             GfxPdu::CreateSurface(create) if create.width != 0 && create.height != 0 => {
+-                self.received_surfaces
+-                    .insert(create.surface_id, (create.width, create.height));
++                if Compositor::holds_surface(create.width, create.height) {
++                    self.received_surfaces
++                        .insert(create.surface_id, (create.width, create.height));
++                } else {
++                    // Refused along with the surface it replaces (see `handle_create_surface`).
++                    self.received_surfaces.remove(&create.surface_id);
++                }
+             }
+             GfxPdu::DeleteSurface(delete) => {
+                 self.received_surfaces.remove(&delete.surface_id);
+@@ -1071,6 +1077,23 @@ impl GraphicsPipelineClient {
+             return;
+         }
+ 
++        // A surface larger than the compositor holds is refused there (see `Compositor::create_surface`), and here
++        // too, so that both agree on which surfaces exist: commands for it fail as they do for any unknown surface,
++        // rather than being decoded for nothing and clipped to a size no pixels were allocated for. It still replaces
++        // the surface under its id, if any.
++        if !Compositor::holds_surface(width, height) {
++            warn!(
++                surface_id,
++                width, height, "Refusing a surface larger than the compositor holds"
++            );
++            self.compositor.delete_surface(surface_id);
++            self.progressive_decoder.delete_surface(surface_id);
++            if self.surfaces.remove(&surface_id).is_some() {
++                self.handler.on_surface_deleted(surface_id);
++            }
++            return;
++        }
++
+         let surface = Surface {
+             id: surface_id,
+             width,
+diff --git a/crates/ironrdp-egfx/src/compositor.rs b/crates/ironrdp-egfx/src/compositor.rs
+index ea7f6003..4910f163 100644
+--- a/crates/ironrdp-egfx/src/compositor.rs
++++ b/crates/ironrdp-egfx/src/compositor.rs
+@@ -213,23 +213,37 @@ impl Compositor {
+         self.allocated_bytes = self.allocated_bytes.saturating_sub(len);
+     }
+ 
++    /// Whether a surface of this size can be held at all: non-zero and within
++    /// [`MAX_SURFACE_DIM`] on both edges.
++    ///
++    /// The client refuses a `CreateSurface` that fails this, as
++    /// [`Self::create_surface`] does, so that both agree on which surfaces exist
++    /// and how large they are. A surface that passes can still be refused by the
++    /// byte budget.
++    pub(crate) fn holds_surface(width: u16, height: u16) -> bool {
++        0 < width && width <= MAX_SURFACE_DIM && 0 < height && height <= MAX_SURFACE_DIM
++    }
++
+     /// Handle `CreateSurface`: allocate a zeroed RGBA8888 canvas.
+     ///
+-    /// Surfaces beyond [`MAX_SURFACE_DIM`] on either edge are skipped rather than
+-    /// allocated; subsequent commands targeting them become no-ops (the metadata
+-    /// tracked by the client is unaffected).
++    /// The new surface replaces any surface under its id. One that fails
++    /// [`Self::holds_surface`], or that the budget cannot cover, is refused rather
++    /// than allocated: the id then has no surface, and subsequent commands
++    /// targeting it become no-ops.
+     pub(crate) fn create_surface(&mut self, id: u16, width: u16, height: u16) {
+-        if width == 0 || height == 0 || width > MAX_SURFACE_DIM || height > MAX_SURFACE_DIM {
+-            return;
+-        }
+-        let len = usize::from(width) * usize::from(height) * BYTES_PER_PIXEL;
+-
+-        // Release first: `BTreeMap::insert` drops any surface already under this id,
+-        // so re-creating one must not charge twice for the same slot.
++        // Release first, whether the new surface is refused or not: `BTreeMap::insert`
++        // drops any surface already under this id, so re-creating one must not charge
++        // twice for the same slot, and a refused one must not leave the surface it
++        // replaces in place (still mapped, and still drawn by commands for the id).
+         if let Some(previous) = self.surfaces.remove(&id) {
+             self.release(previous.data.len());
+         }
+ 
++        if !Self::holds_surface(width, height) {
++            return;
++        }
++        let len = usize::from(width) * usize::from(height) * BYTES_PER_PIXEL;
++
+         if !self.charge(len) {
+             return;
+         }
+@@ -1125,6 +1139,40 @@ mod tests {
+         assert_eq!(c.surfaces.len(), 1);
+     }
+ 
++    /// A surface re-created too large to hold leaves no surface under its id, rather
++    /// than the one it replaced: that one would stay mapped and take the commands
++    /// meant for the new one.
++    #[test]
++    fn recreating_a_surface_too_large_to_hold_drops_the_one_it_replaces() {
++        assert!(Compositor::holds_surface(MAX_SURFACE_DIM, MAX_SURFACE_DIM));
++        assert!(!Compositor::holds_surface(MAX_SURFACE_DIM + 1, 1));
++        assert!(!Compositor::holds_surface(1, MAX_SURFACE_DIM + 1));
++
++        let mut c = Compositor::default();
++        c.reset(64, 64);
++        c.create_surface(1, 16, 16);
++        c.map_surface(1, 0, 0);
++        c.end_frame();
++        let _ = c.drain_output();
++
++        c.create_surface(1, MAX_SURFACE_DIM + 1, 16);
++        assert!(c.surfaces.is_empty());
++        assert_eq!(c.allocated_bytes, 0, "the replaced surface's charge is released");
++
++        let red = Color {
++            b: 0,
++            g: 0,
++            r: 0xff,
++            xa: 0xff,
++        };
++        c.solid_fill(1, &red, &[rect(0, 0, 16, 16)]);
++        c.end_frame();
++        assert!(
++            c.drain_output().is_empty(),
++            "nothing is drawn for a surface that does not exist"
++        );
++    }
++
+     /// `ResetGraphics` empties both maps, so it must zero the charge with them.
+     #[test]
+     fn reset_releases_the_whole_charge() {
+diff --git a/crates/ironrdp-fuzzing/src/oracles/mod.rs b/crates/ironrdp-fuzzing/src/oracles/mod.rs
+index 9de24056..d2bdd824 100644
+--- a/crates/ironrdp-fuzzing/src/oracles/mod.rs
++++ b/crates/ironrdp-fuzzing/src/oracles/mod.rs
+@@ -1507,6 +1507,13 @@ pub fn egfx_surface_state(data: &[u8]) {
+                     if p.width == 0 || p.height == 0 {
+                         return;
+                     }
++                    // A surface larger than the compositor holds (16384 pixels an edge) is refused, and the
++                    // surface it replaces goes with it.
++                    const MAX_SURFACE_DIM: u16 = 16384;
++                    if MAX_SURFACE_DIM < p.width || MAX_SURFACE_DIM < p.height {
++                        self.surfaces.remove(&p.surface_id);
++                        return;
++                    }
+                     self.surfaces.insert(
+                         p.surface_id,
+                         ExpectedSurface {
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/client.rs b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+index 7077d257..9e4ff6b1 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/client.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/client.rs
+@@ -390,6 +390,50 @@ fn client_resets_surfaces_via_process() {
+     );
+ }
+ 
++#[test]
++fn client_refuses_a_surface_larger_than_the_compositor_holds() {
++    // 16384 pixels an edge is as large as the compositor allocates.
++    let mut client = setup_active_client_with_surface(None, 1, 16384, 2);
++    assert!(client.get_surface(1).is_some());
++
++    for (width, height) in [(16385, 2), (2, 16385), (65535, 65535)] {
++        let create = GfxPdu::CreateSurface(CreateSurfacePdu {
++            surface_id: 2,
++            width,
++            height,
++            pixel_format: PixelFormat::XRgb,
++        });
++        client.process(0, &encode_for_process(&create)).expect("create");
++        assert!(client.get_surface(2).is_none(), "{width}x{height} is not tracked");
++    }
++
++    // Re-created too large, surface 1 is gone rather than left as it was.
++    let create = GfxPdu::CreateSurface(CreateSurfacePdu {
++        surface_id: 1,
++        width: 16385,
++        height: 2,
++        pixel_format: PixelFormat::XRgb,
++    });
++    client.process(0, &encode_for_process(&create)).expect("create");
++    assert!(client.get_surface(1).is_none());
++    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
++        surface_id: 1,
++        codec_id: Codec1Type::Uncompressed,
++        pixel_format: PixelFormat::XRgb,
++        destination_rectangle: ExclusiveRectangle {
++            left: 0,
++            top: 0,
++            right: 2,
++            bottom: 2,
++        },
++        bitmap_data: vec![0u8; 2 * 2 * 4],
++    });
++    assert!(
++        client.process(0, &encode_for_process(&pdu)).is_err(),
++        "commands for it fail as for any unknown surface"
++    );
++}
++
+ // ============================================================================
+ // Tests: Error Handling
+ // ============================================================================
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+index a957554d..cdd55431 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+@@ -469,6 +469,41 @@ fn a_frame_for_an_unknown_surface_is_refused() {
+     assert!(client.process(0, &wire(&pdu)).is_err());
+ }
+ 
++#[test]
++fn a_surface_too_large_for_the_compositor_takes_no_frames() {
++    let mut client = client();
++    // Surface 1 (16x8, mapped) re-created larger than the compositor holds: it is gone, not left as it was.
++    let huge = GfxPdu::CreateSurface(CreateSurfacePdu {
++        surface_id: 1,
++        width: 65535,
++        height: 65535,
++        pixel_format: PixelFormat::XRgb,
++    });
++    let fill = GfxPdu::SolidFill(SolidFillPdu {
++        surface_id: 1,
++        fill_pixel: Color {
++            b: 0,
++            g: 0,
++            r: 9,
++            xa: 0xff,
++        },
++        rectangles: vec![rect(0, 0, 16, 8)],
++    });
++    let sent = process_all(&mut client, &[huge, start(1), fill, end(1)]);
++    assert_eq!(acks(&sent), [(1, 0)]);
++    assert!(client.get_surface(1).is_none());
++    assert!(
++        client.drain_output().is_empty(),
++        "the surface it replaced is not drawn either"
++    );
++
++    // A frame for it is refused like one for any unknown surface, rather than decoded for nothing.
++    let pdu = avc420_to(1, rect(0, 0, 64, 64), &[Avc420Region::new(0, 0, 64, 64, 22, 100)]);
++    assert!(client.process(0, &wire(&start(2))).is_ok());
++    assert!(client.process(0, &wire(&pdu)).is_err());
++    assert!(client.take_h264_frames().is_empty());
++}
++
+ #[test]
+ fn regions_too_large_to_read_back_are_skipped() {
+     let mut client = client();

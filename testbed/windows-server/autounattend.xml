@@ -86,12 +86,12 @@
         <SynchronousCommand wcm:action="add">
           <Order>2</Order>
           <Description>Remote Desktop, WinRM and the test account (setup.ps1, from the config disc)</Description>
-          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\setup.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\setup.ps1 -UserName @@TEST_USER@@ -Password "@@TEST_PASSWORD@@" &gt; C:\Windows\Temp\tabby-rdp-setup.log 2&gt;&amp;1</CommandLine>
+          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\setup.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\setup.ps1 -UserName @@TEST_USER@@ -PasswordFile %d:\test-password.txt &gt; C:\Windows\Temp\tabby-rdp-setup.log 2&gt;&amp;1</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>3</Order>
           <Description>Hyper-V and RD Gateway (server.ps1, from the config disc): installs the roles and restarts; the rest runs at startup</Description>
-          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\server.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\server.ps1 -Stage roles -UserName @@TEST_USER@@ -Password "@@TEST_PASSWORD@@" @@SERVER_ARGS@@ &gt; C:\Windows\Temp\tabby-rdp-server.log 2&gt;&amp;1</CommandLine>
+          <CommandLine>cmd /c for %d in (D E F G H I) do if exist %d:\server.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File %d:\server.ps1 -Stage roles -UserName @@TEST_USER@@ -PasswordFile %d:\test-password.txt @@SERVER_ARGS@@ &gt; C:\Windows\Temp\tabby-rdp-server.log 2&gt;&amp;1</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

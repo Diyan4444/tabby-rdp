@@ -1,0 +1,228 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:21:55 -0700
+Subject: [PATCH 47/51] fix(web): bound the H.264 the decoders hold
+
+WebCodecsH264Decoder kept every frame it gave a VideoDecoder until its
+picture came out, with no limit on their number or size, and kept each
+frame's access unit as well, although the decoder has its own copy (the
+EncodedVideoChunk) and reading the picture back needs only the regions.
+A server could stream access units that produce no picture, or one only
+now and then. The stall check (no picture for 3 s) bounded that by time
+alone, and ZGFX lets a small PDU expand into megabytes of H.264, so 3 s
+can be a great deal of it.
+
+A frame in a decoder now keeps only what reading its picture back
+takes, and the decoders hold at most:
+
+- 256 frames each. A decoder keeps up with its stream, so frames wait
+  in it about as long as one takes to decode, and the server stops at
+  its unacknowledged frames: 256 is over two seconds of 60 Hz AVC444
+  (two access units a frame), and a frame that waits longer than 3 s
+  fails the decoder anyway.
+- 128 MiB of H.264 in all: over a second at the highest bitrate any
+  H.264 level allows (level 6.2, High profile: 1,000 Mbit/s), where
+  servers send a few to tens of Mbit/s.
+
+Beyond either, the decoder fails as on a decoder error: the session
+ends with the reason, and the application can reconnect without H.264.
+---
+ .../src/H264Decoder.test.ts                   | 48 +++++++++++++++
+ .../src/H264Decoder.ts                        | 61 ++++++++++++++++---
+ 2 files changed, 101 insertions(+), 8 deletions(-)
+
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index dfccb897..875aed79 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -284,6 +284,54 @@ describe('WebCodecsH264Decoder', () => {
+         expect(done).toHaveBeenCalledWith(0, null, decoder.failed);
+     });
+ 
++    it('fails when too many frames wait in one decoder', () => {
++        const failures: string[] = [];
++        decoder.close();
++        decoder = new WebCodecsH264Decoder({ onFailure: (reason) => failures.push(reason), now: () => clock });
++        decoder.decode(frame(0, true), done);
++        for (let id = 1; id < 256; id++) {
++            decoder.decode(frame(id, false), done);
++        }
++        expect(decoder.failed).toBeNull();
++        expect(decoder.stats.pending).toBe(256);
++
++        decoder.decode(frame(256, false), done);
++        expect(failures).toEqual(['more than 256 frames in a decoder']);
++        // The frames in the decoder complete with the failure, and so does the one refused.
++        expect(done).toHaveBeenCalledTimes(257);
++        expect(done).toHaveBeenLastCalledWith(256, null, 'more than 256 frames in a decoder');
++    });
++
++    it('fails when the frames in the decoders hold too much H.264', () => {
++        const big = (id: number): H264Frame => ({ ...frame(id, id === 0), data: new Uint8Array(48 * 1024 * 1024) });
++        decoder.decode(big(0), done);
++        decoder.decode({ ...big(1), surfaceId: 2, keyFrame: true }, done);
++        expect(decoder.failed).toBeNull();
++        decoder.decode(big(2), done);
++        expect(decoder.failed).toBe('more than 128 MiB of H.264 in the decoders');
++        expect(done).toHaveBeenLastCalledWith(2, null, decoder.failed);
++    });
++
++    it('counts a frame out of the decoder once its picture is out', async () => {
++        // Two of these fit in what the decoders may hold, three do not.
++        const big = (id: number): H264Frame => ({ ...frame(id, id === 0), data: new Uint8Array(60 * 1024 * 1024) });
++        decoder.decode(big(0), done);
++        FakeDecoder.instances[0].emit(0);
++        decoder.decode(big(1), done);
++        decoder.decode(big(2), done);
++        // Frame 1 never comes out: once frame 2 does, it is dropped, and no longer counted either.
++        FakeDecoder.instances[0].emit(2);
++        decoder.decode(big(3), done);
++        decoder.decode(big(4), done);
++        await flush();
++        expect(decoder.failed).toBeNull();
++        expect(done.mock.calls.map((call) => [call[0], call[1] === null])).toEqual([
++            [1, true],
++            [0, false],
++            [2, false],
++        ]);
++    });
++
+     it('fails when no key frame comes', () => {
+         vi.useFakeTimers();
+         decoder.close();
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index 6fa8eea3..a18e338b 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -6,7 +6,8 @@
+  * returns in the order the server sent the frames: surface commands after an H.264 frame, and the acknowledgement of
+  * its graphics frame (which paces the server), wait for it. So a frame that never comes out of the decoder would
+  * freeze the picture: after `stallMs` without output, or on any decoder error, the decoder fails, which ends the
+- * session with an error. Reconnecting without H.264 is the way out.
++ * session with an error. Reconnecting without H.264 is the way out. A server that has the decoders hold more than
++ * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all) fails them the same way.
+  */
+ 
+ export interface H264Rectangle {
+@@ -103,10 +104,13 @@ export async function h264Supported(): Promise<boolean> {
+     }
+ }
+ 
++/** A frame in a decoder: what reading its picture back takes. Its access unit is the decoder's now. */
+ interface Pending {
+-    frame: H264Frame;
++    frame: Pick<H264Frame, 'id' | 'destination' | 'regions'>;
+     done: H264Done;
+     since: number;
++    /** The size of its access unit. */
++    bytes: number;
+ }
+ 
+ interface Surface {
+@@ -139,6 +143,8 @@ export class WebCodecsH264Decoder {
+     reclaimed = false;
+ 
+     private readonly surfaces = new Map<number, Surface>();
++    /** The bytes of H.264 in the decoders: the access units of the pending frames. */
++    private pendingBytes = 0;
+     private readonly stallMs: number;
+     private readonly now: () => number;
+     private watchdog: ReturnType<typeof setInterval> | null = null;
+@@ -166,13 +172,29 @@ export class WebCodecsH264Decoder {
+             done(frame.id, null);
+             return;
+         }
++        const bytes = frame.data.byteLength;
++        if (surface.pending.size >= WebCodecsH264Decoder.MAX_PENDING_FRAMES) {
++            this.fail(`more than ${WebCodecsH264Decoder.MAX_PENDING_FRAMES} frames in a decoder`);
++            done(frame.id, null, this.failed ?? undefined);
++            return;
++        }
++        if (this.pendingBytes + bytes > WebCodecsH264Decoder.MAX_PENDING_BYTES) {
++            this.fail(
++                `more than ${WebCodecsH264Decoder.MAX_PENDING_BYTES / (1024 * 1024)} MiB of H.264 in the decoders`,
++            );
++            done(frame.id, null, this.failed ?? undefined);
++            return;
++        }
+         surface.needKey = false;
+         surface.waitingSince = null;
+         if (frame.keyFrame) {
+             this.stats.keyFrames++;
+         }
+-        surface.pending.set(frame.id, { frame, done, since: this.now() });
++        // Not the access unit: the chunk below is a copy of it, and reading the picture back needs only the regions.
++        const { id, destination, regions } = frame;
++        surface.pending.set(id, { frame: { id, destination, regions }, done, since: this.now(), bytes });
+         this.stats.pending++;
++        this.pendingBytes += bytes;
+         try {
+             surface.decoder.decode(
+                 new EncodedVideoChunk({
+@@ -194,8 +216,22 @@ export class WebCodecsH264Decoder {
+         }
+         this.surfaces.clear();
+         this.stats.pending = 0;
++        this.pendingBytes = 0;
+     }
+ 
++    /**
++     * The most frames one decoder may hold. A decoder keeps up with its stream, so frames wait in it about as long as
++     * one takes to decode, and the server stops at its unacknowledged frames: 256 is over two seconds of 60 Hz AVC444
++     * (two access units a frame), and a frame that waits longer than `stallMs` (3 s) fails the decoder anyway.
++     */
++    private static readonly MAX_PENDING_FRAMES = 256;
++
++    /**
++     * The most bytes of H.264 the decoders may hold at once: over a second at the highest bitrate any H.264 level
++     * allows (level 6.2, High profile: 1,000 Mbit/s), where servers send a few to tens of Mbit/s.
++     */
++    private static readonly MAX_PENDING_BYTES = 128 * 1024 * 1024;
++
+     private open(surfaceId: number): Surface {
+         const surface: Surface = {
+             decoder: new VideoDecoder({
+@@ -226,13 +262,11 @@ export class WebCodecsH264Decoder {
+             if (earlier >= id) {
+                 break;
+             }
+-            surface.pending.delete(earlier);
+-            this.stats.pending--;
++            this.settle(surface, dropped);
+             this.stats.dropped++;
+             dropped.done(earlier, null);
+         }
+-        surface.pending.delete(id);
+-        this.stats.pending--;
++        this.settle(surface, pending);
+         this.readRegions(picture, pending.frame).then(
+             (pixels) => {
+                 picture.close();
+@@ -256,8 +290,18 @@ export class WebCodecsH264Decoder {
+         );
+     }
+ 
++    /** Takes a frame out of the pending ones. */
++    private settle(surface: Surface, pending: Pending): void {
++        surface.pending.delete(pending.frame.id);
++        this.stats.pending--;
++        this.pendingBytes -= pending.bytes;
++    }
++
+     /** The RGBA of the frame's regions, in turn. */
+-    private async readRegions(picture: VideoFrame, frame: H264Frame): Promise<Uint8Array> {
++    private async readRegions(
++        picture: VideoFrame,
++        frame: Pick<H264Frame, 'destination' | 'regions'>,
++    ): Promise<Uint8Array> {
+         const visible = picture.visibleRect ?? { x: 0, y: 0, width: picture.codedWidth, height: picture.codedHeight };
+         // Servers send pictures that cover the surface from its origin, as FreeRDP assumes; a picture only the size
+         // of a destination elsewhere on the surface starts at the destination.
+@@ -406,6 +450,7 @@ export class WebCodecsH264Decoder {
+         }
+         this.surfaces.clear();
+         this.stats.pending = 0;
++        this.pendingBytes = 0;
+         this.options.onFailure?.(reason);
+         for (const { frame, done } of pending) {
+             done(frame.id, null, reason);

@@ -233,9 +233,11 @@ const PAGE_HELPERS = (config: TestEnv): string => `(() => {
             for (let i = 0; i < 160; i++) {
                 const accept = [...document.querySelectorAll('ngb-modal-window button')].find(b => /Accept and remember/.test(b.innerText))
                 if (accept) inZone(() => accept.click())
-                const pane = panes().find(t => !before.has(t) && t.sshSession?.open)
+                // Own new tabs before authentication succeeds, so failed connections are cleaned up too.
+                const created = panes().filter(t => !before.has(t))
+                for (const tab of created) if (!this.opened.includes(tab)) this.opened.push(tab)
+                const pane = created.find(t => t.sshSession?.open)
                 if (pane) {
-                    this.opened.push(pane)
                     inZone(() => RD.app.selectTab(this.topOf(pane)))
                     return pane
                 }
@@ -360,16 +362,9 @@ export interface TestContext {
     dump: (pane: string, name: string) => Promise<void>
 }
 
-/**
- * Runs a suite: connects to Tabby, installs the helpers, runs `body(t)`, then cleans up and reports. Exits with 1
- * when a check failed (or the body threw), so it never returns.
- */
-export async function suite (name: string, body: (t: TestContext) => Promise<void>, { needsHost = true }: { needsHost?: boolean } = {}): Promise<never> {
+/** Shared lifecycle for CDP suites and Playwright's real-RDP checkpoints. */
+export async function createTestContext (): Promise<{ t: TestContext, close: () => Promise<void>, failures: () => number, timings: [string, number][] }> {
     const config = env()
-    if (needsHost && !config.host) {
-        console.log(`SKIP  ${name}: set TRD_TEST_HOST (see test/README.md)`)
-        process.exit(0)
-    }
     const c = await connect()
     await c.send('Emulation.setFocusEmulationEnabled', { enabled: true })
     await c.evaluate('(async () => { for (let i = 0; i < 120 && !window.__remoteDesktop; i++) await new Promise(r => setTimeout(r, 250)); if (!window.__remoteDesktop) throw new Error("tabby-rdp is not loaded") })()')
@@ -542,21 +537,37 @@ export async function suite (name: string, body: (t: TestContext) => Promise<voi
         },
     }
 
+    return {
+        t, failures: () => failures, timings,
+        async close () {
+            for (const fn of cleanups) {
+                try { await fn() } catch { }
+            }
+            try { await ev('await H.closeAll()') } catch { }
+            c.close()
+        },
+    }
+}
+
+export async function suite (name: string, body: (t: TestContext) => Promise<void>, { needsHost = true }: { needsHost?: boolean } = {}): Promise<never> {
+    if (needsHost && !env().host) {
+        console.log(`SKIP  ${name}: set TRD_TEST_HOST (see test/README.md)`)
+        process.exit(0)
+    }
+    const context = await createTestContext()
+    let errors = 0
     try {
-        await body(t)
+        await body(context.t)
     } catch (e) {
-        failures++
+        errors++
         console.log(`FAIL  ${name} stopped: ${e instanceof Error ? e.stack : e}`)
     } finally {
-        for (const fn of cleanups) {
-            try { await fn() } catch { }
-        }
-        try { await ev('await H.closeAll()') } catch { }
-        c.close()
+        await context.close()
     }
-    for (const [label, ms] of timings) {
+    for (const [label, ms] of context.timings) {
         console.log(`TIME  ${label}: ${ms} ms`)
     }
+    const failures = context.failures() + errors
     console.log(failures ? `${failures} FAILED` : 'ALL PASSED')
     process.exit(failures ? 1 : 0)
 }

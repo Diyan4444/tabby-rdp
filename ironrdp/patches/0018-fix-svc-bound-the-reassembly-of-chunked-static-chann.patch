@@ -1,0 +1,655 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <meanaverage@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 16:38:29 -0700
+Subject: [PATCH] fix(svc): bound all static channel reassembly paths
+
+---
+ Cargo.lock                                   |   1 +
+ crates/ironrdp-capture-replay/Cargo.toml     |   1 +
+ crates/ironrdp-capture-replay/src/routing.rs |  44 ++++
+ crates/ironrdp-cliprdr/src/lib.rs            |  13 ++
+ crates/ironrdp-dvc/src/client.rs             |   4 +
+ crates/ironrdp-dvc/src/lib.rs                |   8 +
+ crates/ironrdp-dvc/src/server.rs             |   4 +
+ crates/ironrdp-rdpsnd/src/client.rs          |   4 +
+ crates/ironrdp-rdpsnd/src/lib.rs             |   9 +
+ crates/ironrdp-rdpsnd/src/server.rs          |   4 +
+ crates/ironrdp-svc/src/lib.rs                |  93 +++++++-
+ crates/ironrdp-testsuite-core/tests/svc.rs   | 217 ++++++++++++++++++-
+ 12 files changed, 393 insertions(+), 9 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 130bb127..d5c524c9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2718,6 +2718,7 @@ version = "0.0.0"
+ dependencies = [
+  "aes-gcm 0.10.3",
+  "hmac 0.12.1",
++ "ironrdp-cliprdr",
+  "ironrdp-core 0.2.1",
+  "ironrdp-dvc",
+  "ironrdp-egfx",
+diff --git a/crates/ironrdp-capture-replay/Cargo.toml b/crates/ironrdp-capture-replay/Cargo.toml
+index 49206498..d1caa038 100644
+--- a/crates/ironrdp-capture-replay/Cargo.toml
++++ b/crates/ironrdp-capture-replay/Cargo.toml
+@@ -15,6 +15,7 @@ categories.workspace = true
+ [dependencies]
+ aes-gcm = "0.10"
+ hmac = "0.12"
++ironrdp-cliprdr = { version = "0.7.0", path = "../ironrdp-cliprdr" }
+ ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
+ ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
+ ironrdp-egfx = { version = "0.3.0", path = "../ironrdp-egfx" }
+diff --git a/crates/ironrdp-capture-replay/src/routing.rs b/crates/ironrdp-capture-replay/src/routing.rs
+index eb6915a6..3efb22bb 100644
+--- a/crates/ironrdp-capture-replay/src/routing.rs
++++ b/crates/ironrdp-capture-replay/src/routing.rs
+@@ -802,6 +802,16 @@ impl SvcProcessor for OpaqueStaticChannel {
+         self.name.clone()
+     }
+ 
++    // At least what the live client's channel takes, so that a capture replays whatever messages the live client
++    // took: of the static channels it joins, only the clipboard takes longer messages than the default.
++    fn max_message_size(&self) -> usize {
++        if self.name == ironrdp_pdu::gcc::ChannelName::from_static(b"cliprdr\0") {
++            ironrdp_cliprdr::MAX_MESSAGE_SIZE
++        } else {
++            ironrdp_svc::DEFAULT_MAX_MESSAGE_SIZE
++        }
++    }
++
+     fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+         Ok(Vec::new())
+     }
+@@ -1053,6 +1063,7 @@ mod tests {
+         BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
+         ShareDataHeader, ShareDataPdu, StreamPriority,
+     };
++    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+     use ironrdp_svc::server_encode_svc_messages;
+ 
+     use super::*;
+@@ -1094,6 +1105,39 @@ mod tests {
+         assert!(report.gaps.is_empty());
+     }
+ 
++    #[test]
++    fn replays_clipboard_messages_as_long_as_the_live_channel_takes() {
++        let mut activation = activation();
++        activation.state.static_channels.push(crate::StaticChannel {
++            name: ChannelName::from_static(b"cliprdr\0"),
++            id: 1_007,
++        });
++        let mut router = ReplayRouter::new(activation).unwrap();
++        // Longer than a static channel takes unless it says otherwise, as the clipboard channel does.
++        let length = u32::try_from(ironrdp_svc::DEFAULT_MAX_MESSAGE_SIZE + 1).unwrap();
++        let chunk = |flags| {
++            let mut user_data = encode_vec(&ChannelPduHeader { length, flags }).unwrap();
++            user_data.extend_from_slice(&[0; 1024]);
++            encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
++                initiator_id: 1_001,
++                channel_id: 1_007,
++                user_data: Cow::Owned(user_data),
++            })))
++            .unwrap()
++        };
++        let report = router.route_plaintext(&Plaintext {
++            client: Vec::new(),
++            server: vec![
++                (1, demand_active()),
++                (2, font_map()),
++                (3, chunk(ChannelControlFlags::FLAG_FIRST)),
++                (4, chunk(ChannelControlFlags::empty())),
++            ],
++        });
++
++        assert_eq!(report.gaps, []);
++    }
++
+     #[test]
+     fn streams_graphics_updates_in_capture_order() {
+         let mut router = ReplayRouter::new(activation()).unwrap();
+diff --git a/crates/ironrdp-cliprdr/src/lib.rs b/crates/ironrdp-cliprdr/src/lib.rs
+index 71ae8126..2d30fbf4 100644
+--- a/crates/ironrdp-cliprdr/src/lib.rs
++++ b/crates/ironrdp-cliprdr/src/lib.rs
+@@ -368,6 +368,15 @@ const MAX_OUTGOING_LOCKS: usize = 100;
+ /// prevents unbounded growth if responses are never received.
+ const MAX_PENDING_FILE_REQUESTS: usize = 1000;
+ 
++/// The largest clipboard message [`Cliprdr`] takes from its peer, once reassembled from its static channel chunks
++/// (its [`SvcProcessor::max_message_size`]): 256 MiB.
++///
++/// Format data is the copied content itself, as large as the application made it, and CLIPRDR doesn't bound it
++/// (`dataLen` is 32 bits): 256 MiB holds a 32 bpp bitmap of two 8K monitors side by side (15360 x 4320 x 4 bytes,
++/// 253 MiB), 128 Mi UTF-16 characters of text, or a large spreadsheet range as HTML. File contents come in ranges
++/// of the size the receiver asks for.
++pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
++
+ /// CLIPRDR static virtual channel endpoint implementation
+ #[derive(Debug)]
+ pub struct Cliprdr<R: Role> {
+@@ -1597,6 +1606,10 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
+         Self::CHANNEL_NAME
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        MAX_MESSAGE_SIZE
++    }
++
+     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+         if self.state != CliprdrState::Initialization {
+             error!("Attempted to start clipboard static virtual channel in invalid state");
+diff --git a/crates/ironrdp-dvc/src/client.rs b/crates/ironrdp-dvc/src/client.rs
+index ba40a100..171edff7 100644
+--- a/crates/ironrdp-dvc/src/client.rs
++++ b/crates/ironrdp-dvc/src/client.rs
+@@ -445,6 +445,10 @@ impl SvcProcessor for DrdynvcClient {
+         CompressionCondition::WhenRdpDataIsCompressed
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        crate::MAX_DRDYNVC_MESSAGE_SIZE
++    }
++
+     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
+         let mut responses = Vec::new();
+diff --git a/crates/ironrdp-dvc/src/lib.rs b/crates/ironrdp-dvc/src/lib.rs
+index d9837998..7d52c1ae 100644
+--- a/crates/ironrdp-dvc/src/lib.rs
++++ b/crates/ironrdp-dvc/src/lib.rs
+@@ -30,6 +30,14 @@ pub use server::*;
+ 
+ pub mod pdu;
+ 
++/// The largest DRDYNVC message taken from the static channel, once reassembled from its chunks: 1 MiB.
++///
++/// Each carries one DVC PDU, and peers split DVC data into PDUs that fit one static channel chunk (1,600 bytes,
++/// or a negotiated chunk size of at most 16,256 bytes, as [`ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH`]); a message
++/// longer than that is reassembled from its DVC PDUs, under the limit of its dynamic channel. 1 MiB is
++/// sixty-four times the largest chunk.
++const MAX_DRDYNVC_MESSAGE_SIZE: usize = 1024 * 1024;
++
+ /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
+ /// This means a message that is ready to be wrapped in [`pdu::DataFirstPdu`] and [`pdu::DataPdu`] PDUs
+ /// (being split into multiple of such PDUs if necessary).
+diff --git a/crates/ironrdp-dvc/src/server.rs b/crates/ironrdp-dvc/src/server.rs
+index ce7e40be..70337f8f 100644
+--- a/crates/ironrdp-dvc/src/server.rs
++++ b/crates/ironrdp-dvc/src/server.rs
+@@ -436,6 +436,10 @@ impl SvcProcessor for DrdynvcServer {
+         CompressionCondition::WhenRdpDataIsCompressed
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        crate::MAX_DRDYNVC_MESSAGE_SIZE
++    }
++
+     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+         let cap = CapabilitiesRequestPdu::new(CapsVersion::V2, None);
+         let req = DrdynvcServerPdu::Capabilities(cap);
+diff --git a/crates/ironrdp-rdpsnd/src/client.rs b/crates/ironrdp-rdpsnd/src/client.rs
+index 4f7ddcad..e1225cd7 100644
+--- a/crates/ironrdp-rdpsnd/src/client.rs
++++ b/crates/ironrdp-rdpsnd/src/client.rs
+@@ -269,6 +269,10 @@ impl SvcProcessor for Rdpsnd {
+         CompressionCondition::Never
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        crate::MAX_MESSAGE_SIZE
++    }
++
+     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+         // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.4).
+         if self.state == RdpsndState::ExpectingWave {
+diff --git a/crates/ironrdp-rdpsnd/src/lib.rs b/crates/ironrdp-rdpsnd/src/lib.rs
+index 55b0f6dd..4c8d0115 100644
+--- a/crates/ironrdp-rdpsnd/src/lib.rs
++++ b/crates/ironrdp-rdpsnd/src/lib.rs
+@@ -4,3 +4,12 @@
+ pub mod client;
+ pub mod pdu;
+ pub mod server;
++
++/// The largest RDPSND message taken from the static channel, once reassembled from its chunks: 1 MiB.
++///
++/// The RDPSND header's BodySize is 16 bits ([MS-RDPEA] 2.2.1), so no valid PDU is longer than 65,539 bytes, nor is
++/// the Wave PDU that follows a Wave Info PDU without a header of its own: sounds go as many such blocks. 1 MiB is
++/// sixteen times that.
++///
++/// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
++const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+diff --git a/crates/ironrdp-rdpsnd/src/server.rs b/crates/ironrdp-rdpsnd/src/server.rs
+index 6be3276a..b74405f3 100644
+--- a/crates/ironrdp-rdpsnd/src/server.rs
++++ b/crates/ironrdp-rdpsnd/src/server.rs
+@@ -306,6 +306,10 @@ impl SvcProcessor for RdpsndServer {
+         CompressionCondition::Never
+     }
+ 
++    fn max_message_size(&self) -> usize {
++        crate::MAX_MESSAGE_SIZE
++    }
++
+     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+         let pdu = pdu::ClientAudioOutputPdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
+         debug!(?pdu);
+diff --git a/crates/ironrdp-svc/src/lib.rs b/crates/ironrdp-svc/src/lib.rs
+index a2e4f74a..a2e29e87 100644
+--- a/crates/ironrdp-svc/src/lib.rs
++++ b/crates/ironrdp-svc/src/lib.rs
+@@ -40,6 +40,14 @@ pub type StaticChannelId = u16;
+ /// The maximum number of optional static virtual channels negotiated in one RDP session.
+ pub const MAX_STATIC_CHANNELS: usize = 31;
+ 
++/// The largest message a static virtual channel takes, once reassembled from its chunks, unless its processor says
++/// otherwise ([`SvcProcessor::max_message_size`]): 64 MiB.
++///
++/// A chunked message is as long as its first chunk declares, up to 4 GiB, and its chunks are held until the last one
++/// arrives: nothing but this bounds what a peer can make the receiver hold. Channels whose messages can legitimately
++/// be longer (clipboard data) declare their own maximum, and so can channels whose protocol bounds them well below.
++pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
++
+ /// SVC data to be sent to the server. See [`SvcMessage`] for more information.
+ /// Usually returned by the channel-specific methods.
+ pub struct SvcProcessorMessages<P: SvcProcessor> {
+@@ -163,6 +171,8 @@ impl StaticVirtualChannel {
+ 
+     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
+     /// to the server. If no PDUs are to be sent, an empty vector is returned.
++    ///
++    /// A chunked message longer than [`SvcProcessor::max_message_size`] is refused with an error.
+     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+         if let Some(payload) = self.dechunkify(payload).map_err(|e| decode_err!(e))? {
+             return self.channel_processor.process(&payload);
+@@ -188,7 +198,8 @@ impl StaticVirtualChannel {
+     }
+ 
+     fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
+-        self.chunk_processor.dechunkify(payload)
++        let max_message_size = self.channel_processor.max_message_size();
++        self.chunk_processor.dechunkify(payload, max_message_size)
+     }
+ }
+ 
+@@ -312,6 +323,16 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
+     ///
+     /// Returns a list of PDUs to be sent back.
+     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
++
++    /// The largest message this channel takes from its peer, once reassembled from its chunks.
++    ///
++    /// A chunked message declared longer than this is refused when its first chunk arrives, before any of it is
++    /// held, and a sequence of compressed chunks (which isn't held to its declared length) when it grows past this:
++    /// either way [`StaticVirtualChannel::process`] fails with a decode error. Defaults to
++    /// [`DEFAULT_MAX_MESSAGE_SIZE`].
++    fn max_message_size(&self) -> usize {
++        DEFAULT_MAX_MESSAGE_SIZE
++    }
+ }
+ 
+ assert_obj_safe!(SvcProcessor);
+@@ -365,7 +386,10 @@ impl ChunkProcessor {
+     /// If the payload is not chunked, returns the payload as-is.
+     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
+     /// it returns `Ok(Some(payload))`.
+-    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
++    ///
++    /// A chunked message longer than `max_message_size` is refused: on its first chunk when it is declared longer,
++    /// before any of it is held, otherwise when it grows past it.
++    fn dechunkify(&mut self, payload: &[u8], max_message_size: usize) -> DecodeResult<Option<Vec<u8>>> {
+         let mut cursor = ReadCursor::new(payload);
+         let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
+         let chunk = cursor.remaining();
+@@ -374,6 +398,15 @@ impl ChunkProcessor {
+         let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
+         let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
+ 
++        if !(expected_length <= max_message_size && chunk.len() <= max_message_size) {
++            self.clear_sequence();
++            return Err(ironrdp_core::invalid_field_err!(
++                "length",
++                "channel message is longer than the channel takes",
++                in: cursor
++            ));
++        }
++
+         if !first && !last && self.expected_length.is_none() {
+             if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && chunk.len() != expected_length {
+                 return Err(ironrdp_core::invalid_field_err!(
+@@ -383,7 +416,12 @@ impl ChunkProcessor {
+                 ));
+             }
+ 
+-            return Ok(Some(chunk.to_vec()));
++            let mut complete = Vec::new();
++            complete
++                .try_reserve_exact(chunk.len())
++                .map_err(|_| ironrdp_core::other_err!("ChunkProcessor", "out of memory for a channel message"))?;
++            complete.extend_from_slice(chunk);
++            return Ok(Some(complete));
+         }
+ 
+         if first {
+@@ -406,9 +444,22 @@ impl ChunkProcessor {
+             ));
+         }
+ 
+-        self.chunked_pdu.extend_from_slice(chunk);
++        // Compressed chunks aren't held to the declared length (below), but to the channel's maximum all the same.
++        let Some(buffered_length) = self
++            .chunked_pdu
++            .len()
++            .checked_add(chunk.len())
++            .filter(|length| *length <= max_message_size)
++        else {
++            self.clear_sequence();
++            return Err(ironrdp_core::invalid_field_err!(
++                "length",
++                "channel message is longer than the channel takes",
++                in: cursor
++            ));
++        };
+ 
+-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() > expected_length {
++        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && !(buffered_length <= expected_length) {
+             self.clear_sequence();
+             return Err(ironrdp_core::invalid_field_err!(
+                 "length",
+@@ -417,6 +468,35 @@ impl ChunkProcessor {
+             ));
+         }
+ 
++        // Room for the chunk: by doubling, as `Vec` grows, but not past the declared length (compressed chunks that
++        // go past it: the maximum); and when there is no memory for it, an error rather than an abort.
++        if buffered_length > self.chunked_pdu.capacity() {
++            let longest = if buffered_length <= expected_length {
++                expected_length
++            } else {
++                max_message_size
++            };
++            let capacity = self
++                .chunked_pdu
++                .capacity()
++                .saturating_mul(2)
++                .min(longest)
++                .max(buffered_length);
++            if self
++                .chunked_pdu
++                .try_reserve_exact(capacity.saturating_sub(self.chunked_pdu.len()))
++                .is_err()
++            {
++                self.clear_sequence();
++                return Err(ironrdp_core::other_err!(
++                    "ChunkProcessor",
++                    "out of memory for a channel message"
++                ));
++            }
++        }
++
++        self.chunked_pdu.extend_from_slice(chunk);
++
+         if !last {
+             return Ok(None);
+         }
+@@ -443,7 +523,8 @@ impl ChunkProcessor {
+     }
+ 
+     fn clear_sequence(&mut self) {
+-        self.chunked_pdu.clear();
++        // Its memory goes too: the sequence may have been long.
++        self.chunked_pdu = Vec::new();
+         self.expected_length = None;
+     }
+ 
+diff --git a/crates/ironrdp-testsuite-core/tests/svc.rs b/crates/ironrdp-testsuite-core/tests/svc.rs
+index 6257f747..32547fd3 100644
+--- a/crates/ironrdp-testsuite-core/tests/svc.rs
++++ b/crates/ironrdp-testsuite-core/tests/svc.rs
+@@ -1,14 +1,22 @@
++use ironrdp_cliprdr::CliprdrClient;
++use ironrdp_cliprdr::backend::CliprdrBackend;
++use ironrdp_cliprdr::pdu::{
++    ClipboardFormat, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
++    FormatDataResponse, LockDataId,
++};
+ use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec};
++use ironrdp_dvc::DrdynvcClient;
+ use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
+ use ironrdp_pdu::mcs;
+ use ironrdp_pdu::rdp::headers::ShareControlHeader;
+ use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+ use ironrdp_pdu::x224::X224;
++use ironrdp_rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
+ use ironrdp_session::{ActiveStageBuilder, x224::Processor};
+ use ironrdp_svc::{
+-    CHANNEL_CHUNK_LENGTH, ChannelFlags, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey,
+-    StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor,
+-    make_channel_options,
++    CHANNEL_CHUNK_LENGTH, ChannelFlags, DEFAULT_MAX_MESSAGE_SIZE, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS,
++    StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor,
++    SvcServerProcessor, make_channel_options,
+ };
+ 
+ #[derive(Debug)]
+@@ -89,6 +97,56 @@ impl<const ID: usize> SvcProcessor for TypedChannel<ID> {
+     }
+ }
+ 
++/// A channel that takes messages of at most `max_message_size` bytes, and keeps those it is handed.
++#[derive(Debug)]
++struct LimitedChannel {
++    max_message_size: usize,
++    received: Vec<Vec<u8>>,
++}
++
++ironrdp_core::impl_as_any!(LimitedChannel);
++
++impl SvcProcessor for LimitedChannel {
++    fn channel_name(&self) -> ChannelName {
++        ChannelName::from_utf8("limited").expect("valid static channel name")
++    }
++
++    fn max_message_size(&self) -> usize {
++        self.max_message_size
++    }
++
++    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
++        self.received.push(payload.to_vec());
++        Ok(Vec::new())
++    }
++}
++
++#[derive(Debug)]
++struct NoClipboard;
++
++ironrdp_core::impl_as_any!(NoClipboard);
++
++impl CliprdrBackend for NoClipboard {
++    fn temporary_directory(&self) -> &str {
++        ".cliprdr"
++    }
++
++    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
++        ClipboardGeneralCapabilityFlags::empty()
++    }
++
++    fn on_ready(&mut self) {}
++    fn on_request_format_list(&mut self) {}
++    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
++    fn on_remote_copy(&mut self, _available_formats: &[ClipboardFormat]) {}
++    fn on_format_data_request(&mut self, _request: FormatDataRequest) {}
++    fn on_format_data_response(&mut self, _response: FormatDataResponse<'_>) {}
++    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
++    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {}
++    fn on_lock(&mut self, _data_id: LockDataId) {}
++    fn on_unlock(&mut self, _data_id: LockDataId) {}
++}
++
+ fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8> {
+     let mut chunk = encode_vec(&ChannelPduHeader { length, flags }).expect("channel header should encode");
+     chunk.extend_from_slice(data);
+@@ -244,6 +302,159 @@ fn static_channel_rejects_malformed_chunk_sequences() {
+     );
+ }
+ 
++#[test]
++fn static_channel_refuses_a_message_declared_longer_than_it_takes() {
++    // The first chunk declares the message's length, up to 4 GiB; the chunks would be held until the last one.
++    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
++    assert!(
++        channel
++            .process(&channel_chunk(b"first", u32::MAX, ChannelControlFlags::FLAG_FIRST))
++            .is_err()
++    );
++
++    let longest = u32::try_from(DEFAULT_MAX_MESSAGE_SIZE).expect("the default maximum fits the length field");
++    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
++    assert!(
++        channel
++            .process(&channel_chunk(b"first", longest, ChannelControlFlags::FLAG_FIRST))
++            .is_ok()
++    );
++    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
++    assert!(
++        channel
++            .process(&channel_chunk(b"first", longest + 1, ChannelControlFlags::FLAG_FIRST))
++            .is_err()
++    );
++}
++
++#[test]
++fn static_channel_refuses_compressed_chunks_streamed_past_its_maximum() {
++    // Compressed chunks aren't held to the declared length: only the channel's maximum bounds them.
++    const LIMIT: usize = 64;
++    let mut channel = StaticVirtualChannel::new(LimitedChannel {
++        max_message_size: LIMIT,
++        received: Vec::new(),
++    });
++    let data = vec![0x55; 16];
++    let compressed = ChannelControlFlags::PACKET_COMPRESSED;
++    assert!(
++        channel
++            .process(&channel_chunk(&data, 16, ChannelControlFlags::FLAG_FIRST | compressed))
++            .is_ok()
++    );
++
++    let chunk = channel_chunk(&data, 16, compressed);
++    let held = (1..)
++        .take(2 * LIMIT / data.len())
++        .find(|_| channel.process(&chunk).is_err())
++        .map(|chunks| chunks * data.len());
++    assert_eq!(held, Some(LIMIT), "refused at the chunk that goes past the maximum");
++}
++
++#[test]
++fn static_channel_limits_unfragmented_compatibility_messages() {
++    let mut channel = StaticVirtualChannel::new(LimitedChannel {
++        max_message_size: 16,
++        received: Vec::new(),
++    });
++    for flags in [ChannelControlFlags::empty(), ChannelControlFlags::PACKET_COMPRESSED] {
++        assert!(channel.process(&channel_chunk(&[1; 17], 17, flags)).is_err());
++        assert!(channel.process(&channel_chunk(&[1; 17], 16, flags)).is_err());
++        assert!(channel.process(&channel_chunk(&[1; 16], 16, flags)).is_ok());
++    }
++    assert!(
++        channel
++            .process(&channel_chunk(&[1], 17, ChannelControlFlags::PACKET_COMPRESSED))
++            .is_err()
++    );
++}
++
++#[test]
++fn static_channel_takes_messages_up_to_its_processors_maximum() {
++    let mut channel = StaticVirtualChannel::new(LimitedChannel {
++        max_message_size: 16,
++        received: Vec::new(),
++    });
++    let received = |channel: &StaticVirtualChannel| {
++        channel
++            .channel_processor_downcast_ref::<LimitedChannel>()
++            .expect("limited channel")
++            .received
++            .clone()
++    };
++
++    assert!(
++        channel
++            .process(&channel_chunk(&[1; 10], 16, ChannelControlFlags::FLAG_FIRST))
++            .is_ok()
++    );
++    assert!(
++        channel
++            .process(&channel_chunk(&[2; 6], 16, ChannelControlFlags::FLAG_LAST))
++            .is_ok()
++    );
++    assert_eq!(received(&channel), vec![[[1; 10].as_slice(), &[2; 6]].concat()]);
++
++    assert!(
++        channel
++            .process(&channel_chunk(&[3; 10], 17, ChannelControlFlags::FLAG_FIRST))
++            .is_err()
++    );
++
++    // Nor do compressed chunks go past it.
++    let compressed = ChannelControlFlags::PACKET_COMPRESSED;
++    assert!(
++        channel
++            .process(&channel_chunk(
++                &[4; 10],
++                16,
++                ChannelControlFlags::FLAG_FIRST | compressed
++            ))
++            .is_ok()
++    );
++    assert!(channel.process(&channel_chunk(&[5; 10], 16, compressed)).is_err());
++
++    // The refused message is gone; the next one is taken.
++    assert!(
++        channel
++            .process(&channel_chunk(
++                &[6; 16],
++                16,
++                ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST
++            ))
++            .is_ok()
++    );
++    assert_eq!(received(&channel).last(), Some(&vec![6; 16]));
++}
++
++#[test]
++fn channels_take_messages_as_long_as_their_protocols_need() {
++    let first_chunk_of = |length: usize| {
++        channel_chunk(
++            b"first",
++            u32::try_from(length).expect("length fits"),
++            ChannelControlFlags::FLAG_FIRST,
++        )
++    };
++    let takes = |processor: StaticVirtualChannel, length: usize| {
++        let mut channel = processor;
++        channel.process(&first_chunk_of(length)).is_ok()
++    };
++
++    // Clipboard data is the copied content itself: a bitmap of two 8K monitors is 253 MiB.
++    let clipboard = || StaticVirtualChannel::new(CliprdrClient::new(Box::new(NoClipboard)));
++    assert!(takes(clipboard(), 15360 * 4320 * 4 + 40));
++    assert!(!takes(clipboard(), 256 * 1024 * 1024 + 1));
++
++    // An RDPSND PDU's BodySize is 16 bits; a DRDYNVC message carries one DVC PDU of at most one chunk.
++    let audio = || StaticVirtualChannel::new(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
++    assert!(takes(audio(), 65_539));
++    assert!(!takes(audio(), 1024 * 1024 + 1));
++    let drdynvc = || StaticVirtualChannel::new(DrdynvcClient::new());
++    assert!(takes(drdynvc(), MAX_CHANNEL_CHUNK_LENGTH));
++    assert!(!takes(drdynvc(), 1024 * 1024 + 1));
++}
++
+ #[test]
+ fn static_channel_chunks_carry_only_the_message_flags() {
+     let chunks = StaticVirtualChannel::chunkify(vec![SvcMessage::from(vec![0; CHANNEL_CHUNK_LENGTH + 1])])

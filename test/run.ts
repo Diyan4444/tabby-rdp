@@ -19,7 +19,7 @@ import { waitForPort } from './lib/cdp.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LINUX_SUITES = ['e2e', 'desk', 'resize', 'keyboard', 'focus', 'actions', 'clipboard', 'files', 'audio', 'microphone', 'graphics', 'reconnect', 'desktops', 'profiles', 'direct', 'certificates', 'status', 'wake', 'help', 'nested', 'vms', 'headless', 'takeover']
-const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates']
+const ALL_SUITES = [...LINUX_SUITES, 'wasm-isolation', 'windows', 'winhost', 'hyperv', 'gateway', 'xrdp', 'trd-pty', 'screenshots', 'demo', 'smoke-host', 'smoke-rdp', 'smoke-updates', 'visual-host', 'visual-smoke', 'visual-linux', 'visual-windows']
 
 const args = process.argv.slice(2)
 const flag = (name: string) => args.includes(name)
@@ -37,7 +37,7 @@ for (const s of suites) {
     }
 }
 const selected = suites.length ? suites : LINUX_SUITES
-const smoke = selected.some(s => s.startsWith('smoke-'))
+const smoke = selected.some(s => s.startsWith('smoke-') || s.startsWith('visual-'))
 if (flag('--require-rdp') && selected.includes('smoke-rdp') && !process.env.TRD_TEST_HOST) {
     console.error('--require-rdp needs TRD_TEST_HOST; live RDP coverage cannot be skipped')
     process.exit(2)
@@ -101,7 +101,7 @@ function makeSandbox (): string {
         }
         execFileSync('npm', ['install', '--no-audit', '--no-fund', '--silent', path.join(dir, tarball)], { cwd: plugins, stdio: 'inherit' })
     } else {
-        fs.symlinkSync(ROOT, path.join(plugins, 'node_modules', 'tabby-rdp'), 'dir')
+        fs.symlinkSync(ROOT, path.join(plugins, 'node_modules', 'tabby-rdp'), process.platform === 'win32' ? 'junction' : 'dir')
     }
     if (smoke) {
         // Install after npm, which prunes unlisted plugins. The host application and its signature stay intact.
@@ -126,21 +126,34 @@ function makeSandbox (): string {
 
 let tabby: ChildProcess | null = null
 let sandbox: string | null = null
+let suiteChild: ChildProcess | null = null
 function teardown () {
+    suiteChild?.kill('SIGTERM')
+    suiteChild = null
     if (tabby && !flag('--keep')) {
         // Detached: the whole process group goes, so a Tabby that started helpers doesn't leave them behind.
         if (tabby.pid !== undefined) {
-            try { process.kill(-tabby.pid, 'SIGKILL') } catch { }
+            try {
+                if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(tabby.pid), '/T', '/F'], { stdio: 'ignore' })
+                else process.kill(-tabby.pid, 'SIGKILL')
+            } catch { }
         }
         try { tabby.kill('SIGKILL') } catch { }
         tabby = null
     }
     if (sandbox && !flag('--keep')) {
-        fs.rmSync(sandbox, { recursive: true, force: true })
+        fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
         sandbox = null
     }
 }
 process.on('exit', teardown)
+// A dashboard crash must not leave its disposable Tabby running.
+if (process.env.TRD_QA_PARENT_PID) {
+    const parent = Number(process.env.TRD_QA_PARENT_PID)
+    setInterval(() => {
+        try { process.kill(parent, 0) } catch { teardown(); process.exit(1) }
+    }, 1000).unref()
+}
 for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => { teardown(); process.exit(130) })
 }
@@ -169,6 +182,11 @@ let port = Number(option('--port') || 0)
 if (selected.some(s => s !== 'trd-pty') && !port) {
     sandbox = makeSandbox()
     port = await freePort()
+    let launchLog: number | undefined
+    if (selected.includes('visual-smoke') && process.env.TRD_QA_RUN_DIR) {
+        fs.mkdirSync(process.env.TRD_QA_RUN_DIR, { recursive: true })
+        launchLog = fs.openSync(path.join(process.env.TRD_QA_RUN_DIR, 'tabby-launch.log'), 'a')
+    }
     tabby = spawn(tabbyBinary(), [
         // Unmapped Linux/Windows windows can stop animation frames even with timer throttling disabled.
         // Terminal fit uses those frames. Keep the window mapped there; use Xvfb for unattended Linux runs.
@@ -179,10 +197,36 @@ if (selected.some(s => s !== 'trd-pty') && !port) {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-    ], { env: { ...process.env, TABBY_CONFIG_DIRECTORY: sandbox }, detached: true, stdio: 'ignore' })
+    ], { env: { ...process.env, TABBY_CONFIG_DIRECTORY: sandbox }, detached: true, stdio: launchLog === undefined ? 'ignore' : ['ignore', launchLog, launchLog] })
+    if (launchLog !== undefined) fs.closeSync(launchLog)
+    let launched = false
+    tabby.on('error', error => { console.error(error); process.exit(1) })
+    tabby.on('exit', () => { if (!launched) { console.error('The test Tabby exited before DevTools became ready'); process.exit(1) } })
     if (!await waitForPort(port)) {
         console.error('The test Tabby did not start')
         process.exit(1)
+    }
+    launched = true
+    if (selected.includes('visual-smoke') && process.env.TRD_QA_RUN_DIR) {
+        // Preserve startup diagnostics when the host loads but the real plugin cannot initialize.
+        const { chromium } = await import('@playwright/test')
+        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15000 })
+        try {
+            const context = browser.contexts()[0]
+            const page = context.pages().find(p => p.url().includes('index.html'))!
+            const session = await context.newCDPSession(page)
+            const messages: string[] = []
+            session.on('Runtime.consoleAPICalled', event => {
+                if (messages.length < 100 && ['error', 'warning'].includes(event.type)) messages.push(event.args.map((arg: { value?: unknown, description?: string }) => arg.value ?? arg.description ?? '').join(' ').slice(0, 3000))
+            })
+            await session.send('Runtime.enable')
+            try { await page.waitForFunction(() => !!(window as any).__remoteDesktop, { }, { timeout: 30000 }) }
+            catch (error) {
+                fs.writeFileSync(path.join(process.env.TRD_QA_RUN_DIR, 'startup-diagnostics.json'), JSON.stringify({ messages, body: (await page.locator('body').innerText()).slice(0, 20000) }, null, 2))
+                await page.screenshot({ path: path.join(process.env.TRD_QA_RUN_DIR, 'startup.png') })
+                throw error
+            }
+        } finally { await browser.close() }
     }
     console.log(`Test Tabby: DevTools on ${port}, profile ${sandbox}${flag('--packed') ? ' (plugin installed from npm pack)' : ''}`)
 }
@@ -198,15 +242,21 @@ for (const name of selected) {
             // tsx, not this Node alone: the suites are TypeScript (see tsconfig.test.json). Node 22.18+ could strip the
             // types itself, but the suites run on any Node 22 (lib/cdp.ts) and this keeps it that way. Resolved from
             // here: by name, Node would look for it from the current directory, which need not be this checkout.
-            const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), path.join(ROOT, 'test', 'suites', `${name}.ts`)], {
+            const command = name.startsWith('visual-')
+                ? [path.join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js'), 'test', '--config', path.join(ROOT, 'test', 'visual', 'playwright.config.ts')]
+                : ['--import', import.meta.resolve('tsx'), path.join(ROOT, 'test', 'suites', `${name}.ts`)]
+            const child = spawn(process.execPath, command, {
                 env: {
                     ...process.env, TRD_CDP_PORT: String(port),
+                    ...(name.startsWith('visual-') ? { TRD_QA_TEST: name } : {}),
                     ...(expectedXterm ? { TRD_SMOKE_EXPECT_XTERM: expectedXterm } : {}),
                     ...(flag('--require-rdp') ? { TRD_SMOKE_REQUIRE_RDP: '1' } : {}),
                 },
                 stdio: 'inherit',
             })
-            child.on('exit', code => resolve(code ?? 1))
+            suiteChild = child
+            child.on('error', error => { console.error(error); resolve(1) })
+            child.on('exit', code => { suiteChild = null; resolve(code ?? 1) })
         })
     results.push([name, code, Math.round((Date.now() - started) / 1000), skipped])
 }

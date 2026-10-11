@@ -1,0 +1,8 @@
+{
+  "github": true,
+  "schedules": [
+    { "id": "nightly", "profile": "nightly", "everyMinutes": 1440, "firstAt": "2026-10-12T10:00:00Z" },
+    { "id": "weekly", "profile": "weekly", "everyMinutes": 10080, "firstAt": "2026-10-18T12:00:00Z" }
+  ],
+  "retention": { "passDays": 14, "failureDays": 90, "maxRuns": 500, "maxBytes": 10000000000 }
+}

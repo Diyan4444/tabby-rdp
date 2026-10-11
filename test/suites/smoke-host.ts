@@ -1,4 +1,6 @@
 // Host upgrade checks with real Tabby, xterm, local PTYs and plugin settings. No remote desktop is required.
+import * as semver from 'semver'
+import type { HostInfo } from '../../src/hostCompat.js'
 import { profileValidationSmoke } from '../lib/profile-validation-smoke.js'
 import { suite } from '../lib/harness.js'
 import { rendererErrors, smokeHost } from '../lib/smoke.js'
@@ -9,6 +11,10 @@ interface ModalDrag { bars: number, native: boolean, hit: boolean, controls: boo
 await suite('smoke-host', async t => {
     const { ev, check, waitFor } = t
     await smokeHost(t)
+    const host = await ev<Pick<HostInfo, 'name' | 'version'>>('return RD.compat.info')
+    const hostVersion = semver.valid(host.version ?? '')
+    // Official Tabby 1.0.238 shipped the native strip. Unknown/renamed hosts are checked by observed behavior.
+    const requireNativeDrag = /^tabby$/i.test(host.name ?? '') && !!hostVersion && semver.gte(hostVersion, '1.0.238')
     const errors = await rendererErrors(t)
     const directory = await t.tempDir('trd-smoke-shell-')
     const terminalConfig = await ev<string>('return JSON.stringify(H.config.store.terminal)')
@@ -74,8 +80,15 @@ await suite('smoke-host', async t => {
         const small = await ev<{ cols: number, rows: number }>('return H.smokeSize()')
         await ev('H.smokeResize(760, 450)')
         check(`${frontend}: resize fits a larger pane`, !!await waitFor(`const s = H.smokeSize(); return s.cols > ${small.cols} && s.rows > ${small.rows}`, 5), small)
-        await ev(`H.local.session.emitOutput(Buffer.from(Array.from({ length: 80 }, (_, i) => 'SMOKE_SCROLL_' + i + '\\r\\n').join('')))`)
-        check(`${frontend}: output drains through the session middleware`, !!await waitFor('return H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
+        // Windows' command editor can recall a character while probing word-jump keys.
+        // Clear that probe's input and observe the new prompt before issuing the output command.
+        await ev(`H.local.sendInput('\\x03')`)
+        check(`${frontend}: shell prompt is ready after shortcut probes`, !!await waitFor('return H.screen(H.local).trimEnd().endsWith(">")', 5))
+        const scrollCommand = t.platform === 'win32'
+            ? 'for /l %i in (0,1,79) do @echo SMOKE_SCROLL_%i\r'
+            : 'for i in {0..79}; do echo SMOKE_SCROLL_$i; done\r'
+        await ev(`H.local.sendInput(${JSON.stringify(scrollCommand)})`)
+        check(`${frontend}: output drains through the session middleware`, !!await waitFor('return H.screen(H.local).includes("SMOKE_SCROLL_79")', 5), await ev('return H.screen(H.local).slice(-2400)'))
         await ev('H.local.frontend.scrollToTop()')
         const font = await ev<{ size: number, rows: number }>('return { size: H.local.frontend.xterm.options.fontSize, rows: H.local.frontend.xterm.rows }')
         await ev('H.config.store.terminal.fontSize += 2; await H.config.save(); H.local.configure()')
@@ -85,8 +98,10 @@ await suite('smoke-host', async t => {
         check(`${frontend}: scrolling returns to the last output`, !!await waitFor('const b = H.local.frontend.xterm.buffer.active; return b.viewportY === b.baseY && H.screen(H.local).includes("SMOKE_SCROLL_79")', 5))
         await ev('H.config.store.terminal.fontSize -= 2; await H.config.save(); H.local.configure()')
 
+        // Produce actual PTY output: ConPTY can repaint its OS buffer during a tab/geometry change,
+        // so synthetic renderer-only output is not a valid Windows background-output oracle.
         // The pane loses focus to settings, then becomes active again: output and keyboard must recover.
-        await ev(`RD.help.open('settings'); H.local.session.emitOutput(Buffer.from('SMOKE_BACKGROUND\\r\\n'))`)
+        await ev(`RD.help.open('settings'); H.local.sendInput('echo SMOKE_BACKGROUND\\r')`)
         await waitFor('return !!document.querySelector(".trd-settings")', 5)
         await ev('H.inZone(() => RD.app.selectTab(H.topOf(H.local)))')
         check(`${frontend}: background output survives tab switching`, !!await waitFor('return H.screen(H.local).includes("SMOKE_BACKGROUND")', 5))
@@ -113,16 +128,20 @@ await suite('smoke-host', async t => {
         if (!modal) throw new Error('RDP profile editor did not open')
         await t.sleep(100)
         const drag = await ev<ModalDrag>(`
-            const m = document.querySelector('.modal'), bar = m.querySelector(':scope > .trd-form-dragbar');
+            const m = document.querySelector('.modal');
             const s = getComputedStyle(m, '::before'), native = s.content !== 'none' && s.content !== 'normal' &&
                 s.display !== 'none' && s.getPropertyValue('-webkit-app-region') === 'drag' && parseFloat(s.height) > 4;
             const input = m.querySelector('input'); input.focus();
             return { bars: m.querySelectorAll(':scope > .trd-form-dragbar').length, native,
-                hit: native ? document.elementFromPoint(4, 4) === m : !!bar && getComputedStyle(bar).getPropertyValue('-webkit-app-region') === 'drag' && document.elementFromPoint(4, 4) === bar,
+                hit: native && document.elementFromPoint(4, 4) === m,
                 controls: document.activeElement === input };
         `)
-        check(`modal spacing ${value}: one effective drag region and usable controls`, drag.hit && drag.controls && drag.bars === (drag.native ? 0 : 1), drag)
-        check(`modal spacing ${value}: shared compatibility records the observed host capability`, await ev(`return RD.compat.snapshot().capabilities.nativeModalDragRegion === ${drag.native}`))
+        check(`modal spacing ${value}: no plugin fallback and usable controls`, drag.bars === 0 && drag.controls, drag)
+        if (requireNativeDrag || drag.native) {
+            check(`modal spacing ${value}: the host's drag region is hit-testable`, drag.native && drag.hit, { host, drag })
+        } else {
+            t.skip(`modal spacing ${value}: native dragging`, 'this older or unrecognized host supplies no drag region; the plugin adds no fallback')
+        }
         check('profile editor offers the saved account', await ev(`return [...document.querySelectorAll('.modal rdp-profile-settings [name=account] option')].some(o => /Smoke dummy/.test(o.textContent))`))
         await ev(`H.inZone(() => RD.injector.get(require('@ng-bootstrap/ng-bootstrap').NgbModal).dismissAll())`)
         await waitFor('return !document.querySelector(".modal")', 5)

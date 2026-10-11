@@ -13,20 +13,28 @@ Prepares a Windows 10/11 Pro (or Server) machine, preferably a VM, as a tabby-rd
 Run in an elevated PowerShell:
 
     Set-ExecutionPolicy -Scope Process Bypass
-    .\setup.ps1 -Password '<a password for the test account>'
+    .\setup.ps1 -PasswordFile 'C:\private\test-password.txt'
 
 .PARAMETER UserName
 The test account (default: tabbyrdp).
 
 .PARAMETER Password
 Its password. Needed when the account doesn't exist yet.
+
+.PARAMETER PasswordFile
+UTF-8 file containing that password; avoids putting the secret in the process command line.
 #>
 [CmdletBinding()]
 param(
     [string] $UserName = 'tabbyrdp',
-    [string] $Password
+    [string] $Password,
+    [string] $PasswordFile
 )
 $ErrorActionPreference = 'Stop'
+if ($PasswordFile) {
+    if ($Password) { throw 'Choose PasswordFile or Password, not both.' }
+    $Password = [IO.File]::ReadAllText($PasswordFile, [Text.Encoding]::UTF8)
+}
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

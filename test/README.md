@@ -58,7 +58,12 @@ Each suite prints `HOST` from the plugin's shared compatibility snapshot: host n
 versions, xterm dependency declared by the host, and observed capabilities. Unknown or unobserved values are `null`.
 `--expect-xterm` fails on a different or missing declaration. A version number alone does not establish xterm 6
 coverage: a tagged release can precede the xterm upgrade. Run both the shipping release and a build containing the
-upgrade. The suites accept host-provided modal drag regions and the plugin's fallback on older hosts.
+upgrade. Native dialog dragging is delegated to Tabby: the fix shipped in 1.0.238, and the plugin no longer adds
+fallback strips to host dialogs. The suites require a hit-testable native strip on hosts identifying as Tabby
+1.0.238 or later. Older or unrecognized hosts may omit it; controls must remain usable, and any native strip they
+do provide is hit-tested. Every host must have zero plugin-injected native-modal strips. The minimum supported
+Tabby remains 1.0.236; its dialogs may prevent moving the window until closed. The plugin's custom overlays retain
+their own drag strips because Tabby's `.modal` styling does not cover them.
 
 `smoke-host` exercises both terminal frontend choices (`xterm` and `xterm-webgl`), actual local PTY input,
 Alt+arrow word-jump sequences, output through session middleware, resize, font changes, scroll position, background
@@ -68,7 +73,7 @@ modal stays open and the stored profile stays unchanged, then correct the fields
 Blank type/group defaults are also checked through the host's real ConfigProxy cleanup, including explicit port 3390
 and group defaults inheriting port 3390. An unrelated gateway edit preserves both the effective port and whether it
 follows later global-default changes. These checks need no remote connection.
-It also checks the compatibility snapshot against the real terminal inputs and modal behavior.
+It also checks the compatibility snapshot against the real terminal inputs, and modal dragging directly in the DOM.
 Gateway-account checks use dummy credentials without a remote connection: real group-default resolution in the
 inventory and removal confirmation, then separate gateway prompts after removal, including cancellation.
 `smoke-rdp` covers a real decoded RDP frame, repeated console/RDP switching, keyboard focus and covered-console
@@ -222,3 +227,22 @@ still supports Node 18. `test/package.json` marks the tree as ESM (the plugin it
 build). A page expression is a string, so nothing can check what it returns: `ev` and `waitFor` default to `unknown`,
 and a suite that reads a shape out of one states it (`ev<CanvasInfo>(...)`) — the shared ones are exported from
 [`lib/harness.ts`](lib/harness.ts).
+
+## Visual QA dashboard
+
+`npm run qa` serves the authenticated dashboard at <http://127.0.0.1:4317>. Select local plugin settings,
+Ubuntu GNOME or Windows 11. All use the existing disposable Tabby runner and Playwright evidence. `visual-linux`
+and `visual-windows` reach real RDP sessions; `visual-host` checks only local settings. `npm run test:visual`
+retains the local host default. See [visual QA operations](../docs/visual-qa.md) for dedicated guest configuration,
+reviewed baselines, temporal resize evidence, storage, acceptance and coverage limits.
+
+## Native-client visual matrix
+
+The visual dashboard has distinct cells for macOS, Windows and Linux **Tabby clients**, each targeting Ubuntu 24.04
+(GNOME 46), Fedora 44 (GNOME 50), Debian 13.7 (GNOME 48), Rocky 9 (Xfce/xrdp) and Windows 11 desktops. Each client also has a settings capture.
+These reuse `visual-host`, `visual-linux` and `visual-windows`; per-cell configuration selects the native CDP session and
+remote machine. Actual client/guest identity and installed plugin content are verified before visual assertions.
+
+See [setup, baseline review and acceptance](../docs/visual-qa.md#native-client-and-desktop-matrix). A Windows desktop reached
+from macOS is **macOS-client / Windows-server coverage**, not Windows-client coverage. Unsupported/unconfigured combinations
+remain visible and cannot count as a pass. Architecture is recorded from the Tabby process, independently of the test driver.

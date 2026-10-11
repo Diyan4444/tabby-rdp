@@ -25,7 +25,8 @@ remote desktop profiles can also connect directly or through an RD Gateway.
 
 - **Linux desktops without a monitor or a login.** The plugin starts a headless GNOME session for your SSH user with
   GNOME Remote Desktop, on the fly, without root. A server in a rack works as well as a workstation.
-- **Other Linux desktops** (KDE, XFCE, MATE, Cinnamon, …) through xrdp, where it runs: the plugin finds it by itself.
+- **Other Linux desktops** through xrdp, including tested Rocky Linux 9 with Xfce. KDE, MATE, Cinnamon and
+  other desktops can also run in xrdp sessions; the plugin finds the server by itself.
 - **Windows desktops** behind any SSH host, such as a VM on your build server, and the desktop of a Windows machine
   you SSH into.
 - **Remote desktop profiles** for machines you reach without SSH (LAN, VPN): in Tabby's profile list, in a tab of their
@@ -62,6 +63,7 @@ Making it work with GNOME took fixes in IronRDP, which we contribute upstream ([
 - [desk: the console on the desktop](#desk-the-console-on-the-desktop)
 - [Settings](#settings)
 - [Requirements](#requirements)
+- [Tested environments](#tested-environments)
 - [Built on IronRDP](#built-on-ironrdp)
 - [Development](#development)
 - [Limitations](#limitations)
@@ -111,6 +113,17 @@ Open an SSH tab to a Linux machine with GNOME, and:
 The first connection to a machine takes a few seconds while it prepares GNOME Remote Desktop and a session; later
 ones take well under a second. The same shortcut switches between the desktop and the console, and the desktop keeps
 running in the background until you disconnect or close the tab.
+
+GNOME's generated password and TLS key belong to each SSH user and machine. They are kept under
+`~/.local/share/tabby-rdp/hosts/<machine-id>/`, with private directory/file permissions. Linux needs a valid,
+initialized `/etc/machine-id`; cloned machines must have distinct IDs. On the first connection after this change,
+each machine gets new credentials and GNOME Remote Desktop restarts, disconnecting any existing RDP clients.
+Reconnect to **every** machine using a shared home to rotate all active credentials. Old home-wide credential files
+are preserved for machines still using an earlier version, but this version never imports them.
+
+Separate credentials prevent accidental reuse across machines; they do not isolate machines that let the same
+account read or write the shared home. That account can still read every machine's stored secrets and GNOME's own
+shared configuration. Use separate accounts or host-local homes when those machines need independent trust.
 
 A machine without GNOME but with [xrdp](https://github.com/neutrinolabs/xrdp) running (the usual RDP server for KDE,
 XFCE, MATE and the rest) gets xrdp's desktop instead: sign in with your Linux password, which the plugin can remember
@@ -556,14 +569,34 @@ are local to this computer:
 - **Windows desktops:** Windows 10 or 11 Pro, or Windows Server, with Remote Desktop turned on, reachable from an SSH
   host or running OpenSSH Server itself.
 
-Tested with Ubuntu 24.04 (GNOME Remote Desktop 46.3) and Windows 11 (Pro and Enterprise), from Tabby on macOS,
-Windows 11 and Ubuntu 24.04 (arm64). Recent host compatibility tests cover official Tabby **1.0.238** on macOS
-with xterm 5, and upstream xterm 6 builds on macOS and Linux. The new package installation dialog is tested on
-macOS with Tabby 1.0.238; Windows qualification of these changes remains pending. See the
-[host test matrix](test/README.md#host-qualification) for the exact builds and coverage.
-
 The plugin checks the host's available features through a shared compatibility layer. Connection logs include the
 host and runtime versions, declared xterm dependency and observed capabilities to help diagnose forks and nightlies.
+
+## Tested environments
+
+The visual QA matrix runs real remote desktops in native Tabby clients on **macOS, Windows and Linux**. The current
+RDP matrix uses ARM64 Tabby 1.0.236 / Electron 43.7.0 on all three client platforms:
+
+| Remote desktop | Server stack | Visual QA coverage |
+|---|---|---|
+| Ubuntu 24.04 | GNOME 46 / GNOME Remote Desktop | Desktop pixels, keyboard input, resize, tab return and reconnect |
+| Fedora 44 | GNOME 50 / GNOME Remote Desktop | Same RDP lifecycle checks |
+| Debian 13.7 | GNOME 48 / GNOME Remote Desktop | Same RDP lifecycle checks |
+| Rocky Linux 9 | Xfce 4.18 / xrdp 0.10.6.1 / xorgxrdp 0.10.5 | Same RDP lifecycle checks |
+| Windows 11 | Windows Remote Desktop | Same RDP lifecycle checks, with H.264 disabled |
+| Fedora 44 KDE Plasma | KRDP / KPipeWire 6.7.5, FreeRDP 3.32.1; two opt-in server patches | H.264 pixels, input, tab return, reconnect and fixed-monitor client fitting |
+
+The KDE row is experimental: the tested profile needs server-side color and authentication compatibility patches.
+Stock KDE builds and live remote monitor resizing are not qualified. FreeRDP is a dependency of that KRDP server;
+tabby-rdp's client continues to use IronRDP. Rocky's Xfce desktop uses **xrdp**, a different RDP server.
+The testbed includes the opt-in KDE patches and reproducible setup instructions; see the
+[visual QA guide](docs/visual-qa.md) for exact identities, evidence and remaining gaps.
+
+Hosted CI also runs native settings and plugin smoke checks on macOS, Windows and Linux; those checks do not qualify
+x86_64 RDP sessions. Recent host compatibility tests cover official Tabby **1.0.238** on macOS with xterm 5, and
+upstream xterm 6 builds on macOS and Linux. The package installation dialog is tested on macOS with Tabby 1.0.238;
+Windows qualification of that dialog remains pending. See the [host test matrix](test/README.md#host-qualification).
+These focused checks do not establish clipboard, shared-folder, audio or microphone coverage across every matrix cell.
 
 ## Built on IronRDP
 
@@ -609,6 +642,9 @@ npm test                     # end-to-end suites against a test machine: see tes
 npm run build:ironrdp        # rebuild vendor/ from IronRDP and ironrdp/patches: see ironrdp/README.md
 ```
 
+- [docs/visual-qa.md](docs/visual-qa.md): the local visual QA dashboard, native client/server matrix, reviewed screenshot
+  baselines, defect injection, optional AI review, scheduling and evidence retention. Run `npm run test:qa` for its
+  service tests; follow the guide to configure real desktop targets. Private credentials and run artifacts stay local.
 - [docs/architecture.md](docs/architecture.md): how the pieces fit, the remote setup, and security notes.
 - [docs/desk.md](docs/desk.md): `desk` and trd-pty.
 - [test/README.md](test/README.md) and [testbed/README.md](testbed/README.md): the tests, and setting up test

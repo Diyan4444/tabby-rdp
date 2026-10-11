@@ -1,0 +1,600 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <meanaverage@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 16:42:14 -0700
+Subject: [PATCH] fix(egfx): bound callback pixels and readback concurrency and
+ retire ended streams promptly
+
+---
+ crates/ironrdp-egfx/src/client.rs             |   7 +
+ crates/ironrdp-session/src/active_stage.rs    |   7 +
+ .../tests/egfx/external_h264.rs               |  24 ++++
+ crates/ironrdp-web/src/h264.rs                |  92 +++++++++++-
+ crates/ironrdp-web/src/session.rs             |   4 +-
+ .../src/H264Decoder.test.ts                   | 136 +++++++++++++++++-
+ .../src/H264Decoder.ts                        |  81 +++++++++--
+ 7 files changed, 330 insertions(+), 21 deletions(-)
+
+diff --git a/crates/ironrdp-egfx/src/client.rs b/crates/ironrdp-egfx/src/client.rs
+index 125a9523..d848162b 100644
+--- a/crates/ironrdp-egfx/src/client.rs
++++ b/crates/ironrdp-egfx/src/client.rs
+@@ -604,6 +604,13 @@ impl GraphicsPipelineClient {
+         frames
+     }
+ 
++    /// Takes stream endings after the last handed-out frame. Call after [`Self::take_h264_frames`]
++    /// so deleted or reset surfaces release their external decoders even without another frame.
++    #[must_use]
++    pub fn take_ended_h264_surfaces(&mut self) -> Vec<u16> {
++        core::mem::take(&mut self.ended_h264_surfaces)
++    }
++
+     /// Hands back a frame from [`Self::take_h264_frames`], and processes what waited for it.
+     ///
+     /// `pixels` holds RGBA8888 for each of the frame's regions in turn, row-major and tightly packed; `None` means
+diff --git a/crates/ironrdp-session/src/active_stage.rs b/crates/ironrdp-session/src/active_stage.rs
+index b80186a6..fd3db9b7 100644
+--- a/crates/ironrdp-session/src/active_stage.rs
++++ b/crates/ironrdp-session/src/active_stage.rs
+@@ -328,6 +328,13 @@ impl ActiveStage {
+             .unwrap_or_default()
+     }
+ 
++    /// Takes stream endings after the last H.264 frame. Call after [`Self::take_graphics_h264_frames`].
++    pub fn take_ended_graphics_h264_surfaces(&mut self) -> Vec<u16> {
++        self.get_dvc_mut::<GraphicsPipelineClient>()
++            .map(|mut gfx| gfx.processor_mut().take_ended_h264_surfaces())
++            .unwrap_or_default()
++    }
++
+     /// Completes an AVC420 frame decoded outside the graphics pipeline
+     /// (see [`GraphicsPipelineClient::complete_h264_frame`]).
+     ///
+diff --git a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+index 9aa96b04..c744e09a 100644
+--- a/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
++++ b/crates/ironrdp-testsuite-core/tests/egfx/external_h264.rs
+@@ -710,3 +710,27 @@ fn a_frame_names_the_surfaces_whose_streams_ended_before_it() {
+         .collect();
+     assert_eq!(ended, [(1, vec![]), (2, vec![]), (2, vec![1, 2]), (4, vec![2])]);
+ }
++
++#[test]
++fn ended_streams_are_available_without_a_later_h264_frame() {
++    for end in [
++        GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id: 1 }),
++        GfxPdu::ResetGraphics(ResetGraphicsPdu {
++            width: 16,
++            height: 8,
++            monitors: vec![],
++        }),
++    ] {
++        let mut client = client();
++        process_all(
++            &mut client,
++            &[
++                avc420_to(1, rect(0, 0, 16, 8), &[Avc420Region::full_frame(16, 8, 22)]),
++                end,
++            ],
++        );
++        assert_eq!(client.take_h264_frames().len(), 1);
++        assert_eq!(client.take_ended_h264_surfaces(), [1]);
++        assert!(client.take_ended_h264_surfaces().is_empty());
++    }
++}
+diff --git a/crates/ironrdp-web/src/h264.rs b/crates/ironrdp-web/src/h264.rs
+index 1318ff0b..067d368c 100644
+--- a/crates/ironrdp-web/src/h264.rs
++++ b/crates/ironrdp-web/src/h264.rs
+@@ -14,6 +14,9 @@
+ //!
+ //! [`GraphicsPipelineClient::with_external_h264`]: ironrdp_egfx::client::GraphicsPipelineClient::with_external_h264
+ 
++use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
+ use anyhow::Context as _;
+ use futures_channel::mpsc;
+ use ironrdp_egfx::client::H264Frame;
+@@ -24,6 +27,38 @@ use wasm_bindgen::prelude::*;
+ 
+ use crate::session::RdpInputEvent;
+ 
++const MAX_QUEUED_PIXEL_BYTES: usize = 256 * 1024 * 1024;
++
++/// Pixel copies waiting in the event queue are charged until the event is consumed or dropped.
++#[derive(Clone, Debug, Default)]
++struct PixelBudget(Arc<AtomicUsize>);
++
++impl PixelBudget {
++    fn reserve(&self, bytes: usize) -> Option<PixelReservation> {
++        self.0
++            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
++                used.checked_add(bytes).filter(|&total| total <= MAX_QUEUED_PIXEL_BYTES)
++            })
++            .ok()?;
++        Some(PixelReservation {
++            budget: self.clone(),
++            bytes,
++        })
++    }
++}
++
++#[derive(Debug)]
++pub(crate) struct PixelReservation {
++    budget: PixelBudget,
++    bytes: usize,
++}
++
++impl Drop for PixelReservation {
++    fn drop(&mut self) {
++        self.budget.0.fetch_sub(self.bytes, Ordering::Relaxed);
++    }
++}
++
+ pub(crate) struct JsH264Decoder {
+     decoder: JsValue,
+     decode: js_sys::Function,
+@@ -36,11 +71,31 @@ impl JsH264Decoder {
+             .ok()
+             .and_then(|decode| decode.dyn_into::<js_sys::Function>().ok())
+             .context("the H.264 decoder has no decode function")?;
++        let budget = PixelBudget::default();
+         let done = Closure::new(move |id: u32, pixels: JsValue, error: JsValue| {
++            let mut error = error.as_string();
++            let mut reservation = None;
++            let pixels = pixels.dyn_ref::<js_sys::Uint8Array>().and_then(|array| {
++                let bytes = usize::try_from(array.length()).unwrap_or(usize::MAX);
++                let Some(charge) = budget.reserve(bytes) else {
++                    error = Some("decoded H.264 pixels exceed the event queue budget".into());
++                    return None;
++                };
++                let mut pixels = Vec::new();
++                if pixels.try_reserve_exact(bytes).is_err() {
++                    error = Some("not enough memory for decoded H.264 pixels".into());
++                    return None;
++                }
++                pixels.resize(bytes, 0);
++                array.copy_to(&mut pixels);
++                reservation = Some(charge);
++                Some(pixels)
++            });
+             let event = RdpInputEvent::H264Decoded {
+                 id,
+-                pixels: pixels.dyn_ref::<js_sys::Uint8Array>().map(js_sys::Uint8Array::to_vec),
+-                error: error.as_string(),
++                pixels,
++                error,
++                reservation,
+             };
+             if events.unbounded_send(event).is_err() {
+                 warn!(id, "Decoded H.264 frame dropped: the session loop is gone");
+@@ -79,6 +134,21 @@ impl JsH264Decoder {
+             .map_err(|error| anyhow::anyhow!("H.264 decoder: {error:?}"))?;
+         Ok(())
+     }
++
++    pub(crate) fn end_surfaces(&self, surfaces: Vec<u16>) -> anyhow::Result<()> {
++        if surfaces.is_empty() {
++            return Ok(());
++        }
++        let end = js_sys::Reflect::get(&self.decoder, &JsValue::from_str("endSurfaces"))
++            .ok()
++            .and_then(|end| end.dyn_into::<js_sys::Function>().ok());
++        if let Some(end) = end {
++            let surfaces = surfaces.into_iter().map(JsValue::from).collect::<js_sys::Array>();
++            end.call1(&self.decoder, &surfaces)
++                .map_err(|error| anyhow::anyhow!("ending H.264 streams: {error:?}"))?;
++        }
++        Ok(())
++    }
+ }
+ 
+ impl Drop for JsH264Decoder {
+@@ -107,3 +177,21 @@ fn rectangle(rect: &ExclusiveRectangle) -> JsValue {
+     }
+     object.into()
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn pixel_queue_budget_rejects_overflow_and_releases_consumed_events() {
++        let budget = PixelBudget::default();
++        let first = budget.reserve(MAX_QUEUED_PIXEL_BYTES - 4).unwrap();
++        let last = budget.reserve(4).unwrap();
++        assert!(budget.reserve(1).is_none());
++        assert!(budget.reserve(usize::MAX).is_none());
++        drop(first);
++        assert!(budget.reserve(MAX_QUEUED_PIXEL_BYTES - 4).is_some());
++        drop(last);
++        assert_eq!(budget.0.load(Ordering::Relaxed), 0);
++    }
++}
+diff --git a/crates/ironrdp-web/src/session.rs b/crates/ironrdp-web/src/session.rs
+index 67f864f6..793ec674 100644
+--- a/crates/ironrdp-web/src/session.rs
++++ b/crates/ironrdp-web/src/session.rs
+@@ -665,6 +665,7 @@ pub(crate) enum RdpInputEvent {
+         id: u32,
+         pixels: Option<Vec<u8>>,
+         error: Option<String>,
++        reservation: Option<crate::h264::PixelReservation>,
+     },
+     FastPath(FastPathInputEvents),
+     Resize {
+@@ -1045,7 +1046,7 @@ impl iron_remote_desktop::Session for Session {
+                         RdpInputEvent::AudioInputUplink(uplink) => {
+                             vec![ActiveStageOutput::ResponseFrame(active_stage.encode_dvc_messages(uplink.into_messages())?)]
+                         }
+-                        RdpInputEvent::H264Decoded { id, pixels, error } => {
++                        RdpInputEvent::H264Decoded { id, pixels, error, reservation: _reservation } => {
+                             if let Some(error) = error {
+                                 return Err(anyhow::anyhow!("H.264 decoding failed: {error}").into());
+                             }
+@@ -1087,6 +1088,7 @@ impl iron_remote_desktop::Session for Session {
+                 for frame in active_stage.take_graphics_h264_frames() {
+                     h264.decode(frame)?;
+                 }
++                h264.end_surfaces(active_stage.take_ended_graphics_h264_surfaces())?;
+             }
+ 
+             for out in outputs {
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+index f974fea4..a8f466ff 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.test.ts
+@@ -365,14 +365,22 @@ describe('WebCodecsH264Decoder', () => {
+     /** Pictures whose `copyTo` finishes only when the `copies` are called: until then, their readbacks are in flight. */
+     function slowPictures() {
+         const copies: (() => void)[] = [];
++        const rejections: ((error: Error) => void)[] = [];
++        const pictures: FakePicture[] = [];
+         class SlowPicture extends FakePicture {
+             override async copyTo(): Promise<void> {
+-                await new Promise<void>((resolve) => copies.push(resolve));
++                await new Promise<void>((resolve, reject) => {
++                    copies.push(resolve);
++                    rejections.push(reject);
++                });
+             }
+         }
+-        const emit = (id: number, width: number, height: number) =>
+-            FakeDecoder.instances[0].init.output(new SlowPicture(id, width, height));
+-        return { copies, emit };
++        const emit = (id: number, width: number, height: number) => {
++            const picture = new SlowPicture(id, width, height);
++            pictures.push(picture);
++            FakeDecoder.instances[0].init.output(picture);
++        };
++        return { copies, rejections, pictures, emit };
+     }
+ 
+     /** A frame for a 4096x4096 picture, whole: 64 MiB of RGBA to read back. */
+@@ -381,6 +389,93 @@ describe('WebCodecsH264Decoder', () => {
+         return { ...frame(id, id === 0, [whole]), destination: whole };
+     }
+ 
++    it('bounds concurrent tiny readbacks and releases their slots', async () => {
++        const { copies, emit } = slowPictures();
++        for (let id = 0; id < 64; id++) {
++            decoder.decode(frame(id, id === 0), done);
++            emit(id, 64, 32);
++        }
++        expect(decoder.failed).toBeNull();
++        copies[0]();
++        await flush();
++        decoder.decode(frame(64, false), done);
++        emit(64, 64, 32);
++        expect(decoder.failed).toBeNull();
++        decoder.decode(frame(65, false), done);
++        emit(65, 64, 32);
++        expect(decoder.failed).toBe('more than 64 pictures being read back');
++        expect(copies).toHaveLength(65);
++        copies.forEach((copy) => copy());
++        await flush();
++    });
++
++    it('rejects an oversized decoded picture before reading even a small region', () => {
++        decoder.decode(frame(0, true), done);
++        const picture = FakeDecoder.instances[0].emit(0, 8193, 8193);
++        expect(picture.closed).toBe(true);
++        expect(picture.copied).toEqual([]);
++        expect(decoder.failed).toBe('decoded H.264 picture exceeds the pixel budget');
++    });
++
++    it('budgets whole retained pictures even for tiny dirty regions and releases completed pictures', async () => {
++        const { copies, rejections, pictures, emit } = slowPictures();
++        // Fake coded dimensions carry no large allocation: each dirty region only reads eight bytes.
++        // Two 64 Mi-pixel pictures exactly fill the aggregate budget, far below the 64-readback slot cap.
++        for (let id = 0; id < 2; id++) {
++            decoder.decode(frame(id, id === 0), done);
++            emit(id, 8192, 8192);
++        }
++        expect(decoder.failed).toBeNull();
++        copies[0]();
++        await flush();
++        expect(pictures[0].closed).toBe(true);
++        expect(done).toHaveBeenCalledTimes(1);
++
++        decoder.decode(frame(2, false), done);
++        emit(2, 8192, 8192);
++        expect(decoder.failed).toBeNull();
++        decoder.decode(frame(3, false), done);
++        emit(3, 8192, 8192);
++        expect(decoder.failed).toBe('more than 128 Mi pixels of decoded pictures being read back');
++        expect(copies).toHaveLength(3);
++        expect(pictures.every((picture) => picture.closed)).toBe(true);
++        expect(done).toHaveBeenLastCalledWith(3, null, decoder.failed);
++
++        // Late success or failure after teardown cannot invoke a disposed session callback or debit twice.
++        const completed = done.mock.calls.length;
++        rejections[1](new Error('late copy failure'));
++        copies[2]();
++        await flush();
++        expect(done).toHaveBeenCalledTimes(completed);
++        expect(Reflect.get(decoder, 'readbackPixels')).toBe(0);
++        expect(Reflect.get(decoder, 'readbackBytes')).toBe(0);
++        expect(Reflect.get(decoder, 'readbackPictures').size).toBe(0);
++    });
++
++    it.each([new Error('copy failed'), new DOMException('conversion unavailable', 'NotSupportedError')])(
++        'closes retained pictures and ignores late copy rejection after close: %s',
++        async (error) => {
++            const { copies, rejections, pictures, emit } = slowPictures();
++            const canvasSizes: number[][] = [];
++            stubCanvas([], canvasSizes);
++            for (let id = 0; id < 2; id++) {
++                decoder.decode(frame(id, id === 0), done);
++                emit(id, 8192, 8192);
++            }
++            decoder.close();
++            expect(pictures.every((picture) => picture.closed)).toBe(true);
++            rejections[0](error);
++            copies[1]();
++            await flush();
++            expect(done).not.toHaveBeenCalled();
++            expect(canvasSizes).toEqual([]);
++            expect(decoder.failed).toBeNull();
++            expect(Reflect.get(decoder, 'readbackPixels')).toBe(0);
++            expect(Reflect.get(decoder, 'readbackBytes')).toBe(0);
++            expect(Reflect.get(decoder, 'readbackPictures').size).toBe(0);
++        },
++    );
++
+     it('fails when the pictures being read back hold too much', async () => {
+         const failures: string[] = [];
+         decoder.close();
+@@ -431,12 +526,14 @@ describe('WebCodecsH264Decoder', () => {
+         expect(decoder.failed).toMatch(/no key frame/);
+     });
+ 
+-    function stubCanvas(drawn: unknown[]) {
++    function stubCanvas(drawn: unknown[], sizes: number[][] = []) {
+         class FakeCanvas {
+             constructor(
+                 readonly width: number,
+                 readonly height: number,
+-            ) {}
++            ) {
++                sizes.push([width, height]);
++            }
+             getContext() {
+                 return {
+                     drawImage: (...args: unknown[]) => drawn.push(args.slice(1)),
+@@ -449,6 +546,33 @@ describe('WebCodecsH264Decoder', () => {
+         vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+     }
+ 
++    it('does not combine the historical maximum width and height of canvas readbacks', async () => {
++        const sizes: number[][] = [];
++        stubCanvas([], sizes);
++        for (const [id, width, height] of [
++            [0, 64, 1],
++            [1, 1, 64],
++        ]) {
++            const region = { left: 0, top: 0, right: width, bottom: height };
++            decoder.decode({ ...frame(id, id === 0, [region]), destination: region }, done);
++            FakeDecoder.instances[0].emit(id, width, height, undefined, 'NV12');
++            await flush();
++        }
++        expect(sizes).toEqual([
++            [64, 1],
++            [1, 64],
++        ]);
++        expect(decoder.failed).toBeNull();
++    });
++
++    it('closes a deleted surface even if no later H.264 frame arrives', async () => {
++        decoder.decode(frame(0, true), done);
++        FakeDecoder.instances[0].emit(0);
++        await flush();
++        decoder.endSurfaces([1]);
++        expect(FakeDecoder.instances[0].state).toBe('closed');
++    });
++
+     it('reads through a canvas where copyTo cannot convert to RGBA', async () => {
+         const drawn: unknown[] = [];
+         stubCanvas(drawn);
+diff --git a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+index 2d50ed7d..06b9d1ff 100644
+--- a/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
++++ b/web-client/iron-remote-desktop-rdp/src/H264Decoder.ts
+@@ -8,7 +8,8 @@
+  * freeze the picture: after `stallMs` without output, or on any decoder error, the decoder fails, which ends the
+  * session with an error. Reconnecting without H.264 is the way out. A server that has the decoders hold more than
+  * any stream needs (more than 256 frames in one, or 128 MiB of H.264 in all), or read back more than 512 MiB of their
+- * pictures at once, or streams to more surfaces than a session has monitors, or starts streams faster than monitors
++ * regions or retain more than 128 Mi pixels of decoded pictures during readback at once, or streams to more surfaces
++ * than a session has monitors, or starts streams faster than monitors
+  * are added and resized, fails them the same way.
+  */
+ 
+@@ -156,6 +157,9 @@ export class WebCodecsH264Decoder {
+     private pendingBytes = 0;
+     /** The bytes the pictures being read back are read into: the RGBA of their frames' regions. */
+     private readbackBytes = 0;
++    /** Full decoded pictures retained by async copies, independently of their dirty regions' size. */
++    private readonly readbackPictures = new Set<VideoFrame>();
++    private readbackPixels = 0;
+     /** How fast decoders open, for all surfaces together (see `SESSION_OPENS`). */
+     private readonly opens: Rate;
+     /** How fast decoders open for each surface (see `SURFACE_OPENS`), kept while a surface's count matters. */
+@@ -178,9 +182,7 @@ export class WebCodecsH264Decoder {
+             return;
+         }
+         this.watchdog ??= setInterval(() => this.checkStalls(), Math.min(250, this.stallMs));
+-        for (const surfaceId of frame.endedSurfaces ?? []) {
+-            this.retire(surfaceId);
+-        }
++        this.endSurfaces(frame.endedSurfaces ?? []);
+         let surface = this.surfaces.get(frame.surfaceId);
+         if (surface === undefined) {
+             if (this.surfaces.size + this.retiring.size >= WebCodecsH264Decoder.MAX_DECODERS) {
+@@ -251,7 +253,15 @@ export class WebCodecsH264Decoder {
+         this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+-        this.readbackBytes = 0;
++        this.clearReadbacks();
++        this.canvas = null;
++    }
++
++    /** Releases streams as soon as their surfaces end, including when no later H.264 frame arrives. */
++    endSurfaces(surfaceIds: number[]): void {
++        for (const surfaceId of surfaceIds) {
++            this.retire(surfaceId);
++        }
+     }
+ 
+     /**
+@@ -300,6 +310,10 @@ export class WebCodecsH264Decoder {
+      * take the box as well while it is read, at most twice what they hold.
+      */
+     private static readonly MAX_READBACK_BYTES = 512 * 1024 * 1024;
++    private static readonly MAX_READBACKS = 64;
++    private static readonly MAX_PICTURE_PIXELS = 64 * 1024 * 1024;
++    /** Four whole 8K pictures, or 512 MiB at four bytes per coded pixel, regardless of dirty-region size. */
++    private static readonly MAX_READBACK_PIXELS = 128 * 1024 * 1024;
+ 
+     /**
+      * Counts a decoder opening for the surface; says why it may not instead, when that is faster than `SURFACE_OPENS`
+@@ -388,6 +402,16 @@ export class WebCodecsH264Decoder {
+             picture.close();
+             return;
+         }
++        const picturePixels = picture.codedWidth * picture.codedHeight;
++        if (
++            !Number.isSafeInteger(picturePixels) ||
++            picturePixels <= 0 ||
++            picturePixels > WebCodecsH264Decoder.MAX_PICTURE_PIXELS
++        ) {
++            picture.close();
++            this.fail('decoded H.264 picture exceeds the pixel budget');
++            return;
++        }
+         // Pictures come out in decoding order: frames before this one that never came out won't.
+         for (const [earlier, dropped] of surface.pending) {
+             if (earlier >= id) {
+@@ -400,6 +424,12 @@ export class WebCodecsH264Decoder {
+         this.settle(surface, pending);
+         // What the regions are read into: counted before reading the picture allocates it, until it is handed back.
+         const bytes = pending.frame.regions.reduce((sum, r) => sum + (r.right - r.left) * (r.bottom - r.top) * 4, 0);
++        if (this.readbackPictures.size >= WebCodecsH264Decoder.MAX_READBACKS) {
++            picture.close();
++            this.fail(`more than ${WebCodecsH264Decoder.MAX_READBACKS} pictures being read back`);
++            pending.done(id, null, this.failed ?? undefined);
++            return;
++        }
+         if (this.readbackBytes + bytes > WebCodecsH264Decoder.MAX_READBACK_BYTES) {
+             picture.close();
+             this.fail(
+@@ -408,11 +438,20 @@ export class WebCodecsH264Decoder {
+             pending.done(id, null, this.failed ?? undefined);
+             return;
+         }
++        if (this.readbackPixels + picturePixels > WebCodecsH264Decoder.MAX_READBACK_PIXELS) {
++            picture.close();
++            this.fail('more than 128 Mi pixels of decoded pictures being read back');
++            pending.done(id, null, this.failed ?? undefined);
++            return;
++        }
+         this.readbackBytes += bytes;
++        this.readbackPixels += picturePixels;
++        this.readbackPictures.add(picture);
+         const release = () => {
+-            // A failure or close started the count over.
+-            if (this.failed === null && !this.closed) {
++            // Failure and close release every picture first; late settlements must not debit the counters twice.
++            if (this.readbackPictures.delete(picture)) {
+                 this.readbackBytes -= bytes;
++                this.readbackPixels -= picturePixels;
+             }
+         };
+         this.readRegions(picture, pending.frame).then(
+@@ -434,6 +473,9 @@ export class WebCodecsH264Decoder {
+             (error) => {
+                 picture.close();
+                 release();
++                if (this.failed !== null || this.closed) {
++                    return;
++                }
+                 this.fail(`reading the picture: ${describe(error)}`);
+                 pending.done(id, null, this.failed ?? undefined);
+             },
+@@ -525,6 +567,9 @@ export class WebCodecsH264Decoder {
+         box: { x: number; y: number; width: number; height: number },
+         into: Uint8Array,
+     ): Promise<void> {
++        if (this.failed !== null || this.closed) {
++            throw new Error('the H.264 decoder is closed');
++        }
+         if (this.stats.readback === 'copyTo') {
+             const rect = { x: visible.x + box.x, y: visible.y + box.y, width: box.width, height: box.height };
+             try {
+@@ -546,11 +591,13 @@ export class WebCodecsH264Decoder {
+                 this.stats.readback = 'canvas';
+             }
+         }
++        if (this.failed !== null || this.closed) {
++            throw new Error('the H.264 decoder is closed');
++        }
+         if (this.canvas === null || this.canvas.width < box.width || this.canvas.height < box.height) {
+-            this.canvas = new OffscreenCanvas(
+-                Math.max(box.width, this.canvas?.width ?? 0),
+-                Math.max(box.height, this.canvas?.height ?? 0),
+-            );
++            // Keep only the current box: retaining each axis's historical maximum can turn
++            // a wide row followed by a tall column into an enormous canvas.
++            this.canvas = new OffscreenCanvas(box.width, box.height);
+         }
+         const context = this.canvas.getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+         if (context === null) {
+@@ -562,6 +609,15 @@ export class WebCodecsH264Decoder {
+         into.set(context.getImageData(0, 0, box.width, box.height).data);
+     }
+ 
++    private clearReadbacks(): void {
++        for (const picture of this.readbackPictures) {
++            picture.close();
++        }
++        this.readbackPictures.clear();
++        this.readbackBytes = 0;
++        this.readbackPixels = 0;
++    }
++
+     private stopWatchdog(): void {
+         if (this.watchdog !== null) {
+             clearInterval(this.watchdog);
+@@ -604,7 +660,8 @@ export class WebCodecsH264Decoder {
+         this.retiring.clear();
+         this.stats.pending = 0;
+         this.pendingBytes = 0;
+-        this.readbackBytes = 0;
++        this.clearReadbacks();
++        this.canvas = null;
+         this.options.onFailure?.(reason);
+         for (const { frame, done } of pending) {
+             done(frame.id, null, reason);

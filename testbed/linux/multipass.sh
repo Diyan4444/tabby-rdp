@@ -17,8 +17,13 @@ fi
 command -v multipass >/dev/null || { echo "multipass is not installed (https://canonical.com/multipass)" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-multipass launch 24.04 --name "$NAME" --cpus 2 --memory 4G --disk 20G
+: "${UBUNTU_IMAGE:?set UBUNTU_IMAGE to a reviewed local Ubuntu 24.04 cloud image}"
+: "${UBUNTU_IMAGE_SHA256:?set UBUNTU_IMAGE_SHA256 from a trusted publisher checksum}"
+sh "$HERE/../verify-image.sh" "$UBUNTU_IMAGE" "$UBUNTU_IMAGE_SHA256"
+IMAGE_PATH="$(cd "$(dirname "$UBUNTU_IMAGE")" && pwd)/$(basename "$UBUNTU_IMAGE")"
+multipass launch "file://$IMAGE_PATH" --name "$NAME" --cpus 2 --memory 4G --disk 20G
 multipass transfer "$HERE/provision.sh" "$NAME:/tmp/provision.sh"
+multipass transfer "$HERE/winrm-requirements.txt" "$NAME:/tmp/winrm-requirements.txt"
 multipass exec "$NAME" -- sudo sh /tmp/provision.sh ubuntu
 multipass exec "$NAME" -- sh -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys' < "$KEY"
 IP="$(multipass info "$NAME" --format csv | awk -F, 'NR == 2 { print $3 }')"

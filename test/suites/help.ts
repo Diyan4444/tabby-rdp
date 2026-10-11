@@ -1,11 +1,16 @@
 // Help, on a Linux desktop host (TRD_TEST_HOST): Settings › Remote Desktop (opened from the menu and at a section,
 // its settings following the config both ways, remembered certificates, open desktops), the one-time tip on the first
 // connection, and "What does this mean?" under a message that ends a connection.
+import * as semver from 'semver'
+import type { HostInfo } from '../../src/hostCompat.js'
 import { suite } from '../lib/harness.js'
 import { rendererErrors } from '../lib/smoke.js'
 
 await suite('help', async t => {
     const { ev, check, sleep } = t
+    const host = await ev<Pick<HostInfo, 'name' | 'version'>>('return RD.compat.info')
+    const hostVersion = semver.valid(host.version ?? '')
+    const requireNativeDrag = /^tabby$/i.test(host.name ?? '') && !!hostVersion && semver.gte(hostVersion, '1.0.238')
     const errors = await rendererErrors(t)
     t.onCleanup(async () => {
         await ev('await H.closeAll()')
@@ -146,14 +151,21 @@ await suite('help', async t => {
     check('Add desktop… opens Tabby\'s profile editor for a remote desktop profile', !!(await t.waitFor('return !!document.querySelector(".modal rdp-profile-settings")', 4)))
     const accountOptions = await ev<string[]>('return [...document.querySelector(".modal rdp-profile-settings [name=account]").options].map(o => o.text)')
     check('its Account field offers the saved account and New account…', accountOptions.some(o => /Lab admin/.test(o)) && accountOptions.at(-1) === 'New account…', accountOptions)
-    // The strip over the dialog, where the tab bar is (hit-tested at the corner: a small window's dialog covers the middle).
-    check('the window stays draggable by its tab bar', await ev(`
-        const modal = document.querySelector('.modal'), bar = modal?.querySelector(':scope > .trd-form-dragbar');
-        const el = document.elementFromPoint(4, 4), native = modal && getComputedStyle(modal, '::before');
-        return !!bar && getComputedStyle(bar).webkitAppRegion === 'drag' && el === bar ||
-            !!native && native.content !== 'none' && native.content !== 'normal' && native.display !== 'none' &&
-            native.getPropertyValue('-webkit-app-region') === 'drag' && parseFloat(native.height) > 4 && el === modal;
-    `))
+    // Tabby owns its native modal strip; hit-test the corner because a small dialog can cover the middle.
+    const drag = await ev<{ bars: number, native: boolean, hit: boolean, controls: boolean }>(`
+        const modal = document.querySelector('.modal'), style = getComputedStyle(modal, '::before');
+        const native = style.content !== 'none' && style.content !== 'normal' && style.display !== 'none' &&
+            style.getPropertyValue('-webkit-app-region') === 'drag' && parseFloat(style.height) > 4;
+        const input = modal.querySelector('input'); input.focus();
+        return { bars: modal.querySelectorAll(':scope > .trd-form-dragbar').length, native,
+            hit: native && document.elementFromPoint(4, 4) === modal, controls: document.activeElement === input };
+    `)
+    check('native dialog has no plugin fallback and its controls remain usable', drag.bars === 0 && drag.controls, drag)
+    if (requireNativeDrag || drag.native) {
+        check('the host keeps its native dialog draggable by the tab bar', drag.native && drag.hit, { host, drag })
+    } else {
+        t.skip('native dialog dragging', 'this older or unrecognized host supplies no drag region; the plugin adds no fallback')
+    }
     await ev('RD.injector.get(require("@ng-bootstrap/ng-bootstrap").NgbModal).dismissAll()')
     await sleep(300)
 

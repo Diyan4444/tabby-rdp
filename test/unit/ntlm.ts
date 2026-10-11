@@ -94,3 +94,23 @@ test('a challenge that isn\'t one is refused', () => {
     assert.throws(() => parseChallenge(Buffer.from('nonsense')), /not an NTLM challenge/)
     assert.throws(() => authenticateMessage(negotiateMessage(), negotiateMessage(), { username: 'u', password: 'p' }), /not an NTLM challenge/)
 })
+
+test('a challenge without target information, or without the server\'s time, is refused rather than answered unbound (security review, finding 5)', () => {
+    const negotiate: Buffer = negotiateMessage()
+    const account = { username: 'DOMAIN\\User', password: 'Password', channelBinding: Buffer.from('tls-server-end-point:abc'), targetName: 'HTTP/gw' }
+    const time = Buffer.from('0090d336b734c301', 'hex')
+    const timed = Buffer.concat([TARGET_INFO.subarray(0, TARGET_INFO.length - 4), Buffer.from('07000800', 'hex'), time, Buffer.alloc(4)])
+    // NEGOTIATE_TARGET_INFO cleared, with the pairs there all the same (they don't count then), or set with none.
+    for (const challenge of [challengeMessage(0xe28a8215 & ~0x00800000, timed), challengeMessage(0xe28a8215, Buffer.alloc(0))]) {
+        assert.throws(() => authenticateMessage(negotiate, challenge, account), /no target information, so the sign-in couldn't be bound/)
+    }
+    // Target information without the time: no integrity code would cover the sign-in.
+    assert.throws(() => authenticateMessage(negotiate, challengeMessage(0xe28a8215, TARGET_INFO), account), /doesn't say when it is/)
+    // With both, the answer carries the binding, the target name and the integrity code, and no LM response.
+    const message: Buffer = authenticateMessage(negotiate, challengeMessage(0xe28a8215, timed), account)
+    const field = (i: number) => message.subarray(message.readUInt32LE(16 + i * 8), message.readUInt32LE(16 + i * 8) + message.readUInt16LE(12 + i * 8))
+    assert.equal(hex(field(0)), '00'.repeat(24))
+    assert.ok(field(1).includes(Buffer.concat([Buffer.from('0a001000', 'hex'), channelBindingHash(account.channelBinding)])))
+    assert.ok(field(1).includes(Buffer.concat([Buffer.from('09000e00', 'hex'), Buffer.from('HTTP/gw', 'utf16le')])))
+    assert.notEqual(hex(message.subarray(72, 88)), '00'.repeat(16))
+})

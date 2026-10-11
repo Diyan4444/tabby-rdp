@@ -215,9 +215,30 @@ test('in full screen, without Tabby\'s header, the microphone shows over the win
     assert.equal(headerMicrophone()!.style.display, '')
 })
 
+test('style installation leaves native modal dragging to Tabby without scanning or observing its dialogs', () => {
+    const { installStyle } = require('../../dist/desktop.service.js')
+    const observer = g.MutationObserver
+    const query = g.document.querySelectorAll
+    const head = g.document.head as FakeElement
+    const before = head.children.length
+    g.MutationObserver = class { constructor () { throw new Error('must not observe native dialogs') } }
+    g.document.querySelectorAll = () => { throw new Error('must not scan native dialogs') }
+    try {
+        installStyle()
+        installStyle()
+        assert.equal(head.children.length, before + 1, 'styles are installed only once')
+        const css = head.children.at(-1)!.textContent
+        assert.doesNotMatch(css, /\.modal\s*>\s*\.trd-form-dragbar/)
+        assert.match(css, /\.trd-form-dragbar \{ display: none; \}/, 'pane-local forms do not expose a window drag strip')
+    } finally {
+        g.MutationObserver = observer
+        g.document.querySelectorAll = query
+    }
+})
+
 test('the note that typing goes into all desktops, at the top in the middle too, moves below the microphone over the window', () => {
     const { installStyle } = require('../../dist/desktop.service.js')
-    installStyle(new HostCompatibility({}))
+    installStyle()
     const css = (g.document.head as FakeElement).children.map(c => c.textContent).join('\n')
     assert.match(css, /\.trd-overlay\.trd-broadcast-on::before \{[^}]*position: absolute; top: 8px; left: 50%;\s*transform: translateX\(-50%\);/)
     const { controls, desktop } = header()
@@ -402,7 +423,7 @@ test('the settings page says which hosts a desktop added from an SSH tab is for:
 
 test('copied connection logs include host compatibility information before the connection entries', () => {
     const compat = new HostCompatibility({
-        name: () => 'Tabbz Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
+        name: () => 'Example Terminal Preview', version: () => '1.0.238-beta.1', platform: 'darwin', electron: '43.7.0', node: '22.0.0',
         terminalPackage: () => ({ devDependencies: { '@xterm/xterm': '^5' } }),
     })
     let copied = ''

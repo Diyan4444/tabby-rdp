@@ -52,6 +52,12 @@ Electron binary that may run as Node (an app's with that fuse on, such as Visual
 or the `electron` npm package's: `node -p "require('electron')"` in a folder where it is installed); without it, they
 are skipped. CI runs them on Linux in the Electron of the Tabby release the plugin is qualified on.
 
+The compatibility job uses `scripts/electron/package.json` and its own committed lockfile. Upgrade Electron there
+with `npm install --package-lock-only --ignore-scripts --prefix scripts/electron electron@<exact-version> --save-exact`,
+review all dependency and integrity changes, and run the proxy tests with that binary. CI installs this tree using
+`npm ci --ignore-scripts`, then explicitly runs only Electron's locked binary installer, which checks the downloaded
+archive against Electron's release checksums. The project does not install Electron as a plugin dependency.
+
 For a Tabby host upgrade, run `npm run build` and then `npm run test:smoke -- --tabby <binary> --expect-xterm <major>`.
 This checks a locally packed plugin in an isolated host profile, with dummy credential storage. Add `--require-rdp`
 to require the live desktop checks. See [the host smoke instructions](test/README.md#host-upgrade-smoke-tests) for
@@ -87,7 +93,12 @@ be worth a user's update — a feature set, or a batch of fixes — not per chan
 security fixes and for bugs that make the plugin unusable; everything else waits. Features gather under the next
 minor version (see the milestones).
 
-**Version metadata.** Keep `package.json` and the root entries in `package-lock.json` on the same version. The
+**Runtime dependencies.** Pin runtime dependencies to exact versions and commit changes to `npm-shrinkwrap.json`.
+The shrinkwrap replaces `package-lock.json`: npm uses it for development and includes it in the published package,
+so plugin installs retain the reviewed versions, download URLs and integrity hashes. Upgrade dependencies through
+a reviewed change, run `npm ci --ignore-scripts`, build, and check the packed package before releasing.
+
+**Version metadata.** Keep `package.json` and the root entries in `npm-shrinkwrap.json` on the same version. The
 `tabbyRdp.minimumTabbyVersion` and `tabbyRdp.rollbackFloor` fields let release controls check compatibility and data
 migration limits; raise the floor only for a migration that prevents older packages from safely using the saved
 data. Version 0.5.1 is the explicitly supported baseline for packages that predate these fields.
@@ -139,6 +150,12 @@ directly" unchecked: the workflow only stages. After a first release that way, *
 set to require two-factor authentication and disallow tokens.
 
 ## Actions
+
+The internal-name check receives `INTERNAL_NAMES` only on pushes to protected branches. Pull requests and
+unprotected branches skip that job. Keep the release and main branches protected; the check reports file names and
+line numbers, and removes its temporary pattern and match files when it exits. This workflow condition limits
+routine exposure, but anyone permitted to edit workflows on a branch can change it: restrict repository write
+access, and use an environment secret with protected deployment branches if writers are not all trusted.
 
 Linux jobs use `ubuntu-24.04` so changes to GitHub's `ubuntu-latest` alias do not silently move CI or publication
 to a new Ubuntu release. Upgrade the runner version deliberately and validate the workflows before merging. The
