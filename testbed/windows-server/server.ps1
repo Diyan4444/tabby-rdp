@@ -33,6 +33,9 @@ The test account (default: tabbyrdp), created by setup.ps1.
 .PARAMETER Password
 Its password, for the same account in the guest VM. Needed for the roles stage.
 
+.PARAMETER PasswordFile
+UTF-8 file containing that password; avoids putting the secret in the process command line.
+
 .PARAMETER NoGuestStart
 Leaves the Windows guest off (see above).
 
@@ -45,10 +48,15 @@ param(
     [ValidateSet('roles', 'configure')] [string] $Stage = 'roles',
     [string] $UserName = 'tabbyrdp',
     [string] $Password,
+    [string] $PasswordFile,
     [switch] $NoGuestStart,
     [string] $SshKeys
 )
 $ErrorActionPreference = 'Stop'
+if ($PasswordFile) {
+    if ($Password) { throw 'Choose PasswordFile or Password, not both.' }
+    $Password = [IO.File]::ReadAllText($PasswordFile, [Text.Encoding]::UTF8)
+}
 $home_ = 'C:\tabby-rdp'
 $guest = 'tabby-rdp-guest'
 $empty = 'tabby-rdp-empty'
@@ -71,6 +79,8 @@ function Step ([string] $what, [scriptblock] $do) {
 
 if ($Stage -eq 'roles') {
     if (-not $Password) { throw 'Pass -Password: the test account''s password, for the same account in the guest VM.' }
+    $keepGuestPassword = $false
+    try {
     Copy-Item -Force $PSCommandPath "$home_\server.ps1"
     Set-ItemProperty "$home_\server.ps1" -Name IsReadOnly -Value $false  # as copied from a disc
     # The guest's account gets the same password: kept for the second stage (the folder is the administrators').
@@ -100,12 +110,17 @@ if ($Stage -eq 'roles') {
             -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
     }
     Log 'restarting'
-    Restart-Computer -Force
+    $keepGuestPassword = $true
+    try { Restart-Computer -Force } catch { $keepGuestPassword = $false; throw }
+    } finally {
+        if (-not $keepGuestPassword) { Remove-Item "$home_\guest.txt" -Force -ErrorAction SilentlyContinue }
+    }
     return
 }
 
 # ---- configure ------------------------------------------------------------------------------------
 
+try {
 Step 'OpenSSH Server' {
     # Part of Windows Server 2025; a capability to add before it.
     if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
@@ -265,4 +280,8 @@ Step 'done' {
     $vms = (Get-VM -Name $guest, $empty | ForEach-Object { "$($_.Name) $($_.Id) ($($_.State))" }) -join ', '
     Set-Content "$home_\ready.txt" "RD Gateway on 443; Hyper-V VM consoles on 2179; guests: $vms"
     Log (Get-Content "$home_\ready.txt")
+}
+} finally {
+    # A failed second stage must not leave the cleartext credential cached for an indefinite retry.
+    Remove-Item "$home_\guest.txt" -Force -ErrorAction SilentlyContinue
 }

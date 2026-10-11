@@ -102,8 +102,13 @@ GNOME Remote Desktop (grd) accepts a client only with a TLS certificate, a passw
 connect, the plugin runs a short script as the SSH user over an exec channel (`src/remoteSetup.ts`). No root, nothing
 installed beforehand:
 
-1. **Keys and password:** `~/.local/share/tabby-rdp/` (mode 0700) holds a self-signed TLS key and certificate and a
-   random RDP password (0600), made once.
+1. **Keys and password:** `~/.local/share/tabby-rdp/hosts/<machine-id>/` (mode 0700) holds a self-signed TLS key and
+   certificate and a random RDP password (0600), made once per user and machine. The ID must be the initialized,
+   nonzero 32-character lowercase hex value in `/etc/machine-id`; unavailable or malformed IDs fail setup. The
+   credential directories and files must be owned by this user and may not be symbolic links. A per-machine
+   `setup.lock` directory serializes initialization, and ordinary errors/signals release it. If setup is killed
+   without cleanup, subsequent attempts stop after about ten seconds; remove that lock only after confirming no
+   setup is active. Desk's helpers and key keep their existing home-wide locations.
 2. **grd, headless mode:** `grdctl --headless` with the user `tabby` and that password, view-only off.
 3. **A headless GNOME session:** if none runs, `systemd-run --user --unit=tabby-headless-shell gnome-shell --headless`,
    with a session identity (`XDG_CURRENT_DESKTOP`, Ubuntu's session mode when present) so that Settings and
@@ -126,7 +131,9 @@ installed beforehand:
    that can't be written (read-only) is left as it is, with a note (`RD_NOTE`) in the desktop's log; one whose writing
    fails part way (a full disk) leaves what it should hold in the plugin's folder, and the note says where.
 5. **grd restarts only when its configuration changed:** it reads credentials at startup, and a restart drops open
-   sessions.
+   sessions. Moving from the old home-wide credential paths always generates fresh secrets; no old key or password
+   is imported. Setup selects these new paths and credentials and restarts grd on each host's first updated
+   connection. Old files remain for unupgraded hosts, which must each be reconnected to rotate their active secrets.
 6. **Clients connected already:** the script counts the established connections to grd's port (again for up to 2 s,
    so a connection of the plugin's own being replaced isn't one) and reports them. grd gives each client a screen of
    its own, so the plugin asks before connecting: take it over (the script runs again with `TRD_TAKEOVER=1`, which
@@ -639,7 +646,10 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
 - **grd listens on all interfaces:** it has no bind-address setting, so port 3389 is reachable from the network
   (password-protected, TLS). The plugin doesn't change the firewall. For loopback-only access, as root:
   `iptables -I INPUT -p tcp --dport 3389 ! -i lo -j DROP` (and the same with `ip6tables`).
-- **Credentials:** the generated RDP password is in a 0600 file in a 0700 folder. The setup compares it with grd's
+- **Credentials:** the generated RDP password is in a 0600 file in a per-machine 0700 folder. This avoids credential
+  reuse when a home is shared, but is not a trust boundary between machines able to access that same account's
+  home: they can still read other hosts' secrets and alter GNOME's own shared settings. Such machines need separate
+  accounts or host-local storage to isolate them. The setup compares the password with grd's
   in the shell, never as a command's argument, which other users of the host could read in its process list. Setting
   it (the first connect, or when grd's differs) first leaves it off `grdctl`'s command line and gives it on its input,
   which versions that ask for a missing password read; where that doesn't take, `grdctl` gets it as an argument, and

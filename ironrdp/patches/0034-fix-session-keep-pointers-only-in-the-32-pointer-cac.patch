@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: meanaverage <18336095+meanaverage@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 13:13:04 -0700
+Subject: [PATCH 34/51] fix(session): keep pointers only in the 32 pointer
+ cache slots
+
+The pointer cache was a map keyed by the server's cacheIndex, a 16-bit
+value, with no bound: every Color, New and Large Pointer Update stored
+its decoded bitmap, and only a failed decode removed one. The client
+advertises 32 slots in its Pointer Capability Set (MS-RDPBCGR
+2.2.7.1.5), and a server may only use indices below that, but nothing
+stopped one from sending pointers at new indices: 65536 of them, each
+up to 576 KiB decoded now that pointers are capped at 384x384, and up to
+hundreds of megabytes each before that.
+
+PointerCache now has POINTER_CACHE_SIZE (32) slots, the number
+ironrdp-connector advertises, and insert gives the pointer back for an
+index past them. The session still shows such a pointer but does not
+cache it, and logs a warning. The cache holds at most 32 pointers,
+18 MiB.
+---
+ crates/ironrdp-session/src/fast_path.rs | 71 +++++++++++++++++++++----
+ crates/ironrdp-session/src/pointer.rs   | 35 +++++++++---
+ 2 files changed, 87 insertions(+), 19 deletions(-)
+
+diff --git a/crates/ironrdp-session/src/fast_path.rs b/crates/ironrdp-session/src/fast_path.rs
+index 0daa7abb..fb376a08 100644
+--- a/crates/ironrdp-session/src/fast_path.rs
++++ b/crates/ironrdp-session/src/fast_path.rs
+@@ -591,9 +591,7 @@ impl Processor {
+                     }
+                 };
+ 
+-                let _ = self
+-                    .pointer_cache
+-                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
++                self.cache_pointer(cache_index, &decoded_pointer);
+ 
+                 if !self.pointer_software_rendering {
+                     processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+@@ -638,9 +636,7 @@ impl Processor {
+                     }
+                 };
+ 
+-                let _ = self
+-                    .pointer_cache
+-                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
++                self.cache_pointer(cache_index, &decoded_pointer);
+ 
+                 if !self.pointer_software_rendering {
+                     processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+@@ -663,9 +659,7 @@ impl Processor {
+                     }
+                 };
+ 
+-                let _ = self
+-                    .pointer_cache
+-                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
++                self.cache_pointer(cache_index, &decoded_pointer);
+ 
+                 if !self.pointer_software_rendering {
+                     processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+@@ -678,6 +672,20 @@ impl Processor {
+         Ok(processor_updates)
+     }
+ 
++    fn cache_pointer(&mut self, cache_index: u16, pointer: &Arc<DecodedPointer>) {
++        if self
++            .pointer_cache
++            .insert(usize::from(cache_index), Arc::clone(pointer))
++            .is_err()
++        {
++            // The pointer is still shown: it just can't be recalled by a Cached Pointer Update.
++            warn!(
++                cache_index,
++                "Not caching a pointer whose cache index is past the pointer cache"
++            );
++        }
++    }
++
+     fn fallback_after_pointer_decode_failure(
+         &mut self,
+         image: &mut DecodedImage,
+@@ -1363,7 +1371,8 @@ mod tests {
+         .build();
+         processor
+             .pointer_cache
+-            .insert(0, Arc::new(DecodedPointer::new_invisible()));
++            .insert(0, Arc::new(DecodedPointer::new_invisible()))
++            .expect("slot 0 is in the cache");
+         let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+         let pointer = PointerAttribute {
+             xor_bpp: 2,
+@@ -1396,7 +1405,8 @@ mod tests {
+         .build();
+         processor
+             .pointer_cache
+-            .insert(0, Arc::new(DecodedPointer::new_invisible()));
++            .insert(0, Arc::new(DecodedPointer::new_invisible()))
++            .expect("slot 0 is in the cache");
+         let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+         let pointer = ColorPointerAttribute {
+             cache_index: 0,
+@@ -1414,6 +1424,45 @@ mod tests {
+         assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
+         assert!(!processor.pointer_cache.is_cached(0));
+     }
++
++    #[test]
++    fn pointer_past_the_pointer_cache_is_shown_but_not_cached() {
++        let mut processor = ProcessorBuilder {
++            io_channel_id: 0,
++            user_channel_id: 0,
++            share_id: 0,
++            enable_server_pointer: true,
++            pointer_software_rendering: false,
++        }
++        .build();
++        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
++
++        for cache_index in [0, 31, 32, u16::MAX] {
++            // One 24 bpp pixel: a 4-byte XOR scanline and a 2-byte AND scanline.
++            let pointer = ColorPointerAttribute {
++                cache_index,
++                hot_spot: Point16 { x: 0, y: 0 },
++                width: 1,
++                height: 1,
++                xor_mask: &[0, 0, 0, 0],
++                and_mask: &[0, 0],
++            };
++
++            let updates = processor
++                .process_pointer_update(&mut image, PointerUpdateData::Color(pointer))
++                .expect("a pointer past the cache must not fail the session");
++
++            assert!(
++                matches!(updates.as_slice(), [UpdateKind::PointerBitmap(_)]),
++                "cache index {cache_index}"
++            );
++        }
++
++        let cached = (0..=u16::MAX)
++            .filter(|&cache_index| processor.pointer_cache.is_cached(usize::from(cache_index)))
++            .collect::<Vec<_>>();
++        assert_eq!(cached, [0, 31]);
++    }
+ }
+ #[cfg(test)]
+ mod compression_tests {
+diff --git a/crates/ironrdp-session/src/pointer.rs b/crates/ironrdp-session/src/pointer.rs
+index ce9e90e1..7484b1ce 100644
+--- a/crates/ironrdp-session/src/pointer.rs
++++ b/crates/ironrdp-session/src/pointer.rs
+@@ -1,28 +1,47 @@
+-use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+ use ironrdp_graphics::pointer::DecodedPointer;
+ 
++/// Number of slots in the pointer cache.
++///
++/// A server stores a pointer at a `cacheIndex` below the cache size the client advertises in its
++/// Pointer Capability Set ([MS-RDPBCGR] 2.2.7.1.5). ironrdp-connector advertises 32 slots for the
++/// color pointer cache and 32 for the pointer cache, which this cache holds together.
++///
++/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
++pub const POINTER_CACHE_SIZE: usize = 32;
++
+ #[derive(Debug, Clone, Default)]
+ pub struct PointerCache {
+-    // TODO(@pacancoder) maybe use Vec<Optional<...>> instead?
+-    cache: HashMap<usize, Arc<DecodedPointer>>,
++    cache: [Option<Arc<DecodedPointer>>; POINTER_CACHE_SIZE],
+ }
+ 
+ impl PointerCache {
+-    pub fn insert(&mut self, id: usize, pointer: Arc<DecodedPointer>) -> Option<Arc<DecodedPointer>> {
+-        self.cache.insert(id, pointer)
++    /// Stores `pointer` in slot `id`, returning the pointer the slot held.
++    ///
++    /// # Errors
++    ///
++    /// Gives `pointer` back when `id` is not a slot, that is not below [`POINTER_CACHE_SIZE`].
++    pub fn insert(
++        &mut self,
++        id: usize,
++        pointer: Arc<DecodedPointer>,
++    ) -> Result<Option<Arc<DecodedPointer>>, Arc<DecodedPointer>> {
++        match self.cache.get_mut(id) {
++            Some(slot) => Ok(slot.replace(pointer)),
++            None => Err(pointer),
++        }
+     }
+ 
+     pub fn get(&self, id: usize) -> Option<Arc<DecodedPointer>> {
+-        self.cache.get(&id).cloned()
++        self.cache.get(id).cloned().flatten()
+     }
+ 
+     pub fn remove(&mut self, id: usize) -> Option<Arc<DecodedPointer>> {
+-        self.cache.remove(&id)
++        self.cache.get_mut(id).and_then(Option::take)
+     }
+ 
+     pub fn is_cached(&self, id: usize) -> bool {
+-        self.cache.contains_key(&id)
++        self.cache.get(id).is_some_and(Option::is_some)
+     }
+ }

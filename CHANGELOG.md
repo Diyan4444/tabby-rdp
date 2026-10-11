@@ -19,6 +19,25 @@ Local release candidate; not published on npm or as a GitHub release.
   find by a query of the folder. How many listings the server may have open at once (one per folder handle) isn't
   bounded yet, so this slows what a server can have the desktop keep rather than ends it.
 
+**Additional RC security hardening** (#77–87)
+
+- **CredSSP requires version 5 or later** before authentication continues. Servers offering only versions 2–4
+  must be updated; accepting their TLS certificate does not enable the legacy authentication binding.
+- **Graphics decoding and caches have dimension, allocation and retained-state limits.** Static and dynamic
+  virtual-channel reassembly also has per-message limits and an aggregate incomplete-dynamic-message budget.
+  These limits are per session, not a total memory ceiling for Tabby's window.
+- **Clipboard format lists are bounded and supported formats are selected in one pass.** Shared-drive work is
+  limited to 1,024 queued or in-flight requests and 64 MiB of encoded request data, with a resource error when full.
+- **Generated GNOME credentials are stored per machine identifier.** Each host rotates to fresh credentials when
+  next set up; this does not isolate hosts from someone who can read or modify their shared home directory.
+- **Runtime dependencies are pinned and shipped with an npm shrinkwrap.** Testbed images require verified hashes,
+  WinRM dependencies and the Electron CI tree are locked, and testbed credential media is privately staged and cleaned.
+  The internal-name CI check receives its secret only on protected branch pushes; it is inactive on an unprotected RC.
+
+The broader EGFX/H.264 queue and frame budgets in #88 are not included: they still need integration with the
+16-decoder wrapper. The aggregate open-listing limit above and live Windows H.264/shared-folder checks remain pending.
+This batch is not a stable-release sign-off.
+
 ## 0.5.3
 
 **Added**
