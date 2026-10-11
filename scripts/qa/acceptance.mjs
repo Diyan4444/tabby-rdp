@@ -48,7 +48,11 @@ try {
     await expect(trace.getByRole('treeitem', { name: /toHaveScreenshot/ }).first()).toBeVisible({ timeout: 20_000 })
     await trace.screenshot({ path: path.join(data, `${selected}-trace.png`) })
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.screenshot({ path: path.join(data, `${selected}-mobile.png`), fullPage: true })
+    // Keep mobile evidence bounded as environment cards, history and guest captures grow.
+    await page.evaluate(() => scrollTo(0, 0))
+    await page.screenshot({ path: path.join(data, `${selected}-mobile.png`) })
+    await page.locator('#detail').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: path.join(data, `${selected}-mobile-evidence.png`) })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     expect(errors).toEqual([])
     const evidence = { runId: run.id, commit: run.commit, dirty: run.dirty, browserWorkflow: 'Sign in → run → passed → screenshot → HTML report → local trace viewer', acceptedAt: new Date().toISOString() }
