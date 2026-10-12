@@ -14,10 +14,13 @@ export async function clientIdentity (ev: (script: string) => Promise<unknown>):
     // A remote CDP session must exercise this checkout's built plugin, not yesterday's installation.
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
     const files: string[] = ['package.json']
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+    const lockFile = manifest.tabbyRdp?.packageFormat === 1 ? 'npm-shrinkwrap.json' : 'package-lock.json'
     const metadata = process.env.TRD_TEST_PACKED === '1'
-        ? runtimeMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
-            JSON.parse(fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8'))) : null
-    if (metadata) files.push('npm-shrinkwrap.json')
+        ? runtimeMetadata(manifest, JSON.parse(fs.readFileSync(path.join(root, lockFile), 'utf8'))) : null
+    for (const file of Object.keys(metadata ?? {})) {
+        if (!files.includes(file)) files.push(file)
+    }
     const walk = (dir: string) => { for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
         const file = `${dir}/${entry.name}`
         if (entry.isDirectory()) walk(file)
@@ -28,7 +31,8 @@ export async function clientIdentity (ev: (script: string) => Promise<unknown>):
     const hash = crypto.createHash('sha256')
     for (const file of files) {
         hash.update(file)
-        hash.update(metadata && file in metadata ? metadata[file as keyof typeof metadata] : fs.readFileSync(path.join(root, file)))
+        const published = metadata?.[file as keyof typeof metadata]
+        hash.update(published ?? fs.readFileSync(path.join(root, file)))
     }
     const expected = hash.digest('hex')
     const digest = await ev(`const fs=require('fs'),p=require('path'),root=p.join(process.env.TABBY_CONFIG_DIRECTORY,'plugins','node_modules','tabby-rdp'),h=require('crypto').createHash('sha256');

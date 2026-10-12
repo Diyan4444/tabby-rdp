@@ -525,7 +525,7 @@ test("the base commit has to be in IronRDP's history, not just fetchable through
 })
 
 
-test('runtime publication excludes development tools and preserves the committed runtime lock', () => {
+test('format 1 (0.5.5): runtime publication excludes development tools and preserves the committed runtime lock', () => {
     const manifest = { name: 'tabby-rdp', version: '1.2.3', tabbyRdp: { packageFormat: 1 },
         dependencies: { runtime: '1.0.0' }, devDependencies: { browserTester: '2.0.0' }, scripts: { build: 'compiler' } }
     const lock = { name: manifest.name, version: manifest.version, lockfileVersion: 3,
@@ -534,7 +534,7 @@ test('runtime publication excludes development tools and preserves the committed
     const before = JSON.stringify({ manifest, lock })
     const metadata = runtimeMetadata(manifest, lock)
     const published = JSON.parse(metadata['package.json'].toString())
-    const publishedLock = JSON.parse(metadata['npm-shrinkwrap.json'].toString())
+    const publishedLock = JSON.parse(metadata['npm-shrinkwrap.json']!.toString())
     assert.equal(published.devDependencies, undefined)
     assert.equal(published.scripts, undefined)
     assert.equal(publishedLock.packages[''].devDependencies, undefined)
@@ -553,10 +553,41 @@ test('runtime publication excludes development tools and preserves the committed
     assert.ok(verify(contents.filter(([name]) => name !== 'npm-shrinkwrap.json')).length)
     assert.ok(verify(contents.map(([name, data]) => [name, name === 'package.json' ? committed[name] : data])).length,
         'unfiltered development metadata must fail publication')
-    const altered = JSON.parse(metadata['npm-shrinkwrap.json'].toString())
+    const altered = JSON.parse(metadata['npm-shrinkwrap.json']!.toString())
     altered.packages['node_modules/runtime'].integrity = 'sha512-different'
     assert.ok(verify(contents.map(([name, data]) => [name, name === 'npm-shrinkwrap.json' ? JSON.stringify(altered) : data])).length,
         'a changed runtime dependency must fail publication')
     assert.throws(() => runtimeMetadata(manifest, { ...lock, version: '9.9.9' }), /disagree/)
-    assert.throws(() => runtimeMetadata({ ...manifest, tabbyRdp: { packageFormat: 2 } }, lock), /packageFormat/)
+    assert.throws(() => runtimeMetadata({ ...manifest, tabbyRdp: { packageFormat: 3 } }, lock), /packageFormat/)
+})
+
+test('format 2: no shrinkwrap, package.json alone, its runtime dependencies pinned exactly and without their own', () => {
+    const manifest = { name: 'tabby-rdp', version: '1.2.3', tabbyRdp: { packageFormat: 2 },
+        dependencies: { runtime: '1.0.0' }, devDependencies: { browserTester: '2.0.0' }, scripts: { build: 'compiler' } }
+    const lock = { name: manifest.name, version: manifest.version, lockfileVersion: 3,
+        packages: { '': { ...manifest }, 'node_modules/runtime': { version: '1.0.0', integrity: 'sha512-runtime' },
+            'node_modules/browserTester': { version: '2.0.0', dev: true, dependencies: { anything: '^1' } } } }
+    const metadata = runtimeMetadata(manifest, lock)
+    assert.deepEqual(Object.keys(metadata), ['package.json'])
+    const published = JSON.parse(metadata['package.json'].toString())
+    assert.deepEqual([published.dependencies, published.devDependencies, published.scripts], [{ runtime: '1.0.0' }, undefined, undefined])
+    // A range floats without a lock to hold it; so does a runtime dependency's own dependency.
+    const withRange = { ...manifest, dependencies: { runtime: '^1.0.0' } }
+    assert.throws(() => runtimeMetadata(withRange, { ...lock, packages: { ...lock.packages, '': { ...withRange } } }), /pin it to an exact version/)
+    assert.throws(() => runtimeMetadata(manifest, { ...lock, packages: { ...lock.packages, 'node_modules/runtime': { version: '1.0.0', dependencies: { other: '^2' } } } }),
+        /dependencies of its own/)
+    assert.throws(() => runtimeMetadata(manifest, { ...lock, packages: { ...lock.packages, 'node_modules/other': { version: '2.0.0' } } }),
+        /isn't a pinned runtime dependency/)
+    assert.throws(() => runtimeMetadata(manifest, { ...lock, packages: { ...lock.packages, 'node_modules/runtime': { version: '1.0.1' } } }),
+        /not what the lock installs/)
+    assert.throws(() => runtimeMetadata(manifest, { ...lock, version: '9.9.9' }), /lock metadata disagree/)
+    // The publish check: package.json as projected, from the committed package-lock.json, and no shrinkwrap in the
+    // package, which npm would install by.
+    const dir = repository(BUILD, { 'package.json': JSON.stringify(manifest), 'package-lock.json': JSON.stringify(lock) })
+    const contents = [...packaged().filter(([name]) => name !== 'package.json' && name !== 'README.md'), ...Object.entries(metadata), ...Object.entries(DIST)]
+    const verify = (items: (readonly [string, string | Buffer])[]) => checkPackage(dir, tarball(entries(items)), { revision: 'HEAD' }).problems
+    assert.deepEqual(verify(contents), [])
+    assert.match(verify([...contents, ['npm-shrinkwrap.json', JSON.stringify(lock)]]).join('\n'), /npm-shrinkwrap\.json: in the package, which publishes none/)
+    assert.ok(verify(contents.map(([name, data]) => [name, name === 'package.json' ? JSON.stringify(manifest) : data])).length,
+        'unfiltered development metadata must fail publication')
 })

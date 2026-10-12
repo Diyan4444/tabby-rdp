@@ -418,11 +418,17 @@ export function checkPackage (root, tarball, { revision, sameAs } = {}) {
         ? JSON.parse(blob(root, manifestEntry.oid).toString('utf8')) : null
     let metadata = {}
     if (manifest?.tabbyRdp?.packageFormat !== undefined) {
-        const lockEntry = committed.get('npm-shrinkwrap.json')
-        if (!lockEntry || !plainBlob(lockEntry)) throw new Error('Missing committed runtime lock source')
+        // Format 1 published a shrinkwrap projected from the committed one; later formats publish none, and their
+        // committed lock (package-lock.json) only shows that package.json pins the runtime tree.
+        const lockName = manifest.tabbyRdp.packageFormat === 1 ? 'npm-shrinkwrap.json' : 'package-lock.json'
+        const lockEntry = committed.get(lockName)
+        if (!lockEntry || !plainBlob(lockEntry)) throw new Error(`Missing committed runtime lock source (${lockName})`)
         metadata = runtimeMetadata(manifest, JSON.parse(blob(root, lockEntry.oid).toString('utf8')))
         for (const name of Object.keys(metadata)) {
             if (!files.has(name)) problems.push(`${name}: missing from the package`)
+        }
+        if (manifest.tabbyRdp.packageFormat !== 1 && files.has('npm-shrinkwrap.json')) {
+            problems.push('npm-shrinkwrap.json: in the package, which publishes none (npm would install by it)')
         }
     }
     let built = 0

@@ -202,7 +202,7 @@ test('a VM\'s address is one the scan can find, an IPv4 address: it can\'t give 
     const found = (await scanVMs({ ...host, exec: async () => scan }, {})).map(vmSpec)
     assert.deepEqual(found.map((s: any) => s.name), ['Plain'])
     assert.ok(found.every((s: any) => sessionKey(host, s) !== savedUnder))
-    assert.deepEqual(keyParts(sessionKey(host, found[0])), { target: host.key, desktopId: '192.168.122.10:3389', gateway: '' })
+    assert.deepEqual(keyParts(sessionKey(host, found[0])), { target: host.key, desktopId: '192.168.122.10:3389', user: '', gateway: '' })
 })
 
 test('a key as made up to 0.5.0 is told from one a target can have now', () => {

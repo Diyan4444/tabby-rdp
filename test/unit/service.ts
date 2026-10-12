@@ -997,6 +997,216 @@ test('a saved desktop password is kept for the way it goes: through that gateway
     assert.equal(specOf({ host: 'pc.corp', account: null }).account, undefined)
 })
 
+/** A direct profile's session for pc.corp (see keyed), with who it signs in as, as the service works it out when it opens one. */
+function profileAt (svc: any, options: Record<string, unknown>): any {
+    const spec = specOf({ host: 'pc.corp', name: 'PC', ...options })
+    return Object.assign(keyed(spec, 'rdp#pc.corp:3389'), svc.signsInAs({ key: 'rdp' }, spec))
+}
+
+test('profiles for one address that sign in as different users: each signs in as its own user, with its own saved password', async () => {
+    // Issue #104: up to 0.5.5 a password was saved for the address, and every profile for it signed in with the first.
+    keychain.clear()
+    const { svc } = service({ gatewayPasswordsMigrated: true })
+    keychain.set(GATEWAY_PASSWORDS_MARK, 'done')
+    const asked: string[] = []
+    signin.askCredentials = async (_layer: unknown, options: any) => { asked.push(options.username); return null }
+    const signIn = async (s: any) => {
+        const pane = {}
+        svc.sessions.set(pane, s)
+        return (await svc.endpointFor(pane, { key: 'rdp', label: 'PC', direct: s.spec }, s.spec, s, false))?.credentials ?? null
+    }
+    const saved = () => [...keychain.keys()].filter(k => k.startsWith('rdp#')).sort()
+    const alice = () => profileAt(svc, { username: 'alice' })
+    const bob = () => profileAt(svc, { username: 'bob' })
+    assert.equal(alice().credentialKey, 'rdp#pc.corp:3389@user#alice')
+    assert.equal(profileAt(svc, { username: 'alice', domain: 'CORP' }).credentialKey, 'rdp#pc.corp:3389@user#CORP\\alice')
+    assert.equal(profileAt(svc, { username: 'alice', gateway: 'gw.example' }).credentialKey, 'rdp#pc.corp:3389@user#alice@gateway#gw.example:443')
+    assert.equal(profileAt(svc, {}).credentialKey, 'rdp#pc.corp:3389', 'a profile that names nobody: the address\'s, as before')
+    assert.equal(profileAt(svc, { domain: 'CORP' }).credentialKey, 'rdp#pc.corp:3389', 'nor one that names only a domain')
+    // As 0.5.5 left it: alice's profile signed in first, and its password was saved for the address.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'alice', password: 'hers' })
+    // Bob's profile doesn't sign in as alice: it asks, as bob, and leaves her password for her profile.
+    assert.equal(await signIn(bob()), null)
+    assert.deepEqual(asked, ['bob'])
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389'])
+    // Alice's takes it, as hers from now on.
+    const hers = alice()
+    assert.deepEqual(await signIn(hers), { username: 'alice', password: 'hers' })
+    assert.ok(hers.log.some((l: string) => /saved for this address as alice, now kept for that user/.test(l)), hers.log.join('\n'))
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389@user#alice'])
+    // Bob's, saved as his profile's sign-in saves it: each profile finds its own.
+    await signin.saveCredentials(bob().credentialKey, { username: 'bob', password: 'his' })
+    assert.deepEqual(await signIn(bob()), { username: 'bob', password: 'his' })
+    assert.deepEqual(await signIn(alice()), { username: 'alice', password: 'hers' })
+    assert.deepEqual(asked, ['bob'])
+    // A profile with a domain: not another domain's alice, but alice's in its own domain, written with it or without.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'OTHER\\alice', password: 'elsewhere' })
+    assert.equal(await signIn(profileAt(svc, { username: 'alice', domain: 'CORP' })), null)
+    // A profile that names nobody signs in with what is saved for the address, as before.
+    assert.deepEqual(await signIn(profileAt(svc, {})), { username: 'OTHER\\alice', password: 'elsewhere' })
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'alice', password: 'in-corp' })
+    assert.deepEqual(await signIn(profileAt(svc, { username: 'alice', domain: 'CORP' })), { username: 'alice', password: 'in-corp' })
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'CORP\\alice', password: 'in-corp-too' })
+    assert.deepEqual(await signIn(profileAt(svc, { username: 'alice', domain: 'CORP' })), { username: 'alice', password: 'in-corp' }, 'its own first')
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389', 'rdp#pc.corp:3389@user#CORP\\alice', 'rdp#pc.corp:3389@user#alice', 'rdp#pc.corp:3389@user#bob'])
+    // A profile that names only a domain signs in with the address's password as before, and doesn't take it from the
+    // profile of the user it is for: that one still finds it.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'OTHER\\carol', password: 'carols' })
+    assert.deepEqual(await signIn(profileAt(svc, { domain: 'CORP' })), { username: 'OTHER\\carol', password: 'carols' })
+    assert.deepEqual(await signIn(profileAt(svc, { username: 'carol', domain: 'OTHER' })), { username: 'OTHER\\carol', password: 'carols' })
+    assert.ok(saved().includes('rdp#pc.corp:3389@user#OTHER\\carol'))
+})
+
+test('profiles for one address that sign in as different users open side by side; one for a user already signed in shows that desktop', () => {
+    const panes = new Map<object, any>()
+    const tabs: object[] = []
+    const { svc } = service({ accounts: [{ id: 'k1', name: 'Admin', username: 'alice' }] }, { targets: { cached: (pane: object) => panes.get(pane) }, app: { tabs } })
+    const open = profileAt(svc, { username: 'alice' })
+    open.state = 'connected'
+    const its = {}
+    tabs.push(its)
+    svc.sessions.set(its, open)
+    const elsewhere = (options: Record<string, unknown>) => {
+        const spec = specOf({ host: 'pc.corp', name: 'PC', ...options })
+        const pane = {}
+        tabs.push(pane)
+        panes.set(pane, { key: 'rdp', label: 'PC', direct: spec })
+        return svc.isOpenElsewhere(pane, spec)
+    }
+    assert.equal(elsewhere({ username: 'alice' }), true)
+    assert.equal(elsewhere({ username: 'ALICE' }), true, 'Windows: her, in another case')
+    assert.equal(elsewhere({ username: 'ALICE', kind: 'xrdp' }), false, 'xrdp: another user')
+    assert.equal(elsewhere({ username: 'alice', clipboard: 'off' }), true, 'another profile for alice')
+    assert.equal(elsewhere({ account: 'k1' }), true, 'a saved account that signs in as alice')
+    assert.equal(elsewhere({ username: 'bob' }), false)
+    assert.equal(elsewhere({ username: 'alice', domain: 'CORP' }), false, 'another domain\'s alice')
+    assert.equal(elsewhere({}), false, 'one that asks who')
+    // Behind an SSH host, one desktop per address, whoever it names: the host's form refuses a second.
+    assert.deepEqual(svc.signsInAs({ key: 'alice@h:22' }, specOf({ host: 'pc.corp', username: 'bob' })), { user: '', who: '' })
+})
+
+test('a profile signed in as another user from its form keeps that login for that user, not as its own; its own key holds only its user\'s', async () => {
+    keychain.clear()
+    const { svc } = service({ gatewayPasswordsMigrated: true })
+    keychain.set(GATEWAY_PASSWORDS_MARK, 'done')
+    let answer: any = null
+    const asked: string[] = []
+    signin.askCredentials = async (_layer: unknown, options: any) => { asked.push(options.username); return answer }
+    const endpoint = async (s: any) => {
+        const pane = {}
+        svc.sessions.set(pane, s)
+        return svc.endpointFor(pane, { key: 'rdp', label: 'PC', direct: s.spec }, s.spec, s, false)
+    }
+    // Alice's profile, Bob typed in its form: kept for Bob, and the desktop is Bob's (another tab for Alice is hers).
+    const alice = profileAt(svc, { username: 'alice' })
+    answer = { username: 'bob', password: 'his', remember: true }
+    const signedIn = await endpoint(alice)
+    assert.equal(signedIn.saveUser, 'bob')
+    assert.equal(alice.credentialKeyFor(signedIn.saveUser), 'rdp#pc.corp:3389@user#bob')
+    assert.equal(alice.who, 'bob')
+    // Herself, however her name is written for its domain: the profile's own.
+    answer = { username: 'alice', password: 'hers', remember: true }
+    assert.equal((await endpoint(profileAt(svc, { username: 'alice' }))).saveUser, undefined)
+    answer = { username: 'CORP\\alice', password: 'hers', remember: true }
+    assert.equal((await endpoint(profileAt(svc, { username: 'alice', domain: 'CORP' }))).saveUser, undefined)
+    // A login for Bob under Alice's own key (as an earlier build could have kept it): not used; she is asked for.
+    await signin.saveCredentials('rdp#pc.corp:3389@user#alice', { username: 'bob', password: 'his' })
+    answer = null
+    asked.length = 0
+    assert.equal(await endpoint(profileAt(svc, { username: 'alice' })), null)
+    assert.deepEqual(asked, ['alice'])
+})
+
+test('a password saved for an address before 0.5.6, its user named without a domain, goes to no profile while another domain\'s could be its', async () => {
+    keychain.clear()
+    const profile = (id: string, domain: string) => ({ id, type: 'rdp', name: id, options: { host: 'pc.corp', port: 3389, username: 'alice', domain } })
+    const profiles = [profile('corp', 'CORP'), profile('new', 'NEW')]
+    const { svc } = service({ gatewayPasswordsMigrated: true }, { profiles })
+    keychain.set(GATEWAY_PASSWORDS_MARK, 'done')
+    signin.askCredentials = async () => null
+    const signIn = async (options: Record<string, unknown>) => {
+        const s = profileAt(svc, options)
+        const pane = {}
+        svc.sessions.set(pane, s)
+        return (await svc.endpointFor(pane, { key: 'rdp', label: 'PC', direct: s.spec }, s.spec, s, false))?.credentials ?? null
+    }
+    const saved = () => [...keychain.keys()].filter(k => k.startsWith('rdp#')).sort()
+    // `alice`, as 0.5.5 saved it with the domain beside it: CORP's or NEW's alice. Neither takes it; each asks.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'alice', password: 'whose' })
+    assert.equal(await signIn({ username: 'alice', domain: 'NEW' }), null)
+    assert.equal(await signIn({ username: 'alice', domain: 'CORP' }), null)
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389'])
+    // Saved with its domain: only CORP's alice's.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'CORP\\alice', password: 'corps' })
+    assert.equal(await signIn({ username: 'alice', domain: 'NEW' }), null)
+    assert.deepEqual(await signIn({ username: 'alice', domain: 'CORP' }), { username: 'CORP\\alice', password: 'corps' })
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389@user#CORP\\alice'])
+    // With one alice at the address (CORP's profile removed), the plain name is hers.
+    profiles.splice(0, 1)
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'alice', password: 'only-hers' })
+    assert.deepEqual(await signIn({ username: 'alice', domain: 'NEW' }), { username: 'alice', password: 'only-hers' })
+})
+
+test('editing or removing one of the profiles for an address leaves the others what they sign in with, and the certificate', async () => {
+    keychain.clear()
+    const { RDPProfileSettingsComponent, RDPProfilesService } = require('../../dist/rdpProfile.js')
+    const profile = (id: string, username: string, host = 'pc.corp') => ({ id, type: 'rdp', name: id, options: { host, port: 3389, username, domain: '', account: '', via: '', gateway: '' } })
+    const profiles = [profile('p1', 'alice'), profile('p2', 'bob')]
+    const { svc, store } = service({
+        gatewayPasswordsMigrated: true,
+        trustedCertificates: [{ desktop: 'rdp#pc.corp:3389', sha256: A }],
+        withoutNla: [{ desktop: 'rdp#pc.corp:3389', sha256: A }],
+        desktopSharpness: [{ desktop: 'rdp#pc.corp:3389', sharpness: 'retina' }],
+    }, { profiles })
+    keychain.set(GATEWAY_PASSWORDS_MARK, 'done')
+    const injector = { get: () => svc }
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setTimeout(resolve, 5)) }
+    const saved = () => [...keychain.keys()].filter(k => k.startsWith('rdp#')).sort()
+    const save = (key: string) => signin.saveCredentials(key, { username: 'u', password: 'p' })
+    await save('rdp#pc.corp:3389@user#alice')
+    await save('rdp#pc.corp:3389@user#bob')
+    // Tabby's editor: the profile as edited, and as it was when the editor opened; Tabby saves it afterwards.
+    const edit = async (p: any, options: Record<string, unknown>) => {
+        const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
+        settings.profile = { ...p, options: { ...p.options, ...options } }
+        settings.before = { id: `${p.options.host}:3389`, account: `${p.options.username}\n\n`, user: p.options.username, via: '', gateway: '' }
+        settings.save()
+        await settle()
+        Object.assign(p.options, options)
+    }
+    // A password saved before 0.5.6 for the address alone, bob's: alice's profile's edits and removal leave it for his.
+    await signin.saveCredentials('rdp#pc.corp:3389', { username: 'bob', password: 'his' })
+    // Alice's profile now signs in as carol: alice's password goes, bob's stay.
+    await edit(profiles[0], { username: 'carol' })
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389', 'rdp#pc.corp:3389@user#bob'])
+    keychain.delete('rdp#pc.corp:3389')
+    // Another profile for bob: bob's profile's new user leaves it to that one.
+    profiles.push(profile('p3', 'bob'))
+    await edit(profiles[1], { username: 'dave' })
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389@user#bob'])
+    // Carol's profile moves to another address: her password goes along, bob's and the address's certificate,
+    // sharpness and "without NLA" decision stay for the profiles still there, the certificate and sharpness also going along.
+    await save('rdp#pc.corp:3389@user#carol')
+    await edit(profiles[0], { host: 'pc2.corp' })
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389@user#bob', 'rdp#pc2.corp:3389@user#carol'])
+    assert.deepEqual(store.trustedCertificates.map((e: any) => e.desktop), ['rdp#pc.corp:3389', 'rdp#pc2.corp:3389'])
+    assert.deepEqual(store.desktopSharpness.map((e: any) => e.desktop), ['rdp#pc.corp:3389', 'rdp#pc2.corp:3389'])
+    assert.deepEqual(store.withoutNla.map((e: any) => e.desktop), ['rdp#pc.corp:3389'])
+    // Dave's profile removed, while bob's leads there still: dave's password goes (none here), bob's and the certificate stay.
+    await save('rdp#pc.corp:3389@user#dave')
+    const provider = new RDPProfilesService(injector, { save () { } })
+    provider.deleteProfile(profiles[1])
+    await settle()
+    profiles.splice(1, 1)
+    assert.deepEqual(saved(), ['rdp#pc.corp:3389@user#bob', 'rdp#pc2.corp:3389@user#carol'])
+    assert.deepEqual(store.trustedCertificates.map((e: any) => e.desktop), ['rdp#pc.corp:3389', 'rdp#pc2.corp:3389'])
+    // The last profile for pc.corp removed: everything saved for that address goes, and its certificate.
+    provider.deleteProfile(profiles[1])
+    await settle()
+    assert.deepEqual(saved(), ['rdp#pc2.corp:3389@user#carol'])
+    assert.deepEqual(store.trustedCertificates.map((e: any) => e.desktop), ['rdp#pc2.corp:3389'])
+})
+
 test('editing a desktop: its saved password goes with its way there, and only its own', async () => {
     keychain.clear()
     // The desktop behind host h has its certificate remembered, which a moved password goes along with.
@@ -1007,17 +1217,19 @@ test('editing a desktop: its saved password goes with its way there, and only it
     // A profile through a gateway, next to a direct profile at the same address with a password of its own.
     await signin.saveCredentials(`rdp#10.0.0.5:3389${gw}`, old)
     await signin.saveCredentials('rdp#10.0.0.5:3389', { username: 'direct', password: 'its-own' })
-    // A new user name (or domain, or account): the gateway profile's saved password is forgotten; the other's stays.
-    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.5:3389', true, true, { from: 'rdgw.example.com', to: 'rdgw.example.com' })
+    // A new user name (or domain): the gateway profile's saved password is forgotten; the other's stays. (Saved before
+    // passwords were kept for each user, under the address alone: it could be the old user's, and goes as theirs would.)
+    const users = (from: string, to = from) => ({ from, to })
+    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.5:3389', true, true, { from: 'rdgw.example.com', to: 'rdgw.example.com' }, users('olduser', 'newuser'))
     assert.deepEqual(saved(), ['rdp#10.0.0.5:3389'])
     // A new address: taken along, through the same gateway (another spelling of it is the same), and only that one.
     await signin.saveCredentials(`rdp#10.0.0.5:3389${gw}`, old)
-    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.6:3389', false, true, { from: 'rdgw.example.com', to: 'RDGW.example.com.' })
+    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.6:3389', false, true, { from: 'rdgw.example.com', to: 'RDGW.example.com.' }, users('olduser'))
     assert.deepEqual(saved(), ['rdp#10.0.0.5:3389', `rdp#10.0.0.6:3389${gw}`])
     // Another gateway, or none: asked for again; what was saved for the old one is forgotten.
-    await svc.desktopEdited('10.0.0.6:3389', '10.0.0.6:3389', false, true, { from: 'rdgw.example.com', to: 'other.example.com' })
+    await svc.desktopEdited('10.0.0.6:3389', '10.0.0.6:3389', false, true, { from: 'rdgw.example.com', to: 'other.example.com' }, users('olduser'))
     assert.deepEqual(saved(), ['rdp#10.0.0.5:3389'])
-    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.5:3389', false, true, { from: '', to: 'rdgw.example.com' })
+    await svc.desktopEdited('10.0.0.5:3389', '10.0.0.5:3389', false, true, { from: '', to: 'rdgw.example.com' }, users('direct'))
     assert.deepEqual(saved(), [])
     // Behind an SSH host, the same, for the desktop's own way there.
     await signin.saveCredentials(`alice@h:22#10.0.0.7:3389${gw}`, old)
@@ -1049,14 +1261,14 @@ test('a direct profile\'s removal, or its move behind an SSH profile, forgets it
     }
     const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
     settings.profile = { options: { host: '10.0.0.5', port: 3389, username: 'u', domain: '', account: '', via: 'ssh:jump', gateway: 'gw.example' } }
-    settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', via: '', gateway: 'gw.example' }
+    settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', user: 'u', via: '', gateway: 'gw.example' }
     settings.save()
     await settle()
     assert.deepEqual([...keychain.keys()].sort(), ['alice@h:22#10.0.0.5:3389', 'rdp#10.0.0.50:3389'])
     // Its gateway changed in the editor: what was saved for the old one is forgotten.
     await signin.saveCredentials('rdp#10.0.0.50:3389@gateway#gw.example:443', { username: 'u', password: 'p' })
     settings.profile = { options: { host: '10.0.0.50', port: 3389, username: 'u', domain: '', account: '', via: '', gateway: 'gw2.example' } }
-    settings.before = { id: '10.0.0.50:3389', account: 'u\n\n', via: '', gateway: 'gw.example' }
+    settings.before = { id: '10.0.0.50:3389', account: 'u\n\n', user: 'u', via: '', gateway: 'gw.example' }
     settings.save()
     await settle()
     assert.deepEqual([...keychain.keys()].sort(), ['alice@h:22#10.0.0.5:3389', 'rdp#10.0.0.50:3389'])
@@ -1077,7 +1289,7 @@ test('a saved profile\'s address cleared forgets what was saved for its desktop;
     const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
     const cleared = (more: Record<string, unknown>) => {
         settings.profile = { name: 'Office', options: { host: '', port: 3389, username: 'u', domain: '', account: '', via: '', gateway: '' }, ...more }
-        settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', via: '', gateway: 'gw.example' }
+        settings.before = { id: '10.0.0.5:3389', account: 'u\n\n', user: 'u', via: '', gateway: 'gw.example' }
         settings.save()
         return settle()
     }
@@ -1732,7 +1944,7 @@ test('a direct profile deleted, or moved behind an SSH profile, while a store of
     await settle()
     const settings = new RDPProfileSettingsComponent({ nativeElement: null }, injector)
     settings.profile = { name: 'Lab', options: { host: '10.0.0.6', port: 3389, username: 'u', domain: '', account: '', via: 'ssh:jump', gateway: '' } }
-    settings.before = { id: '10.0.0.6:3389', account: 'u\n\n', via: '', gateway: '' }
+    settings.before = { id: '10.0.0.6:3389', account: 'u\n\n', user: 'u', via: '', gateway: '' }
     settings.save()
     await settle()
     assert.deepEqual(store.trustedCertificates.map((e: any) => e.desktop), ['rdp#10.0.0.5:3389', 'rdp#10.0.0.6:3389'])
@@ -1883,6 +2095,30 @@ test('reopening the desktop of a machine reached through a host goes there again
     await svc.reopen(pane, svc.sessions.get(pane).spec)
     assert.deepEqual(opened, [there.key, there.key])
     svc.disconnect(pane)
+})
+
+test('two remote desktop tabs for one address, one signing in as alice and one as bob: two desktops, each with its user\'s saved password', async t => {
+    const page = installDocument()
+    t.after(page.restore)
+    const { Subject } = require('rxjs')
+    const tab = (username: string) => ({
+        pane: { profile: { type: 'rdp' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() },
+        target: { key: 'rdp', label: 'pc.corp', direct: specOf({ host: 'pc.corp', name: `PC as ${username}`, username }) },
+    })
+    const alice = tab('alice')
+    const bob = tab('bob')
+    const of = new Map<object, any>([[alice.pane, alice.target], [bob.pane, bob.target]])
+    const targets = { targetOf: async (pane: object) => of.get(pane), nestedSSH: async () => [], cached: (pane: object) => of.get(pane) }
+    const { svc } = service({}, { targets, app: { tabs: [alice.pane, bob.pane], activeTab: bob.pane } })
+    const opened: string[] = []
+    svc.connect = async (_pane: unknown, _target: unknown, _spec: unknown, s: any) => { opened.push(s.credentialKey) }
+    await svc.showDesktop(alice.pane, undefined, { background: true })
+    await svc.showDesktop(bob.pane, undefined, { background: true })
+    assert.deepEqual(opened, ['rdp#pc.corp:3389@user#alice', 'rdp#pc.corp:3389@user#bob'])
+    assert.notEqual(svc.sessions.get(alice.pane), svc.sessions.get(bob.pane))
+    assert.equal(svc.sessions.get(bob.pane).who, 'bob')
+    svc.disconnect(alice.pane)
+    svc.disconnect(bob.pane)
 })
 
 test('ending a backend releases its browser resources and references, even when WASM shutdown throws', t => {

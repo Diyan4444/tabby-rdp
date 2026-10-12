@@ -93,20 +93,22 @@ be worth a user's update — a feature set, or a batch of fixes — not per chan
 security fixes and for bugs that make the plugin unusable; everything else waits. Features gather under the next
 minor version (see the milestones).
 
-**Runtime dependencies.** Pin runtime dependencies to exact versions and commit changes to `npm-shrinkwrap.json`.
-The source shrinkwrap replaces `package-lock.json` and locks development and runtime dependencies. Build with Node 22.12
-or newer on the Node 22 line (CI uses Node 22). Angular 21.2.25 is a development dependency used for type checking;
+**Runtime dependencies.** Pin runtime dependencies to exact versions in `package.json`; the package publishes no
+shrinkwrap, so `package.json` alone decides what a user's npm installs. Packing refuses a runtime dependency that isn't
+an exact version, isn't what the lock installs, or has dependencies of its own (whose ranges would float), and anything
+else the lock would install at run time. The committed `package-lock.json` locks development and runtime dependencies
+for `npm ci`; npm never publishes it. Build with Node 22.12 or newer on the Node 22 line (CI uses Node 22). Angular 21.2.25 is a development dependency used for type checking;
 Tabby supplies Angular at runtime. The plugin uses TypeScript compilation, not Angular template compilation.
 
 Create distributable packages with `npm run pack:release -- --pack-destination <directory>`, not a direct `npm pack`.
 The packer stages files without changing the checkout, removes development dependencies and build scripts from the
-published manifest, and removes development-only entries from the published shrinkwrap. Runtime dependency versions,
-download URLs and integrity hashes are preserved. Playwright and its browser installer helpers belong to QA, not
+published manifest, and publishes no shrinkwrap (0.5.5's packages carried a runtime-only one; check-vendor still checks
+those against it). Playwright and its browser installer helpers belong to QA, not
 plugin installations. CI audits the complete development tree too; excluding tools from publication does not replace
 keeping those tools patched. Upgrade dependencies through
 a reviewed change, run `npm ci --ignore-scripts`, build, and check the packed package before releasing.
 
-**Version metadata.** Keep `package.json` and the root entries in `npm-shrinkwrap.json` on the same version. The
+**Version metadata.** Keep `package.json` and the root entries in `package-lock.json` on the same version. The
 `tabbyRdp.minimumTabbyVersion` and `tabbyRdp.rollbackFloor` fields let release controls check compatibility and data
 migration limits; raise the floor only for a migration that prevents older packages from safely using the saved
 data. Version 0.5.1 is the explicitly supported baseline for packages that predate these fields.

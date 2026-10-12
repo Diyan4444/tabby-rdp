@@ -1,14 +1,15 @@
 // Trust and credential keys are matched on their parts, not by a bare endsWith('#'+id): a gateway pin
 // (`gateway#host:port`) or a desktop whose id is a suffix of another's must not be swept up when one desktop is
-// removed, edited or its password forgotten. A credential key may also carry a gateway suffix (`…@gateway#host:port`),
-// which scopes a saved password to the gateway it is sent to; the id inside still compares equal.
+// removed, edited or its password forgotten. A credential key may also carry a user suffix (`…@user#<who>`), which
+// keeps a direct desktop's saved password for the user it signs in as, and a gateway suffix (`…@gateway#host:port`),
+// which scopes it to the gateway it is sent to; the id inside still compares equal.
 // keyParts reads the built plugin; the signin tests stub keytar. npm run build && npm run test:unit
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Module, { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { keyParts } = require('../../dist/desktops.js')
+const { isLoginOf, keyParts, rekeyed, signsInAs, userScope } = require('../../dist/desktops.js')
 
 let keytar: Record<string, (...args: string[]) => Promise<unknown>> = {}
 const load = (Module as any)._load
@@ -21,15 +22,49 @@ function signin (): any {
     return require(file)
 }
 
-test('keyParts splits a key into its target, desktop id and any gateway suffix', () => {
-    assert.deepEqual(keyParts('rdp#10.0.0.9:3389'), { target: 'rdp', desktopId: '10.0.0.9:3389', gateway: '' })
-    assert.deepEqual(keyParts('gateway#10.0.0.9:3389'), { target: 'gateway', desktopId: '10.0.0.9:3389', gateway: '' })
-    assert.deepEqual(keyParts('alice@hostA:22#10.0.0.9:3389'), { target: 'alice@hostA:22', desktopId: '10.0.0.9:3389', gateway: '' })
-    assert.deepEqual(keyParts('alice@hostA:22'), { target: 'alice@hostA:22', desktopId: '', gateway: '' })
+test('keyParts splits a key into its target, desktop id and any user and gateway suffix', () => {
+    assert.deepEqual(keyParts('rdp#10.0.0.9:3389'), { target: 'rdp', desktopId: '10.0.0.9:3389', user: '', gateway: '' })
+    assert.deepEqual(keyParts('gateway#10.0.0.9:3389'), { target: 'gateway', desktopId: '10.0.0.9:3389', user: '', gateway: '' })
+    assert.deepEqual(keyParts('alice@hostA:22#10.0.0.9:3389'), { target: 'alice@hostA:22', desktopId: '10.0.0.9:3389', user: '', gateway: '' })
+    assert.deepEqual(keyParts('alice@hostA:22'), { target: 'alice@hostA:22', desktopId: '', user: '', gateway: '' })
     assert.deepEqual(keyParts('rdp#10.0.0.9:3389@gateway#gw.corp:443'),
-        { target: 'rdp', desktopId: '10.0.0.9:3389', gateway: '@gateway#gw.corp:443' })
+        { target: 'rdp', desktopId: '10.0.0.9:3389', user: '', gateway: '@gateway#gw.corp:443' })
     assert.deepEqual(keyParts('bob@h:22#pc:3389@gateway#gw:443'),
-        { target: 'bob@h:22', desktopId: 'pc:3389', gateway: '@gateway#gw:443' })
+        { target: 'bob@h:22', desktopId: 'pc:3389', user: '', gateway: '@gateway#gw:443' })
+    assert.deepEqual(keyParts('rdp#pc:3389@user#CORP\\alice'), { target: 'rdp', desktopId: 'pc:3389', user: '@user#CORP\\alice', gateway: '' })
+    assert.deepEqual(keyParts('rdp#pc:3389@user#alice@corp.example@gateway#gw:443'),
+        { target: 'rdp', desktopId: 'pc:3389', user: '@user#alice@corp.example', gateway: '@gateway#gw:443' })
+    // Whatever a user name holds, it can't end the user early or be taken for the gateway: its `#` is written as %23.
+    for (const who of ['x@gateway', 'ops#1', 'a@user#b', 'CORP\\', 'Jane Doe']) {
+        assert.deepEqual(keyParts(`rdp#pc:3389${userScope(who)}@gateway#gw:443`), { target: 'rdp', desktopId: 'pc:3389', user: userScope(who), gateway: '@gateway#gw:443' }, who)
+        assert.deepEqual(keyParts(`rdp#pc:3389${userScope(who)}`), { target: 'rdp', desktopId: 'pc:3389', user: userScope(who), gateway: '' }, who)
+    }
+    assert.equal(userScope('ops#1'), '@user#ops%231')
+    assert.equal(userScope(''), '')
+    // A key a target changed under keeps both suffixes; one with more `#` than a key of the plugin's has isn't one.
+    assert.equal(rekeyed('old@h:22#pc:3389@user#alice@gateway#gw:443', 'old@h:22', 'new@h:22'), 'new@h:22#pc:3389@user#alice@gateway#gw:443')
+    assert.equal(rekeyed('old@h:22#pc:3389@user#alice#x', 'old@h:22', 'new@h:22'), null)
+})
+
+test('who a direct desktop\'s saved password is for: its user, with its domain; nobody for one that names no user, its domain or not', () => {
+    assert.equal(signsInAs({ username: 'alice' }), 'alice')
+    assert.equal(signsInAs({ username: 'alice', domain: 'CORP' }), 'CORP\\alice')
+    // A user name that names its domain itself (as a saved account's does, see signInName).
+    assert.equal(signsInAs({ username: 'alice@corp.example', domain: 'CORP' }), 'alice@corp.example')
+    assert.equal(signsInAs({ username: 'OTHER\\alice', domain: 'CORP' }), 'OTHER\\alice')
+    assert.equal(signsInAs({ domain: 'CORP' }), '')
+    assert.equal(signsInAs({}), '')
+    assert.equal(signsInAs({ username: { not: 'text' } }), '')
+    // A login saved for the address alone is that user's where its user name, the profile's domain going with one that
+    // names none, is the profile's.
+    assert.equal(isLoginOf('alice', 'CORP\\alice'), true)
+    assert.equal(isLoginOf('CORP\\alice', 'CORP\\alice'), true)
+    assert.equal(isLoginOf('OTHER\\alice', 'CORP\\alice'), false)
+    assert.equal(isLoginOf('alice', 'alice'), true)
+    assert.equal(isLoginOf('CORP\\alice', 'alice'), false)
+    assert.equal(isLoginOf('alice@corp.example', 'alice@corp.example'), true)
+    assert.equal(isLoginOf('bob', 'CORP\\alice'), false)
+    assert.equal(isLoginOf('alice', ''), false)
 })
 
 /** A keytar standing in for the OS keychain, holding JSON credential values in a map. */
@@ -62,6 +97,78 @@ test('forgetting a desktop\'s saved passwords is anchored on the id, gateway suf
     assert.deepEqual([...saved.keys()].sort(), ['carol@hostC:22#10.0.0.50:3389', 'gateway#10.0.0.9:3389', 'rdp#10.0.0.9:3389'])
 })
 
+test('a direct desktop\'s saved passwords for one user: forgotten or moved without another user\'s, or those kept for other profiles', async () => {
+    const saved = store()
+    const { saveCredentials, forgetCredentialsFor, moveCredentialsFor } = signin()
+    const creds = { username: 'u', password: 'p' }
+    const keys = ['rdp#pc:3389', 'rdp#pc:3389@user#alice', 'rdp#pc:3389@user#alice@gateway#gw:443', 'rdp#pc:3389@user#bob', 'rdp#other:3389@user#alice']
+    for (const key of keys) {
+        await saveCredentials(key, creds)
+    }
+    // Alice's, through any gateway, but the one another profile still signs in with; not bob's. The one saved before
+    // each user had one could be hers: it goes too, unless another profile signs in with it (see the second round).
+    await forgetCredentialsFor('pc:3389', { direct: true, user: '@user#alice', keep: new Set(['rdp#pc:3389@user#alice@gateway#gw:443']) })
+    assert.deepEqual([...saved.keys()].sort(), ['rdp#other:3389@user#alice', 'rdp#pc:3389@user#alice@gateway#gw:443', 'rdp#pc:3389@user#bob'])
+    await saveCredentials('rdp#pc:3389', creds)
+    await saveCredentials('rdp#pc:3389@user#alice', creds)
+    await forgetCredentialsFor('pc:3389', { direct: true, user: '@user#alice', scope: '', keep: new Set(['rdp#pc:3389']) })
+    assert.deepEqual([...saved.keys()].sort(), ['rdp#other:3389@user#alice', 'rdp#pc:3389', 'rdp#pc:3389@user#alice@gateway#gw:443', 'rdp#pc:3389@user#bob'])
+    // Moved to a new address, for the same user and gateway.
+    await moveCredentialsFor('pc:3389', 'pc2:3389', { direct: true, user: '@user#alice', scope: '@gateway#gw:443' })
+    assert.deepEqual([...saved.keys()].sort(), ['rdp#other:3389@user#alice', 'rdp#pc2:3389@user#alice@gateway#gw:443', 'rdp#pc:3389', 'rdp#pc:3389@user#bob'])
+    // Told whose a login is (`owns`), the one saved before each user had one goes only where it is that user's: bob's
+    // stays where alice's profile is edited or removed, and moves with bob's.
+    await saveCredentials('rdp#pc:3389', { username: 'bob', password: 'his' })
+    const alices = { direct: true, user: '@user#alice', owns: (c: any) => c.username === 'alice' }
+    await forgetCredentialsFor('pc:3389', alices)
+    await moveCredentialsFor('pc:3389', 'pc3:3389', alices)
+    assert.ok(saved.has('rdp#pc:3389') && !saved.has('rdp#pc3:3389'), [...saved.keys()].join(' '))
+    await moveCredentialsFor('pc:3389', 'pc3:3389', { direct: true, user: '@user#bob', owns: (c: any) => c.username === 'bob' })
+    assert.ok(!saved.has('rdp#pc:3389') && saved.has('rdp#pc3:3389'), [...saved.keys()].join(' '))
+})
+
+test('a password saved for an address before each user had one there goes to the desktop of its user, once', async () => {
+    const saved = store()
+    const { saveCredentials, adoptCredentials } = signin()
+    await saveCredentials('rdp#pc:3389', { username: 'alice', password: 'hers' })
+    const isAlice = (c: any) => c.username === 'alice'
+    // Bob's desktop leaves it where it is, for alice's.
+    assert.equal(await adoptCredentials('rdp#pc:3389', 'rdp#pc:3389@user#bob', (c: any) => c.username === 'bob'), null)
+    assert.deepEqual([...saved.keys()], ['rdp#pc:3389'])
+    assert.deepEqual(await adoptCredentials('rdp#pc:3389', 'rdp#pc:3389@user#alice', isAlice), { username: 'alice', password: 'hers' })
+    assert.deepEqual([...saved.keys()], ['rdp#pc:3389@user#alice'])
+    assert.equal(await adoptCredentials('rdp#pc:3389', 'rdp#pc:3389@user#alice', isAlice), null, 'nothing left to take')
+})
+
+test('a password saved for an address before each user had one is taken from the store it is in, and forgotten only there', async () => {
+    // A synced Vault with alice's, and this computer's keychain with bob's, under the same address.
+    const keychain = store()
+    const vaulted = new Map<string, string>()
+    const s = signin()
+    s.useVault({
+        isEnabled: () => true, isOpen: () => true,
+        load: async () => ({ secrets: [...vaulted].map(([key, value]) => ({ type: s.VAULT_SECRET_TYPE, key: { key }, value })) }),
+        getSecret: async (_type: string, key: any) => vaulted.has(key.key) ? { value: vaulted.get(key.key) } : null,
+        addSecret: async (secret: any) => { vaulted.set(secret.key.key, secret.value) },
+        removeSecret: async (_type: string, key: any) => { vaulted.delete(key.key) },
+    })
+    try {
+        const hers = { username: 'alice', password: 'hers' }
+        const his = { username: 'bob', password: 'his' }
+        vaulted.set('rdp#pc:3389', JSON.stringify(hers))
+        keychain.set('rdp#pc:3389', JSON.stringify(his))
+        assert.deepEqual(await s.adoptCredentials('rdp#pc:3389', 'rdp#pc:3389@user#alice', (c: any) => c.username === 'alice'), hers)
+        assert.deepEqual([...vaulted.keys()], ['rdp#pc:3389@user#alice'])
+        assert.deepEqual(JSON.parse(keychain.get('rdp#pc:3389')!), his, 'bob\'s stays in the keychain')
+        // Bob's profile takes his, from the keychain, when it connects.
+        assert.deepEqual(await s.adoptCredentials('rdp#pc:3389', 'rdp#pc:3389@user#bob', (c: any) => c.username === 'bob'), his)
+        assert.ok(!keychain.has('rdp#pc:3389'))
+        assert.deepEqual([...vaulted.keys()].sort(), ['rdp#pc:3389@user#alice', 'rdp#pc:3389@user#bob'])
+    } finally {
+        s.useVault(null)
+    }
+})
+
 test('a desktop behind a machine reached through a host: its keys split on their parts, whatever that host says', async () => {
     const { keyFromConfig, nestedKey, sessionKey } = require('../../dist/desktops.js')
     const host = keyFromConfig('user alice\nhostname bastion\nport 22\n', 'bastion')
@@ -69,8 +176,8 @@ test('a desktop behind a machine reached through a host: its keys split on their
     const there = nestedKey(host, 'user bob\nhostname build#10.0.0.7:3389\nport 22\n', 'build')
     assert.equal(there, 'alice@bastion:22>bob@build%2310.0.0.7:3389:22')
     const key = sessionKey({ key: there }, { id: '10.0.0.9:3389' })
-    assert.deepEqual(keyParts(key), { target: there, desktopId: '10.0.0.9:3389', gateway: '' })
-    assert.deepEqual(keyParts(`${key}@gateway#gw:443`), { target: there, desktopId: '10.0.0.9:3389', gateway: '@gateway#gw:443' })
+    assert.deepEqual(keyParts(key), { target: there, desktopId: '10.0.0.9:3389', user: '', gateway: '' })
+    assert.deepEqual(keyParts(`${key}@gateway#gw:443`), { target: there, desktopId: '10.0.0.9:3389', user: '', gateway: '@gateway#gw:443' })
     // Moving an address keeps a saved password under the target it was saved for, the host's or the machine's (each
     // with its desktop's certificate remembered, which moves along).
     const saved = store()
