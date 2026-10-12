@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.6
+
+**Fixed**
+- **Profiles for one address sign in as their own users** ([#104](https://github.com/meanaverage/tabby-rdp/issues/104)).
+  A saved password was kept for the address, so every remote desktop profile for it signed in with the first one
+  saved, whatever user name the profile gave. Each user's password is now saved on its own, profiles for different
+  users open side by side rather than bringing the first one's tab forward (for Windows, `Alice` and `alice` are one
+  user), and editing or removing one profile leaves the others' passwords and the address's certificate. A password
+  saved before goes to the profile of the user it is for the first time that profile connects; the others ask once,
+  and so do profiles for the same user name in different domains when it was saved without one. Signing in from a
+  profile's form as someone else keeps that login for that user, not as the profile's. A profile that names no user
+  signs in with the address's password, as before.
+
+**Documentation**
+- Saved accounts are described as what they are, a login defined once to pick in any desktop, rather than mainly a
+  way to share one, and the README says that several profiles for one address each keep their own user's password.
+
+**Compatibility notes**
+- **Going back to 0.5.5 or earlier** after 0.5.6 has saved passwords for profiles that name a user: those versions
+  look for a profile's password under its address alone, so such profiles ask for it again there, and removing one of
+  them there leaves the password 0.5.6 saved for its user behind. It is listed in Tabby's Vault (as the address and
+  user), or under `tabby-rdp` in the system keychain, where it can be deleted.
+
 ## 0.5.5
 
 **Fixed**
