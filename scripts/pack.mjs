@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Stage npm's selected files, replace only the two deterministic metadata files,
+// Stage npm's selected files, replace only the deterministic metadata files (package.json; format 1 also its shrinkwrap),
 // and pack with lifecycle scripts disabled. The source checkout is never mutated.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,8 +20,10 @@ while (args.length) {
     else if (arg === '--dry-run') dryRun = true
     else throw new Error(`Unknown or incomplete pack argument: ${arg}`)
 }
-const metadata = runtimeMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
-    JSON.parse(fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8')))
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+// The committed lock: format 1's shrinkwrap (published, projected), later formats' package-lock.json (never published).
+const lockFile = manifest.tabbyRdp?.packageFormat === 1 ? 'npm-shrinkwrap.json' : 'package-lock.json'
+const metadata = runtimeMetadata(manifest, JSON.parse(fs.readFileSync(path.join(root, lockFile), 'utf8')))
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'tabby-rdp-package-'))
 try {
     const [selection] = JSON.parse(execFileSync(npm.file, [...npm.args, 'pack', '--dry-run', '--ignore-scripts', '--json'],

@@ -13,6 +13,12 @@
   profile's form as someone else keeps that login for that user, not as the profile's. A profile that names no user
   signs in with the address's password, as before.
 
+**Changed**
+- **No shrinkwrap is published.** The plugin's runtime dependencies, `semver` and `ws`, are pinned to exact versions
+  in `package.json`, and packing refuses a runtime dependency that isn't exact or that brings dependencies of its own,
+  so `package.json` alone decides what npm installs. The development lock is `package-lock.json`, which npm never
+  publishes. Release checks still compare the packed package with the tagged commit.
+
 **Documentation**
 - Saved accounts are described as what they are, a login defined once to pick in any desktop, rather than mainly a
   way to share one, and the README says that several profiles for one address each keep their own user's password.

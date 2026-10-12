@@ -41,7 +41,8 @@ jobs:
           grep -q 'vendor/iron-remote-desktop-rdp.js' pack.txt
           grep -q 'vendor/ironrdp_web_bg.wasm' pack.txt
           grep -q 'remote/trd-pty.py' pack.txt
-          grep -q 'npm-shrinkwrap.json' pack.txt
+          # No shrinkwrap: package.json pins the runtime dependencies exactly (scripts/package-metadata.mjs).
+          if grep -qE ' (npm-shrinkwrap|package-lock)\.json' pack.txt; then exit 1; fi
           if grep -qE ' (src|test|testbed|ironrdp)/' pack.txt; then exit 1; fi
           # The troubleshooting page links this one packaged guide; other documentation stays out.
           awk '/ docs\// && !/ docs\/desk\.md[[:space:]]*$/ { bad = 1 } END { exit bad }' pack.txt
