@@ -558,7 +558,34 @@ test('format 1 (0.5.5): runtime publication excludes development tools and prese
     assert.ok(verify(contents.map(([name, data]) => [name, name === 'npm-shrinkwrap.json' ? JSON.stringify(altered) : data])).length,
         'a changed runtime dependency must fail publication')
     assert.throws(() => runtimeMetadata(manifest, { ...lock, version: '9.9.9' }), /disagree/)
-    assert.throws(() => runtimeMetadata({ ...manifest, tabbyRdp: { packageFormat: 3 } }, lock), /packageFormat/)
+    assert.throws(() => runtimeMetadata({ ...manifest, tabbyRdp: { packageFormat: 4 } }, lock), /packageFormat/)
+})
+
+test('format 3: as format 2, and package.json publishes its test script, the only script it publishes', () => {
+    const manifest = { name: 'tabby-rdp', version: '1.2.3', tabbyRdp: { packageFormat: 3 }, dependencies: { runtime: '1.0.0' },
+        devDependencies: { browserTester: '2.0.0' }, scripts: { build: 'compiler', test: 'runner', postinstall: 'not for users', prepublishOnly: 'compiler' } }
+    const lock = { name: manifest.name, version: manifest.version, lockfileVersion: 3,
+        packages: { '': { ...manifest }, 'node_modules/runtime': { version: '1.0.0', integrity: 'sha512-runtime' },
+            'node_modules/browserTester': { version: '2.0.0', dev: true } } }
+    const metadata = runtimeMetadata(manifest, lock)
+    assert.deepEqual(Object.keys(metadata), ['package.json'])
+    const published = JSON.parse(metadata['package.json'].toString())
+    assert.deepEqual([published.scripts, published.devDependencies], [{ test: 'runner' }, undefined])
+    // In its place in the manifest, which is otherwise as committed.
+    assert.deepEqual(Object.keys(published), Object.keys(manifest).filter(key => key !== 'devDependencies'))
+    // Without a test script, none.
+    const untested = { ...manifest, scripts: { build: 'compiler' } }
+    assert.equal(JSON.parse(runtimeMetadata(untested, { ...lock, packages: { ...lock.packages, '': { ...untested } } })['package.json'].toString()).scripts, undefined)
+    // The publish check projects it so: the package.json format 2 would publish, or the committed one, isn't this one.
+    const dir = repository(BUILD, { 'package.json': JSON.stringify(manifest), 'package-lock.json': JSON.stringify(lock) })
+    const contents = [...packaged().filter(([name]) => name !== 'package.json' && name !== 'README.md'), ...Object.entries(metadata), ...Object.entries(DIST)]
+    const verify = (items: (readonly [string, string | Buffer])[]) => checkPackage(dir, tarball(entries(items)), { revision: 'HEAD' }).problems
+    assert.deepEqual(verify(contents), [])
+    const asFormat2 = JSON.parse(metadata['package.json'].toString())
+    delete asFormat2.scripts
+    assert.ok(verify(contents.map(([name, data]) => [name, name === 'package.json' ? JSON.stringify(asFormat2, null, 2) + '\n' : data])).length)
+    assert.ok(verify(contents.map(([name, data]) => [name, name === 'package.json' ? JSON.stringify(manifest) : data])).length,
+        'unfiltered scripts and development metadata must fail publication')
 })
 
 test('format 2: no shrinkwrap, package.json alone, its runtime dependencies pinned exactly and without their own', () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.7
+
+**Changed**
+- **The published package says how its tests run again.** Its `package.json` keeps its `test` script, the one script it
+  publishes, as 0.5.3 and earlier did with all of them; 0.5.5 and 0.5.6 published none, and Socket took the package for
+  having no tests ([#101](https://github.com/meanaverage/tabby-rdp/issues/101)). The tests are in the source repository,
+  not the package, and CI runs them for every change and release; npm never runs the script when the plugin is
+  installed. Development dependencies, and build and lifecycle scripts, stay out of the package.
+
 ## 0.5.6
 
 **Fixed**

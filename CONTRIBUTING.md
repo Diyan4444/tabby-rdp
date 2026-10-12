@@ -101,8 +101,9 @@ for `npm ci`; npm never publishes it. Build with Node 22.12 or newer on the Node
 Tabby supplies Angular at runtime. The plugin uses TypeScript compilation, not Angular template compilation.
 
 Create distributable packages with `npm run pack:release -- --pack-destination <directory>`, not a direct `npm pack`.
-The packer stages files without changing the checkout, removes development dependencies and build scripts from the
-published manifest, and publishes no shrinkwrap (0.5.5's packages carried a runtime-only one; check-vendor still checks
+The packer stages files without changing the checkout, removes development dependencies and every script but `test`
+from the published manifest (the test script says how the tests run, from this repository; npm never runs it on
+install, and scanners read it as the package having tests), and publishes no shrinkwrap (0.5.5's packages carried a runtime-only one; check-vendor still checks
 those against it). Playwright and its browser installer helpers belong to QA, not
 plugin installations. CI audits the complete development tree too; excluding tools from publication does not replace
 keeping those tools patched. Upgrade dependencies through
