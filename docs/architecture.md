@@ -287,21 +287,36 @@ tabs' code, unchanged; the status has no round trip there, since there is no SSH
   `src/targets.ts`) opens a plain `net` socket to the server instead of an SSH channel, runs no commands, and is always
   "open", so reconnecting just retries. It has no `wake`, which needs an SSH host to start a machine from. Its key is
   `rdp`, so its session key (`desktopSharpness`, `trustedCertificates`) is `rdp#host:port`, apart from desktops behind
-  hosts. The keychain key is that key, plus the gateway (`…@gateway#host:port`, as `parseGateway` has it) whenever the
-  desktop is reached through one, whichever account signs in to it, so a saved password is scoped to the way it goes.
+  hosts. The keychain key is that key, plus the user the profile signs in as (`…@user#DOMAIN\user`, `signsInAs`; none
+  for a profile that names no user), plus the gateway (`…@gateway#host:port`, as `parseGateway` has it) whenever the
+  desktop is reached through one, whichever account signs in to it: a saved password is kept for the user and the way
+  it goes, since several profiles can lead to one address as different users. A password saved up to 0.5.5 under
+  `rdp#host:port` alone (where every profile for the address found it, whoever it was for: issue #104) is taken by the
+  profile of the user it names the first time that profile signs in (`adoptCredentials`), from the store it is in and
+  forgotten only there, and left for it otherwise; also where another profile at the address could be its user (one
+  saved as `alice`, while profiles name CORP's alice and NEW's). A login typed into a profile's form for someone other
+  than the profile's user is kept under that user's key (`saveUser`), and one found under a profile's key for another
+  user isn't used: a profile's key holds its own user's only.
 - **No console:** the toggle, the header's switch button and "Back to console" leave a remote desktop tab alone, and
   "Add a desktop behind…" isn't offered there.
-- **One desktop per server** still holds: opening the profile while another tab has that desktop brings that tab
-  forward and drops the new one.
+- **One desktop per server and user** still holds: opening the profile while another tab has that desktop open as the
+  same user (the profile's own, or its saved account's; in any case for Windows, `Alice` being alice there) brings that
+  tab forward and drops the new one. Another user's opens beside it, as a second session of that server's (a Windows
+  edition that takes one session at a time asks there whether to end the other).
 - **The profile's settings** in Tabby's editor are built by hand like the other forms. Editing the address moves the
   saved password and sharpness to the new key and copies the certificate there (it stays at the old address too), as the
   edit form does for desktops behind a host, unless a desktop at the new address is known already (its certificate
-  remembered), whose own stay and whose certificate keeps the password from moving; a new user name, domain, account or
-  gateway forgets the password instead. Removing the profile, or pointing it at an SSH profile, forgets its passwords
-  through any gateway, the ones it had before included, and its certificate. An open tab connects with its profile as
-  saved at each connection, Reconnect and a reconnect at a new size included, not with the profile it holds: Tabby's
-  proxy of that keeps the options of when the tab opened (saving the editor puts new ones in their place), and a
-  restored tab holds a copy. One changed to go through an SSH profile isn't connected from the tab any more.
+  remembered), whose own stay and whose certificate keeps the password from moving. A new user name (its domain
+  included) or gateway forgets the password of the old one instead; a new saved account leaves the profile's own,
+  unused while the account signs in; and a profile that names no user drops the address's password on a new domain or
+  account. Removing the profile, or pointing it at an SSH profile, forgets its passwords through any gateway, the ones
+  it had before included, and its certificate. Where other profiles still lead to the address (`directInUse`, their
+  group's defaults included), only the edited or removed profile's user's passwords go, and only those no other profile
+  signs in with: one saved before 0.5.6 for the address alone only where the user name in it is that user's
+  (`isLoginOf`). The certificate, sharpness and "without NLA" decision stay there too. An open tab connects with its
+  profile as saved at each connection, Reconnect and a reconnect at a new size included, not with the profile it holds:
+  Tabby's proxy of that keeps the options of when the tab opened (saving the editor puts new ones in their place), and
+  a restored tab holds a copy. One changed to go through an SSH profile isn't connected from the tab any more.
 - **.rdp files** become such profiles (`src/rdpFile.ts`): `key:type:value` lines, UTF-16LE with a byte order mark as
   Remote Desktop Connection writes them, or UTF-8. Only `full address` (host, `host:port`, `[v6]:port`),
   `server port`, `username` and `domain` are read for the connection; `redirectclipboard:i:0` (zero in decimal digits,

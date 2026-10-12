@@ -10,7 +10,7 @@ import { RemoteDesktopHelp } from './help'
 import { ASK_GATEWAY_ACCOUNT, signInName } from './accounts'
 import { newAccountOption } from './accountForm'
 import { CLIPBOARD_LABELS, ClipboardMode, ownClipboard } from './clipboard'
-import { configText, desktopIdOf } from './desktops'
+import { configText, desktopIdOf, signsInAs } from './desktops'
 import { parseGateway } from './gateway'
 import { configNumber } from './osd'
 import { isConnected, isSSHTab } from './ssh'
@@ -162,8 +162,11 @@ export class RDPTabRecovery extends TabRecoveryProvider<RDPTabComponent> {
 })
 export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDPProfile>, OnInit {
     profile!: RDPProfile
-    /** As the editor opened: what is kept per desktop moves along with a new address (see save()). */
-    private before!: { id: string, account: string, via: string, gateway: string }
+    /**
+     * As the editor opened: what is kept per desktop moves along with a new address (see save()), the saved password
+     * for the user it signed in as (`user`, see signsInAs).
+     */
+    private before!: { id: string, account: string, user: string, via: string, gateway: string }
     private connectionInputs?: { address: HTMLInputElement, gateway: HTMLInputElement }
 
     constructor (private element: ElementRef<HTMLElement>, private injector: Injector) { }
@@ -172,7 +175,7 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
         const o = this.profile.options
         const account = () => `${o.username ?? ''}\n${o.domain ?? ''}\n${o.account ?? ''}`
         // No id for a new profile (no address yet): it has nothing saved to take along.
-        this.before = { id: o.host ? desktopIdOf(o) : '', account: account(), via: o.via ?? '', gateway: o.gateway ?? '' }
+        this.before = { id: o.host ? desktopIdOf(o) : '', account: account(), user: signsInAs(o), via: o.via ?? '', gateway: o.gateway ?? '' }
         const root = this.element.nativeElement
         root.innerHTML = `
             <div class="mb-3">
@@ -326,7 +329,9 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             if (address) { o.port = address.port }
             o.gateway = gatewayText
         }
-        const { id, account, via, gateway } = this.before
+        const { id, account, user, via, gateway } = this.before
+        // Another profile for the same address keeps what it signs in with there (see RemoteDesktopService.directInUse).
+        const users = { user, except: this.profile.id }
         if (!id) {
             return
         }
@@ -335,7 +340,7 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             // (see RDPProfilesService.deleteProfile). Not for the type's or a group's defaults, which have no id of
             // their own (an empty address is useful there): profiles that name that address keep what is saved for it.
             if (!via && this.profile.id) {
-                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`).catch(() => null)
+                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`, users).catch(() => null)
             }
             return
         }
@@ -344,13 +349,14 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             // it had before included) and certificate were its own; one behind a host shares them with that host's
             // desktop at the same address, so they stay.
             if (!via) {
-                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`).catch(() => null)
+                this.injector.get(RemoteDesktopService).forgetDesktop(id, true, `"${this.profile.name}"`, users).catch(() => null)
             }
             return
         }
         // Its saved password goes with its way there (see desktopEdited): another gateway is asked for again.
         const accountChanged = `${o.username ?? ''}\n${o.domain ?? ''}\n${o.account ?? ''}` !== account
-        this.injector.get(RemoteDesktopService).desktopEdited(id, desktopIdOf(o), accountChanged, !via, { from: gateway, to: o.gateway }).catch(() => null)
+        this.injector.get(RemoteDesktopService).desktopEdited(id, desktopIdOf(o), accountChanged, !via, { from: gateway, to: o.gateway },
+            via ? undefined : { from: user, to: signsInAs(o), except: this.profile.id }).catch(() => null)
     }
 }
 
@@ -448,7 +454,13 @@ export class RDPProfilesService extends QuickConnectProfileProvider<RDPProfile> 
         // its own; one behind a host shares them with that host's desktop at the same address. A profile without an
         // address of its own leads to no desktop of its own: desktopIdOf would name 127.0.0.1:3389 for it.
         if (!profile.options.via && configText(profile.options.host)) {
-            this.injector.get(RemoteDesktopService).forgetDesktop(desktopIdOf(profile.options), true, `"${profile.name}"`).catch(() => null)
+            // Its user as it signed in, its group's defaults included; other profiles for the address keep theirs.
+            let options = profile.options
+            try {
+                options = this.injector.get(ProfilesService).getConfigProxyForProfile(profile).options
+            } catch { }
+            this.injector.get(RemoteDesktopService).forgetDesktop(desktopIdOf(profile.options), true, `"${profile.name}"`,
+                { user: signsInAs(options), except: profile.id }).catch(() => null)
         }
     }
 }

@@ -167,7 +167,7 @@ connecting again.
 | **Screenshots** | **Save a screenshot** in the desktop's menus saves the remote screen at its full resolution as a PNG in Downloads, and copies it to the clipboard. |
 | **Connection status** | Optionally, a small line in the corner of the desktop with the throughput each way, frames per second, the SSH round trip, and how it is connected (desktop, host, resolution, graphics mode, sharpness). |
 | **Reconnecting** | After sleep or a network change, the desktop reconnects by itself once the connection is back. |
-| **Sign-in** | GNOME desktops need none: the plugin manages their credentials. Windows and xrdp desktops ask for the account once and can remember it, in Tabby's Vault when that is on and in the system keychain otherwise; **Sign in again…** in the menu replaces it. Desktops that share an account can use a [saved account](#saved-accounts), whose password is kept once. |
+| **Sign-in** | GNOME desktops need none: the plugin manages their credentials. Windows and xrdp desktops ask for the account once and can remember it, in Tabby's Vault when that is on and in the system keychain otherwise; **Sign in again…** in the menu replaces it. A [saved account](#saved-accounts) defines a login once, to pick in any desktop. |
 | **Shortcuts** | Switching between the desktop and the console, view only, a screenshot, Ctrl+Alt+Del, typing into or pasting to all desktops of a tab, the connection status and Disconnect each have a hotkey, set on the settings page or in Tabby's Hotkeys. They work while the desktop has the keyboard; a key another hotkey has is refused. |
 | **Certificates** | GNOME desktops accept only the certificate the plugin made for them. A desktop you connect to directly, and an RD Gateway, connect without a question when their certificate is valid for their name by the certificate authorities this computer trusts; any other is shown, with why it can't be verified, its fingerprint and what it says of itself (whom it was issued to and by, and its dates), and connected only once you trust it. What it says of itself is its own word, unless its chain leads to an authority this computer trusts (another machine's certificate then shows that machine's name) and the TLS library didn't refuse it for a reason of its own (a limit set on the authority, say): an issuer you would expect there proves nothing, since anyone can make a certificate that names it; only the fingerprint, checked with whoever runs the server some other way, does. Desktops behind an SSH host remember theirs on first use. A different certificate later stops the connection and asks, but for one an authority vouches for in place of one it vouched for (a renewal); and one remembered on an authority's word is asked about again once it no longer validates. |
 | **Passwords stay with servers that know them** | Windows signs in with Network Level Authentication: a proof both ways, where the password only reaches a server that knows it already. A Windows desktop whose server doesn't use it would get the password as it is, so the connection stops and asks first, before your password or user name is sent. xrdp signs in that way by design, so desktops you made xrdp ones aren't asked about; one that is xrdp only by a host's word (a VM it lists, a machine reached through it, the host's own desktop) is asked about once. The answer is kept with the certificate of the server you gave it for: another certificate, a new address or a forgotten certificate asks again. |
@@ -246,7 +246,10 @@ xrdp or GNOME Remote Desktop), and optionally the user name and domain. It then 
 SSH profiles do, and opens in a tab of its own that the desktop fills; there is no console under it. Sign-in, the
 keychain, certificates, resize, sharpness, clipboard, files, sound, microphone, **Send keys**, view only, screenshots
 and reconnecting work as in SSH tabs. After **Disconnect**, the tab offers **Connect**. In the profile selector you can
-also type `user@host:port` and pick **Quick connect (REMOTE DESKTOP (RDP))**.
+also type `user@host:port` and pick **Quick connect (REMOTE DESKTOP (RDP))**. Several profiles can lead to one address,
+each signing in as another user: each user's password is saved on its own, their desktops open side by side, and
+editing or removing one profile leaves the others' passwords and the address's certificate alone. A profile that names
+no user asks who, and signs in with the password saved for the address by another such profile.
 
 **Import an .rdp file…** (in the menu's **Settings**, or **Remote desktop: import an .rdp file…** in Tabby's command
 palette) makes such a profile from a file saved by Remote Desktop Connection or handed out by an admin: its address,
@@ -355,8 +358,10 @@ and one-time codes at the gateway are not supported.
 
 ## Saved accounts
 
-Several desktops often share one account: a domain admin, a lab user. A saved account keeps that user name (and
-domain) under a name, with its password stored once, so when the password changes it is entered once for all of them.
+A saved account is a login defined on its own: a name, a user name (and domain), and its password, stored once. Any
+desktop can pick it instead of typing a user name into its profile, and both ways work: a profile's own user name keeps
+its own saved password, per user, for that address. An account is handy for keeping logins in one place, and for one
+used on several desktops (a domain admin, a lab user), whose password is then changed once for all of them.
 
 **Settings › Remote Desktop › Accounts** lists them, with the desktops that use each one (click a name to open its
 settings), and adds, edits and removes them. A desktop picks its account in its profile's **Account** field, or in the

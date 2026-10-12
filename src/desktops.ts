@@ -1,3 +1,4 @@
+import { signInName } from './accounts'
 import { ClipboardMode, narrowest, ownClipboard } from './clipboard'
 import { HYPERV_PORT, vmId } from './hyperv'
 import { configNumber } from './osd'
@@ -387,36 +388,70 @@ export function keyUser (key: string): string {
 }
 
 /**
+ * Who a direct desktop signs in as, as its saved password's key names it (see userScope): DOMAIN\user, or the user
+ * name as typed where it names its domain itself (as signInName has it); '' for one that names no user (its sign-in
+ * asks who, its domain or not), which keeps the address's password. From its own user name and domain: a saved
+ * account's password is the account's (see accountKey), not the desktop's.
+ */
+export function signsInAs (extra: { username?: unknown, domain?: unknown }): string {
+    const username = configText(extra?.username)
+    return username ? signInName({ username, domain: configText(extra?.domain) }) : ''
+}
+
+/**
+ * Whether a login saved with `username` (as typed at a sign-in, the desktop's domain going with one that names none)
+ * is for `who` (see signsInAs): how a password saved for an address alone, before each user had their own there, is
+ * told to be a profile's.
+ */
+export function isLoginOf (username: string, who: string): boolean {
+    const slash = who.indexOf('\\')
+    return !!who && signInName({ username, domain: slash > 0 ? who.slice(0, slash) : '' }) === who
+}
+
+/**
+ * What a direct desktop's saved password's key adds for who it signs in as (`@user#<who>`, see signsInAs), or '' for a
+ * desktop that doesn't say: several profiles can lead to one address, each signing in as someone else, and each finds
+ * the password of its own user there. The user is written as keyField writes a target's, so it has no `#`.
+ */
+export function userScope (who: string): string {
+    return who ? `@user#${keyField(who, ESCAPED_USER)}` : ''
+}
+
+/**
  * A session, trust or credential key split into the target it belongs to and the desktop id after it, so matching is
  * anchored on whole parts rather than an `endsWith('#'+id)` that a different key could also satisfy. A key is
  * `<target>#<id>`: the target is `rdp` for a direct desktop, `gateway` for a gateway certificate, or `user@host:port`
  * for a desktop behind an SSH host (`<tab's key>><user@host:port>` for a machine reached through one, see nestedKey;
  * no target's key has a `#`, see keyField); the own desktop's key is the bare target, with no id. A credential key
- * may carry a gateway suffix (`…@gateway#<host:port>`), which names where a password is sent rather than the desktop,
- * and is returned separately so the id still compares equal.
+ * may carry a user suffix (`…@user#<who>`, see userScope), which names who a direct desktop's password is for, and then
+ * a gateway suffix (`…@gateway#<host:port>`), which names where it is sent; both are returned separately, so the id
+ * still compares equal. Neither the id nor the user has a `#`, so neither suffix can be taken for part of either.
  */
-export function keyParts (key: string): { target: string, desktopId: string, gateway: string } {
+export function keyParts (key: string): { target: string, desktopId: string, user: string, gateway: string } {
     const hash = key.indexOf('#')
     if (hash < 0) {
-        return { target: key, desktopId: '', gateway: '' }
+        return { target: key, desktopId: '', user: '', gateway: '' }
     }
+    const target = key.slice(0, hash)
     const rest = key.slice(hash + 1)
-    const at = rest.indexOf('@gateway#')
-    return at < 0
-        ? { target: key.slice(0, hash), desktopId: rest, gateway: '' }
-        : { target: key.slice(0, hash), desktopId: rest.slice(0, at), gateway: rest.slice(at) }
+    const scoped = /^([^#]*?)(@user#[^#]*?)?(@gateway#[^#]*)?$/.exec(rest)
+    if (scoped) {
+        return { target, desktopId: scoped[1], user: scoped[2] ?? '', gateway: scoped[3] ?? '' }
+    }
+    // More `#` than a key of the plugin's has: compared whole, so that it matches no desktop's.
+    return { target, desktopId: rest, user: '', gateway: '' }
 }
 
 /**
  * A session, trust or credential key of the target `from`, as the same key of `to` (see RemoteTargets.keyChanged,
- * which moves what was kept under a target's former key): `from` itself (its own desktop), or `from#<id>`, with a
- * gateway suffix on a saved password's key. Null for any other key. Desktop ids have no `#` (see specOf), so a key that
- * has more of them isn't one of `from`'s desktops, whatever it starts with.
+ * which moves what was kept under a target's former key): `from` itself (its own desktop), or `from#<id>`, with a user
+ * and a gateway suffix on a saved password's key (see keyParts). Null for any other key. Desktop ids have no `#` (see
+ * specOf), so a key that has more of them isn't one of `from`'s desktops, whatever it starts with.
  */
 export function rekeyed (key: string, from: string, to: string): string | null {
     if (key === from) {
         return to
     }
     const rest = key.startsWith(`${from}#`) ? key.slice(from.length + 1) : null
-    return rest !== null && /^[^#]*(@gateway#[^#]*)?$/.test(rest) ? `${to}#${rest}` : null
+    return rest !== null && /^[^#]*(@user#[^#]*)?(@gateway#[^#]*)?$/.test(rest) ? `${to}#${rest}` : null
 }

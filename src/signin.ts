@@ -52,8 +52,9 @@ function vaultKey (key: string): { key: string } {
     return { key }
 }
 function vaultName (key: string): string {
-    const { target, desktopId, gateway } = keyParts(key)
-    const where = `${desktopId}${gateway ? gateway.replace('@gateway#', ' through gateway ') : ''}`
+    const { target, desktopId, user, gateway } = keyParts(key)
+    const as = user ? ` as ${user.slice('@user#'.length).replace(/%([0-9A-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))}` : ''
+    const where = `${desktopId}${as}${gateway ? gateway.replace('@gateway#', ' through gateway ') : ''}`
     return target === 'account' ? `saved account` : target === DIRECT_KEY ? `${where} (direct)` : desktopId ? `${where} behind ${target}` : target
 }
 
@@ -216,7 +217,13 @@ async function keychainOnce (mark: string, forgets: (key: string) => boolean): P
  * and what it would forget isn't looked up in that store meanwhile (see withheld). `saved`: keys a password was saved
  * under in that store since, which is a new one, and stays. Kept in this window's memory, for as long as it is open.
  */
-const later: { forgets: (key: string) => boolean, inVault: boolean, saved: Set<string> }[] = []
+/**
+ * Which saved passwords go: by their key and, where it is at hand, the login stored there (see SavedFor's `owns`);
+ * without it, as far as the key tells, which covers more rather than less.
+ */
+type Forgets = (key: string, stored?: string) => boolean
+
+const later: { forgets: Forgets, inVault: boolean, saved: Set<string> }[] = []
 let laterRunning: Promise<void> | null = null
 
 /**
@@ -225,7 +232,7 @@ let laterRunning: Promise<void> | null = null
  * cancelled, a keychain that didn't answer): forgotten once that store can be read (see doLater), and not used from it
  * meanwhile, so that the desktop asks. The other store's part doesn't wait for it.
  */
-function forgetLater (forgets: (key: string) => boolean, inVault: boolean): void {
+function forgetLater (forgets: Forgets, inVault: boolean): void {
     later.push({ forgets, inVault, saved: new Set() })
 }
 
@@ -325,19 +332,18 @@ export async function loadCredentials (key: string): Promise<Credentials | null>
 }
 
 async function loadSaved (key: string): Promise<Credentials | null> {
-    if (vaultOn() && !withheld(key, true)) {
-        try {
-            const secret = await vault.getSecret(VAULT_SECRET_TYPE, vaultKey(key))
-            const found = parseCredentials(secret?.value)
-            if (found) {
-                return found
-            }
-        } catch { }
-    }
-    if (withheld(key, false)) {
+    return await loadIn(true, key) ?? await loadIn(false, key)
+}
+
+/** What one store (the Vault while it is on, or with `inVault` false the keychain) has under `key`, or null. */
+async function loadIn (inVault: boolean, key: string): Promise<Credentials | null> {
+    if (withheld(key, inVault)) {
         return null
     }
     try {
+        if (inVault) {
+            return vaultOn() ? parseCredentials((await vault.getSecret(VAULT_SECRET_TYPE, vaultKey(key)))?.value) : null
+        }
         return parseCredentials(await keychain<string | null>(store => store.getPassword(KEYCHAIN_SERVICE, key)))
     } catch {
         return null
@@ -526,10 +532,15 @@ async function entriesOf (inVault: boolean): Promise<{ account: string, password
  * Forgets from one store (the Vault, or with `inVault` false the keychain) what `entries`, all it holds (see
  * entriesOf), has under a key `forgets` matches, but for those `kept`. False where it wouldn't forget one of them.
  */
-async function forgetListed (inVault: boolean, entries: { account: string }[], forgets: (key: string) => boolean, kept?: Set<string>): Promise<boolean> {
+async function forgetListed (inVault: boolean, entries: { account: string, password?: string }[], forgets: Forgets, kept?: Set<string>): Promise<boolean> {
     let done = true
-    for (const key of new Set(entries.map(({ account }) => account))) {
-        if (!kept?.has(key) && forgets(key)) {
+    const seen = new Set<string>()
+    for (const { account: key, password } of entries) {
+        if (seen.has(key)) {
+            continue
+        }
+        seen.add(key)
+        if (!kept?.has(key) && forgets(key, password)) {
             try {
                 await forgetIn(inVault, key)
             } catch {
@@ -554,23 +565,32 @@ export function gatewayScope (gateway: string | undefined): string {
 
 /**
  * Which saved passwords of a desktop an edit or a removal applies to: a direct one's (`rdp#<id>`) with `direct`, else
- * those of the desktops at that address behind any SSH host (`<ssh key>#<id>`); with `scope` (see gatewayScope), only
- * those for that gateway ('' for none), else for any.
+ * those of the desktops at that address behind any SSH host (`<ssh key>#<id>`); with `user` (see userScope), only those
+ * for that user, and those saved before each user had one (under the address alone, see adoptCredentials) that could
+ * be that user's: with `owns`, only those whose stored login it says is, else any; with `scope` (see gatewayScope),
+ * only those for that gateway ('' for none), else for any. Those under a key in `keep` stay: another desktop at the
+ * address still signs in with them.
  */
 export interface SavedFor {
     direct?: boolean
+    user?: string
+    owns?: (credentials: Credentials) => boolean
     scope?: string
+    keep?: Set<string>
 }
 
 /**
- * Whether a credential key is one of a desktop's saved passwords (see SavedFor). Anchored on the key's parts, so an
- * unrelated key that merely ends in `#<id>` (a gateway pin, or a desktop whose own id is a suffix of another's) isn't
- * matched; a gateway suffix on the key doesn't change the id.
+ * Whether a credential key is one of a desktop's saved passwords (see SavedFor), with `stored`, the login saved there,
+ * where it is at hand (see Forgets). Anchored on the key's parts, so an unrelated key that merely ends in `#<id>` (a
+ * gateway pin, or a desktop whose own id is a suffix of another's) isn't matched; a user or gateway suffix on the key
+ * doesn't change the id.
  */
-export function isFor (account: string, desktopId: string, which: SavedFor): boolean {
-    const { target, desktopId: id, gateway } = keyParts(account)
+export function isFor (account: string, desktopId: string, which: SavedFor, stored?: string): boolean {
+    const { target, desktopId: id, user, gateway } = keyParts(account)
+    const unscoped = user === '' && which.user !== undefined && which.user !== ''
+    const owned = !unscoped || !which.owns || stored === undefined || (c => !!c && which.owns!(c))(parseCredentials(stored))
     return id === desktopId && (which.direct ? target === DIRECT_KEY : target !== DIRECT_KEY && target !== 'gateway' && target !== 'account') &&
-        (which.scope === undefined || gateway === which.scope)
+        (which.user === undefined || user === which.user || unscoped) && owned && (which.scope === undefined || gateway === which.scope) && !which.keep?.has(account)
 }
 
 /**
@@ -581,7 +601,7 @@ export function isFor (account: string, desktopId: string, which: SavedFor): boo
  * Returns the stores whose part waits (none, as a rule).
  */
 export async function forgetCredentialsFor (desktopId: string, which: SavedFor = {}): Promise<Store[]> {
-    const forgets = (key: string) => isFor(key, desktopId, which)
+    const forgets = (key: string, stored?: string) => isFor(key, desktopId, which, stored)
     noteForget(forgets)
     await used()
     const waiting: Store[] = []
@@ -618,7 +638,7 @@ export async function forgetCredentialsFor (desktopId: string, which: SavedFor =
  * certificate stays (see RemoteDesktopService.desktopEdited).
  */
 export async function moveCredentialsFor (fromId: string, toId: string, which: SavedFor = {}, known: (sessionKey: string) => boolean = () => false): Promise<Store[]> {
-    const forgets = (key: string) => isFor(key, fromId, which)
+    const forgets = (key: string, stored?: string) => isFor(key, fromId, which, stored)
     noteForget(forgets)
     await used()
     const stores: { inVault: boolean, entries: { account: string, password: string }[] | null }[] = []
@@ -632,8 +652,8 @@ export async function moveCredentialsFor (fromId: string, toId: string, which: S
         for (const { account, password } of entries ?? []) {
             const credentials = parseCredentials(password)
             const { target, gateway } = keyParts(account)
-            if (forgets(account) && credentials) {
-                const to = `${target}#${toId}${gateway}`
+            if (forgets(account, password) && credentials) {
+                const to = `${target}#${toId}${keyParts(account).user}${gateway}`
                 const pinned = target === DIRECT_KEY || known(`${target}#${fromId}`)
                 try {
                     if (!taken.has(to) && !known(`${target}#${toId}`) && pinned && !withheld(account, inVault)) {
@@ -654,6 +674,30 @@ export async function moveCredentialsFor (fromId: string, toId: string, which: S
         }
     }
     return waiting
+}
+
+/**
+ * A direct desktop's saved password from before passwords were kept for each user at an address (0.5.6): under the
+ * address alone (`from`), where any profile for that address found it, whoever it was for. Taken to `to`, the key of
+ * the desktop's own user (see userScope), where `ours` says it is for that user, and forgotten at `from` in the store
+ * it was found in only: the other store (the keychain beside a synced Vault, say) can hold another user's there. Left
+ * where it is otherwise, for the desktop it is for. Null where there is none to take.
+ */
+export async function adoptCredentials (from: string, to: string, ours: (credentials: Credentials) => boolean): Promise<Credentials | null> {
+    await used()
+    for (const inVault of [true, false]) {
+        const found = await loadIn(inVault, from)
+        if (found && ours(found)) {
+            // Forgotten there only once saved here: should the store refuse, it is found there again next time.
+            try {
+                await saveCredentials(to, found)
+                noteForget(key => key === from)
+                await forgetIn(inVault, from)
+            } catch { }
+            return found
+        }
+    }
+    return null
 }
 
 /**

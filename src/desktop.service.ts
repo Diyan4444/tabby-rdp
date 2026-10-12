@@ -21,14 +21,14 @@ import { accountKey, accountsOf, ASK_GATEWAY_ACCOUNT, newAccountId, SavedAccount
 import { ACCOUNT_REMEMBER_UNAVAILABLE, AccountRevisions } from './accountRevisions'
 import { NewAccountInput, STYLE as ACCOUNT_FORM_STYLE } from './accountForm'
 import { FileTransfer, STYLE as FILES_STYLE, uniquePath } from './fileTransfer'
-import { configText, desktopIdOf, DesktopSpec, desktopsFor, DIRECT_KEY, entryText, ExtraDesktopConfig, isDesktopEntry, keyFields, keyParts, keyUser, OWN_DESKTOP, OwnDesktopFound, sessionKey, specOf, xrdpUnasked } from './desktops'
+import { configText, desktopIdOf, DesktopSpec, desktopsFor, DIRECT_KEY, entryText, ExtraDesktopConfig, isDesktopEntry, keyFields, keyParts, keyUser, OWN_DESKTOP, OwnDesktopFound, isLoginOf, sessionKey, signsInAs, specOf, userScope, xrdpUnasked } from './desktops'
 import { RemoteDesktopHelp } from './help'
 import { configNumber, OSD_STYLE, OsdSettings, osdSettings, renderOsd } from './osd'
 import { MAX_RDP_FILE, MICROPHONE_NOTE, parseRdpFile } from './rdpFile'
 import { prepareRemoteDesktop, RemoteDesktopEndpoint } from './remoteSetup'
 import { normalizeFingerprint, RDCleanPathProxy, startRDCleanPathProxy, withoutToken } from './rdcleanpath'
 import {
-    askCredentials, Credentials, forgetCredentials, forgetCredentialsFor, forgetCredentialsIf, forgetCredentialsOrFail, forgetMark, forgetOnce, forgottenSince, gatewayScope, hasCredentials,
+    adoptCredentials, askCredentials, Credentials, forgetCredentials, forgetCredentialsFor, forgetCredentialsIf, forgetCredentialsOrFail, forgetMark, forgetOnce, forgottenSince, gatewayScope, hasCredentials,
     isFor, loadCredentials, moveCredentialsFor, saveCredentials, saveCredentialsIf, Store, storeName, STYLE as SIGNIN_STYLE,
 } from './signin'
 import { isSSHTab } from './ssh'
@@ -129,6 +129,11 @@ interface Endpoint {
     saveLabel?: string
     /** The account's sign-in name when the prompt was made: saved only while the account still has it. */
     saveFor?: string
+    /**
+     * A direct desktop that names its user, signed in as someone else from its form: who (see signsInAs), whose key
+     * the login is kept under rather than the desktop's own, which keeps only its own user's.
+     */
+    saveUser?: string
     accountRevision?: string
     /**
      * Where the forgets stood when the prompt was made (see forgetMark): a desktop's own sign-in is saved only if
@@ -399,18 +404,37 @@ export class DesktopSession {
     }
 
     /**
-     * Where a saved password is kept: under authKey, and whenever the desktop is reached through an RD Gateway, that
-     * gateway too (see gatewayScope), whether the gateway takes the desktop's sign-in or an account of its own: a
-     * password saved for one gateway (or for a connection without one) is never sent through a different gateway named
-     * for the same address without asking. The certificate and the "without NLA" decision stay keyed by authKey: those
-     * are the desktop's, not the gateway's.
+     * Where a saved password is kept: under authKey, for a direct desktop the user it signs in as (see userScope), and
+     * whenever the desktop is reached through an RD Gateway, that gateway too (see gatewayScope), whether the gateway
+     * takes the desktop's sign-in or an account of its own: a password saved for one gateway (or for a connection
+     * without one) is never sent through a different gateway named for the same address without asking, and one saved
+     * for one user is never another profile's for the same address. The certificate and the "without NLA" decision
+     * stay keyed by authKey: those are the server's, whoever signs in, not the gateway's.
      */
     get credentialKey (): string {
-        return this.authKey + gatewayScope(this.spec.gateway)
+        return this.credentialKeyFor(this.user)
     }
 
-    /** `key`: see sessionKey(); one desktop per key. */
-    constructor (container: HTMLElement, readonly key: string, readonly spec: DesktopSpec) {
+    /** Where a password for `user` (see signsInAs) is kept for this desktop: its credentialKey, for that user. */
+    credentialKeyFor (user: string): string {
+        return this.authKey + userScope(user) + gatewayScope(this.spec.gateway)
+    }
+
+    /**
+     * Where a direct desktop that names its user kept its saved password before 0.5.6: under the address alone,
+     * whoever it was for (see adoptCredentials). Null for one that doesn't name a user: its key is still that one.
+     */
+    get formerCredentialKey (): string | null {
+        return this.user ? this.authKey + gatewayScope(this.spec.gateway) : null
+    }
+
+    /**
+     * `key`: see sessionKey(). `user`: who a direct desktop's saved password is for (see signsInAs), '' for any other.
+     * `who`: who it signs in as (its saved account's name, else `user`, or whoever its form signed in as instead): one
+     * desktop per key and user, since each user of a server (a Windows server's, xrdp's) has a session of their own
+     * there.
+     */
+    constructor (container: HTMLElement, readonly key: string, readonly spec: DesktopSpec, readonly user = '', public who = user) {
         this.disposed = new Promise(resolve => { this.markDisposed = resolve })
         this.overlay = document.createElement('div')
         this.overlay.className = 'trd-overlay'
@@ -1394,11 +1418,28 @@ export class RemoteDesktopService {
      * desktop as it was unused, until it can be read while this window is open (see forgetLater). That is said, of that
      * store. After a new address the certificate stays at the old one as well as going along (below), whichever
      * passwords stayed there.
+     *
+     * A direct desktop (an RDP profile, `users` given) keeps a password for each user at an address (see
+     * credentialKey), and other profiles can lead to the same address: its password goes as above only where it was
+     * for the user it signed in as before (`users.from`, see signsInAs), and only where no other profile (the edited
+     * one, `users.except`, aside) signs in with it; another user's, a profile's whose user is now another, stays for
+     * the profiles that still sign in as them. Its saved account, if it has one, is the account's, whatever the edit. Nor
+     * do the certificate, sharpness and "without NLA" decision leave an address another profile still leads to.
      */
-    async desktopEdited (fromId: string, toId: string, accountChanged: boolean, direct: boolean, gateways: { from?: string, to?: string }): Promise<void> {
+    async desktopEdited (fromId: string, toId: string, accountChanged: boolean, direct: boolean, gateways: { from?: string, to?: string },
+        users?: { from: string, to: string, except?: string }): Promise<void> {
         const scope = gatewayScope(gateways.from)
+        const inUse = users ? this.directInUse(users.except) : null
         let waiting: Store[] = []
-        if (accountChanged || scope !== gatewayScope(gateways.to)) {
+        if (users && inUse) {
+            const which = { direct: true, user: userScope(users.from), owns: (c: Credentials) => isLoginOf(c.username, users.from), scope, keep: inUse.keys }
+            // A profile that names no user keeps the address's password: a new domain or account drops it, as before.
+            if (users.from !== users.to || scope !== gatewayScope(gateways.to) || accountChanged && !users.from) {
+                waiting = await forgetCredentialsFor(fromId, which)
+            } else if (fromId !== toId) {
+                waiting = await moveCredentialsFor(fromId, toId, which, key => this.trustedCertificates().some(e => e.desktop === key))
+            }
+        } else if (accountChanged || scope !== gatewayScope(gateways.to)) {
             waiting = await forgetCredentialsFor(fromId, { direct, scope })
         } else if (fromId !== toId) {
             // As they are when each password is looked at, not as they were before the stores were listed (a Vault's
@@ -1420,6 +1461,8 @@ export class RemoteDesktopService {
             return id === fromId && (direct ? target === DIRECT_KEY : target !== DIRECT_KEY && target !== 'gateway')
         }
         const store = this.config.store.remoteDesktop
+        // Another profile still leads to the old address: what is kept there stays for it, as well as going along.
+        const stays = !!inUse?.ids.has(fromId)
         // The certificates go along and stay at the old address too. What is kept there still goes only to the machine
         // it was saved for, and another machine answering there meets the certificate question rather than being
         // trusted as a first use: the password of another desktop at that address, reached another way (a certificate
@@ -1431,7 +1474,7 @@ export class RemoteDesktopService {
                 // entry is dropped rather than put next to it, where either could be the one found.
                 const isMoved = (e: any) => typeof e?.desktop === 'string' && moved(e.desktop)
                 const taken = new Set(store[list].filter((e: any) => !isMoved(e)).map((e: any) => e?.desktop))
-                const kept = list === 'trustedCertificates'
+                const kept = list === 'trustedCertificates' || stays
                 store[list] = store[list].flatMap((e: any) => {
                     if (!isMoved(e)) {
                         return [e]
@@ -1441,7 +1484,7 @@ export class RemoteDesktopService {
                 })
             }
         }
-        if (Array.isArray(store.withoutNla)) {
+        if (Array.isArray(store.withoutNla) && !stays) {
             store.withoutNla = store.withoutNla.filter((e: any) => !(typeof e?.desktop === 'string' && moved(e.desktop)))
         }
         this.config.save()
@@ -1736,17 +1779,60 @@ export class RemoteDesktopService {
      * password from going to a machine that isn't the one it was saved for, where a desktop behind a host trusts the
      * first certificate it meets unasked. The user is told, and can forget them in Settings › Remote Desktop ›
      * Certificates. `what` names the desktop for that.
+     *
+     * A direct desktop (an RDP profile, `users` given) whose address another profile (`users.except`, the one going,
+     * aside) still leads to takes only the passwords of its own user (`users.user`, see signsInAs) that no such
+     * profile signs in with, and leaves the certificate to them.
      */
-    async forgetDesktop (id: string, direct: boolean, what: string): Promise<void> {
-        const waiting = await forgetCredentialsFor(id, direct ? { direct: true } : {})
+    async forgetDesktop (id: string, direct: boolean, what: string, users?: { user: string, except?: string }): Promise<void> {
+        const inUse = direct && users ? this.directInUse(users.except) : null
+        const shared = !!inUse?.ids.has(id)
+        const own = shared && users ? { user: userScope(users.user), owns: (c: Credentials) => isLoginOf(c.username, users.user), keep: inUse!.keys } : {}
+        const waiting = await forgetCredentialsFor(id, direct ? { direct: true, ...own } : {})
         if (waiting.length) {
             this.notifications.info(`If a password was saved for ${what}, ${this.passwordWaits(waiting)} Its remembered certificate stays, ` +
                 'so that the password can only go to that machine: Settings › Remote Desktop › Certificates can forget it.')
             return
         }
+        if (shared) {
+            return
+        }
         this.forgetCertificatesFor(id, direct)
         this.config.save()
         this.changed$.next()
+    }
+
+    /**
+     * What the direct desktops (RDP profiles of their own, not through an SSH host) other than the profile `except`
+     * use, as Tabby opens them (their group's defaults included): the keys of their saved passwords (see
+     * credentialKey: each user's, for each gateway), their addresses, and each one's address, user (see signsInAs) and
+     * gateway (see gatewayScope). A profile in a shape nothing reads is left out.
+     */
+    private directInUse (except?: string): { keys: Set<string>, ids: Set<string>, profiles: { id: string, who: string, scope: string }[] } {
+        const keys = new Set<string>()
+        const ids = new Set<string>()
+        const found: { id: string, who: string, scope: string }[] = []
+        const profiles = this.config.store.profiles
+        for (const p of Array.isArray(profiles) ? profiles : []) {
+            if (p?.type !== RDP_PROFILE_TYPE || except !== undefined && p.id === except) {
+                continue
+            }
+            let options = p.options
+            try {
+                options = this.profiles.getConfigProxyForProfile(p).options
+            } catch { }
+            try {
+                const spec = options?.host && !configText(options.via) ? specOf({ ...options, wake: undefined }) : null
+                if (spec) {
+                    const who = signsInAs(spec)
+                    const scope = gatewayScope(spec.gateway)
+                    ids.add(spec.id)
+                    keys.add(`${DIRECT_KEY}#${spec.id}${userScope(who)}${scope}`)
+                    found.push({ id: spec.id, who, scope })
+                }
+            } catch { }
+        }
+        return { keys, ids, profiles: found }
     }
 
     /**
@@ -1800,9 +1886,10 @@ export class RemoteDesktopService {
             }
             this.lastUsed.set(target.key, spec.id)
             const key = sessionKey(target, spec)
-            // One desktop per key: another client would only get an extra, empty monitor (GNOME), or take
+            const { user, who } = this.signsInAs(target, spec)
+            // One desktop per key and user: another client would only get an extra, empty monitor (GNOME), or take
             // over the session (Windows).
-            const existing = this.paneWithDesktopFor(key)
+            const existing = this.paneWithDesktopFor(key, who)
             if (existing) {
                 if (existing.parent instanceof SplitTabComponent && existing.parent === pane.parent) {
                     // Next to it, moving the focus there would go unnoticed.
@@ -1818,7 +1905,7 @@ export class RemoteDesktopService {
                 this.selectPane(existing)
                 return this.showDesktop(existing)
             }
-            const created = new DesktopSession(pane.element.nativeElement, key, spec)
+            const created = new DesktopSession(pane.element.nativeElement, key, spec, user, who)
             created.onHelp = message => this.help.explain(message)
             // The remote it is opened on, from the start: reopening one whose connection ended before it got as far as
             // a sign-in (cancelled, or a setup that failed) goes there again, not to the tab's own host.
@@ -2172,12 +2259,29 @@ export class RemoteDesktopService {
         if (!target || this.has(pane)) {
             return false
         }
-        return !!this.paneWithDesktopFor(sessionKey(target, spec ?? this.defaultDesktop(target)))
+        const desktop = spec ?? this.defaultDesktop(target)
+        return !!this.paneWithDesktopFor(sessionKey(target, desktop), this.signsInAs(target, desktop).who)
     }
 
-    private paneWithDesktopFor (key: string): DesktopPane | null {
+    /**
+     * Who a desktop opened from `target` signs in as, where that tells desktops at one address apart (see
+     * DesktopSession's `user` and `who`): a direct one's own user (see signsInAs), and its saved account's sign-in name,
+     * if it has one, in any case for Windows, whose user names and domains are (`Alice` is alice, and signing in as
+     * her takes her session over). Nobody for one behind an SSH host, which is the only desktop at its address there
+     * (its form refuses a second, see addressTaken).
+     */
+    private signsInAs (target: Pick<RemoteTarget, 'key'>, spec: DesktopSpec): { user: string, who: string } {
+        if (target.key !== DIRECT_KEY) {
+            return { user: '', who: '' }
+        }
+        const user = signsInAs(spec)
+        const account = spec.account ? this.accounts().find(a => a.id === spec.account) : undefined
+        return { user, who: whoOf(spec, account ? signInName(account) : user) }
+    }
+
+    private paneWithDesktopFor (key: string, who = ''): DesktopPane | null {
         for (const [pane, session] of this.sessions) {
-            if (session.key === key && session.state !== 'ended') {
+            if (session.key === key && session.who === who && session.state !== 'ended') {
                 return pane
             }
         }
@@ -3146,6 +3250,24 @@ export class RemoteDesktopService {
         const again = this.askAgain.delete(pane)
         // A desktop whose account is gone asks, rather than falling back to a login of its own saved earlier.
         let saved = retryError || again || spec.account && !account ? null : await loadCredentials(account ? accountKey(account.id) : session.credentialKey)
+        // Saved before 0.5.6, under the address alone, by whichever profile for it signed in first: this desktop's
+        // once it is for this desktop's user (another profile's is left for that one), and from now on kept as such.
+        if (saved && !account && session.user && !isLoginOf(saved.username, session.user)) {
+            // Kept for this desktop's user by a version that saved another login there: not this desktop's.
+            session.log.push(`sign-in: the saved password is for ${saved.username}, not ${session.user}; asking`)
+            saved = null
+        }
+        // A password saved before 0.5.6 named its user without a domain where the profile gave the domain on its own: one
+        // another profile at the address could be for too (alice, of another domain) stays where it is, and this asks.
+        const former = session.formerCredentialKey
+        if (!saved && !retryError && !again && !spec.account && former) {
+            const others = this.directInUse().profiles.filter(p => p.id === spec.id && p.scope === gatewayScope(spec.gateway) && p.who !== session.user)
+            saved = await adoptCredentials(former, session.credentialKey,
+                found => isLoginOf(found.username, session.user) && !others.some(p => isLoginOf(found.username, p.who)))
+            if (saved) {
+                session.log.push(`sign-in: the password saved for this address as ${saved.username}, now kept for that user`)
+            }
+        }
         if (saved && account && saved.username !== signInName(account)) {
             // Kept for an earlier user name of the account (its change didn't reach the store): not this one's.
             session.log.push(`sign-in: the account's saved password is for ${saved.username}, not ${signInName(account)}; asking`)
@@ -3177,9 +3299,16 @@ export class RemoteDesktopService {
             setTimeout(() => session.visible && this.showsInFront(session) && session.focusDesktop())
         }
         const entered = await asked
+        // Signed in as another user than the desktop names: kept for that user, not as this desktop's own, and that
+        // user's desktop from now on (see paneWithDesktopFor).
+        const as = entered && !account && session.user ? signsInAs({ username: entered.username, domain: spec.domain }) : ''
+        if (as && as !== session.user) {
+            session.who = whoOf(spec, as)
+        }
         return entered && {
             host: spec.host, port: spec.port, credentials: entered, remember: entered.remember, domain: account ? account.domain ?? '' : undefined,
             saveKey: account && accountKey(account.id), saveLabel: account && `saved account ${account.name}`, saveFor: account && signInName(account),
+            ...as && as !== session.user ? { saveUser: as } : {},
             hyperv, mark, accountRevision,
         }
     }
@@ -4094,12 +4223,12 @@ export class RemoteDesktopService {
                 saveCredentialsIf(key, credentials, () => this.accountCurrent(key, endpoint.saveFor, endpoint.accountRevision), endpoint.saveLabel).then(
                     saved => session.log.push(saved ? `sign-in: saved as the account's password in ${storeName()}` : 'sign-in: not saved: the account changed meanwhile'),
                     e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
-            } else if (endpoint.remember && endpoint.mark !== undefined && forgottenSince(session.credentialKey, endpoint.mark)) {
+            } else if (endpoint.remember && endpoint.mark !== undefined && forgottenSince(endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey, endpoint.mark)) {
                 // Edited (its user name, gateway or address) or removed while the server delayed the sign-in: what was
                 // forgotten then stays forgotten, and the desktop asks the next time.
                 session.log.push('sign-in: not saved: the desktop was changed or removed meanwhile')
             } else if (endpoint.remember) {
-                const key = endpoint.saveKey ?? session.credentialKey
+                const key = endpoint.saveKey ?? (endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey)
                 const writing = forgetMark()
                 saveCredentials(key, credentials, endpoint.saveLabel).then(
                     () => {
@@ -4146,6 +4275,11 @@ export class RemoteDesktopService {
             return { connected: false, error: e?.message ?? String(e) }
         }
     }
+}
+
+/** A desktop's `who` (see DesktopSession) as compared: in any case for Windows, whose user names and domains are. */
+function whoOf (spec: DesktopSpec, who: string): string {
+    return spec.kind === 'windows' ? who.toLowerCase() : who
 }
 
 let styleInstalled = false

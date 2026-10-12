@@ -407,7 +407,8 @@ test('profile Save rejects invalid drafts before committing either connection fi
         assert.equal(root.querySelector('[data-for=address]')!.textContent, '')
         assert.equal(root.querySelector('[data-for=gateway]')!.textContent, '')
         assert.equal(edits.length, 1)
-        assert.deepEqual(edits[0], ['old.example:3389', '2001:db8::1:3390', false, true, { from: 'old-gateway.example', to: 'new-gateway.example:444' }])
+        assert.deepEqual(edits[0], ['old.example:3389', '2001:db8::1:3390', false, true, { from: 'old-gateway.example', to: 'new-gateway.example:444' },
+            { from: '', to: '', except: undefined }])
     }
 })
 
