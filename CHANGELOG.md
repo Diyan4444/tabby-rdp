@@ -2,6 +2,15 @@
 
 ## 0.5.7
 
+**Fixed**
+- **Windows Server hosts with Remote Desktop Services licensing connect again**
+  ([#106](https://github.com/meanaverage/tabby-rdp/issues/106)). Such a host runs the whole licensing exchange, and
+  sends network auto-detection requests in the middle of it, and again before it sends its capabilities. The remote
+  desktop answered them only in the connection phase meant for them, and took the ones that came later for the
+  message it was waiting for, so the connection failed with "invalid security header flags" during
+  `SERVER_NEW_LICENSE`. They are answered whenever they come now, as mstsc does. Hosts without licensing, which end
+  the exchange with one message, were not affected.
+
 **Changed**
 - **The published package says how its tests run again.** Its `package.json` keeps its `test` script, the one script it
   publishes, as 0.5.3 and earlier did with all of them; 0.5.5 and 0.5.6 published none, and Socket took the package for
