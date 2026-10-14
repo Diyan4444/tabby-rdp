@@ -556,6 +556,7 @@ are local to this computer:
 | Session backend (`sessionBackend`) | `native` | For `desk`: `native` (trd-pty) or `tmux`. Config file only. |
 | Find virtual machines on SSH hosts (`discoverVMs`) | On | Lists a host's libvirt VMs with a desktop in its menu ([VMs on a host](#vms-on-a-host)). |
 | Shut down VMs it started (`shutDownIdle`) | Never | 5, 15 or 60: minutes without a desktop open after which a VM the plugin started is shut down again ([VMs on a host](#vms-on-a-host)). |
+| Write a log file (`diagnosticLog`) | Off | `debug` or `trace`: each desktop opened from then on writes its connection log, with IronRDP's log at that level, to a file of its own in the log folder (`tabby-rdp-logs` next to Tabby's config), readable by you alone, for a bug report. Keys, passwords, licenses, tokens and other byte strings are left out of the file. [Questions and problems](#questions-and-problems) |
 | Check for updates automatically (Updates tab) | On, Stable | Checks npm once a day; choose Stable or Preview, check manually, and install a compatible version explicitly. [Versions and recovery](#versions-and-recovery). |
 | Desktop name overlay (`osd`) | When it helps | `show` (`auto`, `always`, `off`), `font`, `size`, `position`, `color` (empty: white; else a color name, `#hex`, or a color function of numbers such as `rgb()`) and `seconds`; the settings page previews it, at a resolution you pick. |
 
@@ -697,7 +698,11 @@ npm run build:ironrdp        # rebuild vendor/ from IronRDP and ironrdp/patches:
 
 Questions ("how do I…", "is this expected?") go to [Discussions › Q&A](https://github.com/meanaverage/tabby-rdp/discussions/categories/q-a);
 bugs and feature requests to the [issues](https://github.com/meanaverage/tabby-rdp/issues). A bug report is most useful
-with the connection log: **Settings › Remote Desktop › Desktops › Open desktops › Copy log**.
+with the connection log: **Settings › Remote Desktop › Desktops › Open desktops › Copy log**. For a connection that fails
+before the desktop opens, turn on **Settings › Diagnostics › Write a log file** (Debug) and open the desktop again: it
+writes a file of its own, with IronRDP's log, in the log folder the setting links to (`tabby-rdp-logs` next to Tabby's
+config). Keys, passwords, licenses, tokens and other byte strings are left out of the file; names and addresses stay, so
+look through it before you attach it.
 Start with the [troubleshooting guide](TROUBLESHOOTING.md) for common connection and installation problems.
 
 ## License

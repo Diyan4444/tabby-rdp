@@ -86,6 +86,9 @@ export class RemoteDesktopConfig extends ConfigProvider {
             checkUpdates: true,
             // Minutes without a desktop open after which a VM the plugin started is shut down again: 0 (never), 5, 15, 60.
             shutDownIdle: 0,
+            // Write each desktop's connection log to a file for a bug report, with IronRDP's log at that level: 'off' |
+            // 'debug' | 'trace' (see diagnosticLog.ts).
+            diagnosticLog: 'off',
             // The newer version a note was shown for (once per version).
             updateNoted: '',
             // The tip shown the first time a desktop connects (see help.ts) has been shown.

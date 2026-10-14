@@ -2,6 +2,14 @@
 
 ## 0.5.7
 
+**Added**
+- **A log file for bug reports** (Settings › Remote Desktop › Settings › Diagnostics). With **Write a log file** on, each
+  desktop opened from then on writes its connection log, with IronRDP's own log at the chosen level (Debug, or Trace),
+  to a file of its own, readable by you alone, in a `tabby-rdp-logs` folder next to Tabby's config; the setting links
+  to the folder. What goes in is washed first: IronRDP's licensing exchange no longer prints its keys, randoms,
+  encrypted hardware id, platform challenge or the license itself at any level, only their lengths (IronRDP patch 56),
+  and the plugin leaves out anything else shaped like a key, a token or a string of bytes. Names and addresses stay.
+
 **Fixed**
 - **Windows Server hosts with Remote Desktop Services licensing connect again**
   ([#106](https://github.com/meanaverage/tabby-rdp/issues/106)). Such a host runs the whole licensing exchange, and

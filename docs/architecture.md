@@ -705,7 +705,8 @@ remote setup; cleanup is documented in [the troubleshooting guide](../TROUBLESHO
   address it couldn't connect to) before they reach the desktop's status and its log, which **Copy log** hands out.
   IronRDP itself prints the address only at its debug and trace levels (`localStorage.trdLogLevel`), to the window's
   console, which Tabby doesn't write to its log file; its debug level printed the token before too, in the request it
-  logs.
+  logs. The diagnostic log file (`diagnosticLog` setting, `src/diagnosticLog.ts`) takes IronRDP's lines at those levels
+  instead of the console, and takes the token out of each, with anything else shaped like a key or a blob of bytes.
 - **What hosts and servers send is bounded**, in size and in the work it takes, since all of it is handled on the
   thread that runs Tabby's window:
   - A command's output (setup, VM scans, `desk`; through Tabby's SSH connection or the system `ssh`) is read up to

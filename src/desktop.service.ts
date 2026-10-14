@@ -38,6 +38,8 @@ import { formatGateway, Gateway, GatewaySignInError, openThroughGateway, parseGa
 import { CertificateDetails, describeCertificate, vouched, whyNotValid } from './authorities'
 import { scanVMs, vmSpec } from './vms'
 import { SessionLog } from './sessionLog'
+import { installedVersion } from './updates'
+import { DiagnosticLevel, diagnosticLevel, DiagnosticLog, logDirectory } from './diagnosticLog'
 import { terminalInputs } from './hostCompat'
 import { UNSHOWABLE, withoutWordJoiners } from './unshowable'
 
@@ -262,6 +264,11 @@ export interface DesktopSettings {
     checkUpdates: boolean
     /** Minutes without a desktop open after which a VM the plugin started is shut down again; 0: never (see wake.ts). */
     shutDownIdle: number
+    /**
+     * Write each desktop's connection log to a file, with IronRDP's log at that level, for a bug report (applies to
+     * desktops opened from then on; see diagnosticLog.ts).
+     */
+    diagnosticLog: DiagnosticLevel
 }
 
 interface RemoteSize {
@@ -332,6 +339,8 @@ export class DesktopSession {
     ui: any = null
     /** The connection's log (Copy log): its first lines and its latest, however many the remote brings about. */
     readonly log = new SessionLog()
+    /** The log file written for a bug report, while the diagnostic log setting is on (see diagnosticLog.ts). */
+    diagnostics: DiagnosticLog | null = null
     /** What the remote display was last set to. */
     remoteSize: RemoteSize | null = null
     remote: RemoteTarget | null = null
@@ -706,6 +715,7 @@ export class DesktopSession {
         this.endConnection(false)
         this.proxy?.close()
         this.overlay.remove()
+        void this.diagnostics?.close()
     }
 }
 
@@ -1907,6 +1917,7 @@ export class RemoteDesktopService {
             }
             const created = new DesktopSession(pane.element.nativeElement, key, spec, user, who)
             created.onHelp = message => this.help.explain(message)
+            this.startDiagnostics(created)
             // The remote it is opened on, from the start: reopening one whose connection ended before it got as far as
             // a sign-in (cancelled, or a setup that failed) goes there again, not to the tab's own host.
             created.remote = target
@@ -2481,6 +2492,7 @@ export class RemoteDesktopService {
             discoverVMs: store.discoverVMs !== false,
             checkUpdates: store.checkUpdates !== false,
             shutDownIdle: [5, 15, 60].includes(configNumber(store.shutDownIdle)) ? configNumber(store.shutDownIdle) : 0,
+            diagnosticLog: diagnosticLevel(store.diagnosticLog),
         }
     }
 
@@ -3175,7 +3187,49 @@ export class RemoteDesktopService {
         return this.sessions.get(pane)?.log ?? []
     }
 
-    private loadIronRDP (): Promise<any> {
+    /**
+     * The diagnostic log file of a desktop just opened, while the setting is on: the lines of its log (status, errors)
+     * as they come, and IronRDP's log at the chosen level (see loadIronRDP), stamped and washed (see diagnosticLog.ts).
+     */
+    private startDiagnostics (session: DesktopSession): void {
+        const level = this.settings().diagnosticLog
+        if (level === 'off') {
+            return
+        }
+        const versions = process.versions as Record<string, string | undefined>
+        const header = [
+            `tabby-rdp ${installedVersion()} on ${process.platform} ${os.release()} (${process.arch}); Electron ${versions.electron ?? 'unknown'}, Node ${versions.node ?? 'unknown'}`,
+        ]
+        const diagnostics = new DiagnosticLog(this.logFolder(), session.spec.name, level, () => session.proxy?.token, header)
+        session.diagnostics = diagnostics
+        // The status lines carry a stamp of their own already.
+        session.log.tee = line => diagnostics.line('plugin', line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, ''))
+        session.log.push(`diagnostics: writing ${diagnostics.file}`)
+    }
+
+    /** Where the diagnostic log files go (see diagnosticLog.ts). */
+    logFolder (): string {
+        return logDirectory(this.platform.getConfigPath())
+    }
+
+    /** Opens the diagnostic log folder in the file manager, making it first. */
+    showLogFolder (): void {
+        const dir = this.logFolder()
+        try {
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+        } catch (error: any) {
+            this.notifications.error(`The log folder could not be made: ${error?.message ?? error}`)
+            return
+        }
+        this.platform.openPath(dir)
+    }
+
+    /** IronRDP for a session: at the diagnostic log's level, into its file, while one is written; else the console. */
+    private loadIronRDP (session: DesktopSession): Promise<any> {
+        const diagnostics = session.diagnostics
+        if (diagnostics) {
+            return this.ironrdp.create(diagnostics.level.toUpperCase(), line => diagnostics.line('ironrdp', line))
+        }
         let level = 'INFO'
         try { level = localStorage.getItem('trdLogLevel') || level } catch { }
         return this.ironrdp.create(level)
@@ -3337,7 +3391,7 @@ export class RemoteDesktopService {
             }
             // Signing in to a Windows account can take a few tries; a GNOME desktop the plugin set up can't fail that way.
             for (let attempt = 0; ; attempt++) {
-                const [asked, rdp]: [Endpoint | null | 'stopped', any] = await Promise.all([endpoint ?? this.endpointFor(pane, target, spec, session, automatic, retryError), this.loadIronRDP()])
+                const [asked, rdp]: [Endpoint | null | 'stopped', any] = await Promise.all([endpoint ?? this.endpointFor(pane, target, spec, session, automatic, retryError), this.loadIronRDP(session)])
                 if (!alive()) {
                     return
                 }

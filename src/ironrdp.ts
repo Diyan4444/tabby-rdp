@@ -1,7 +1,7 @@
 /** The shared, immutable part of IronRDP: its compiled code and its glue factory, never an instance or its memory. */
 export interface IronRDPSource {
     module: WebAssembly.Module
-    createBackend: (module: WebAssembly.Module, level: string) => Promise<any>
+    createBackend: (module: WebAssembly.Module, level: string, logSink?: (line: string) => void) => Promise<any>
 }
 
 /** Loads and compiles once; every connection attempt gets fresh glue, classes, memory and allocator. */
@@ -10,7 +10,8 @@ export class IronRDPLoader {
 
     constructor (private load: () => Promise<IronRDPSource>) { }
 
-    async create (level: string): Promise<any> {
+    /** `logSink`: given each of the instance's log lines in place of the console (the diagnostic log file). */
+    async create (level: string, logSink?: (line: string) => void): Promise<any> {
         const pending = this.source ??= this.load()
         let source: IronRDPSource
         try {
@@ -22,6 +23,6 @@ export class IronRDPLoader {
             throw error
         }
         // A failed/trapped instance does not invalidate shared compiled code or another desktop's instance.
-        return source.createBackend(source.module, level)
+        return source.createBackend(source.module, level, logSink)
     }
 }

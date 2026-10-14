@@ -28,6 +28,8 @@ export class SessionLog extends Array<string> {
 
     /** How many lines were left out so far. */
     private dropped = 0
+    /** Given each line as it is pushed, whole (the diagnostic log file, while one is written). */
+    tee: ((line: string) => void) | null = null
 
     // What is made from the log (filter, slice, map) is a plain array.
     static override get [Symbol.species] (): ArrayConstructor {
@@ -37,6 +39,9 @@ export class SessionLog extends Array<string> {
     override push (...lines: string[]): number {
         const { FIRST, LATEST, MAX_LINE } = SessionLog
         super.push(...lines.map(line => typeof line === 'string' ? copied(line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)}…` : line) : line))
+        if (this.tee) {
+            lines.forEach(line => this.tee!(String(line)))
+        }
         // Once the latest lines are twice as many as are kept, the older half of them goes in one step: each line then
         // costs the same however many come.
         const said = this.dropped ? 1 : 0
