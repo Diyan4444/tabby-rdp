@@ -112,7 +112,9 @@ await suite('rds', async t => {
     has('a new or upgraded license, received', /Received.*(ServerUpgradeLicense|NewLicense)|License verified/)
     // Whether a host sends auto-detection requests in the middle of the exchange is the host's choice (the one in
     // #106 did, between the platform challenge and the license); what matters is that none ended the connection.
-    const answered = lines.filter(l => /Answering an Auto-Detect Request received after the connect-time auto-detection phase/.test(l)).length
+    // Answered requests are logged alike in every phase; those after the exchange began are the late ones.
+    const began = lines.findIndex(l => /Licensing Exchange/.test(l))
+    const answered = began < 0 ? 0 : lines.slice(began).filter(l => /Answering (a connect-time |an )Auto-Detect Request/.test(l)).length
     console.log(`NOTE  auto-detection requests answered during the exchange: ${answered}`)
     check('no message channel PDU during the exchange was taken for a licensing PDU', !lines.some(l => /Ignoring a message channel PDU|invalid security header flags/i.test(l)), exchange.slice(0, 40))
     has('the connection finalized', /Connection Finalization|connected: /)
