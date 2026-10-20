@@ -84,7 +84,7 @@ class d {
    * @param {Uint8Array} binary
    */
   addBinary(A, I) {
-    const g = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), B = R, E = bA(I, C.__wbindgen_malloc), D = R;
+    const g = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), B = R, E = OA(I, C.__wbindgen_malloc), D = R;
     C.clipboarddata_addBinary(this.__wbg_ptr, g, B, E, D);
   }
   /**
@@ -323,9 +323,9 @@ class _ {
   }
 }
 Symbol.dispose && (_.prototype[Symbol.dispose] = _.prototype.free);
-class z {
+class r {
   static __wrap(A) {
-    const I = Object.create(z.prototype);
+    const I = Object.create(r.prototype);
     return I.__wbg_ptr = A, kA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -359,13 +359,13 @@ class z {
    */
   rdcleanpathDetails() {
     const A = C.ironerror_rdcleanpathDetails(this.__wbg_ptr);
-    return A === 0 ? void 0 : r.__wrap(A);
+    return A === 0 ? void 0 : P.__wrap(A);
   }
 }
-Symbol.dispose && (z.prototype[Symbol.dispose] = z.prototype.free);
-class r {
+Symbol.dispose && (r.prototype[Symbol.dispose] = r.prototype.free);
+class P {
   static __wrap(A) {
-    const I = Object.create(r.prototype);
+    const I = Object.create(P.prototype);
     return I.__wbg_ptr = A, RA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -422,7 +422,7 @@ class r {
     return A === 16777215 ? void 0 : A;
   }
 }
-Symbol.dispose && (r.prototype[Symbol.dispose] = r.prototype.free);
+Symbol.dispose && (P.prototype[Symbol.dispose] = P.prototype.free);
 class iA {
   __destroy_into_raw() {
     const A = this.__wbg_ptr;
@@ -490,9 +490,9 @@ class iA {
   }
 }
 Symbol.dispose && (iA.prototype[Symbol.dispose] = iA.prototype.free);
-class P {
+class z {
   static __wrap(A) {
-    const I = Object.create(P.prototype);
+    const I = Object.create(z.prototype);
     return I.__wbg_ptr = A, yA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -583,10 +583,10 @@ class P {
       throw Z(E[0]);
   }
 }
-Symbol.dispose && (P.prototype[Symbol.dispose] = P.prototype.free);
-class M {
+Symbol.dispose && (z.prototype[Symbol.dispose] = z.prototype.free);
+class Y {
   static __wrap(A) {
-    const I = Object.create(M.prototype);
+    const I = Object.create(Y.prototype);
     return I.__wbg_ptr = A, IA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
@@ -603,7 +603,7 @@ class M {
    */
   authToken(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_authToken(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
   /**
    * @param {Function} callback
@@ -611,7 +611,7 @@ class M {
    */
   canvasResizedCallback(A) {
     const I = C.sessionbuilder_canvasResizedCallback(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @returns {Promise<Session>}
@@ -631,7 +631,7 @@ class M {
     t(A, l);
     var I = A.__destroy_into_raw();
     const g = C.sessionbuilder_desktopSize(this.__wbg_ptr, I);
-    return M.__wrap(g);
+    return Y.__wrap(g);
   }
   /**
    * @param {string} destination
@@ -639,7 +639,7 @@ class M {
    */
   destination(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_destination(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
   /**
    * @param {Extension} ext
@@ -649,7 +649,7 @@ class M {
     t(A, k);
     var I = A.__destroy_into_raw();
     const g = C.sessionbuilder_extension(this.__wbg_ptr, I);
-    return M.__wrap(g);
+    return Y.__wrap(g);
   }
   /**
    * @param {Function} callback
@@ -657,7 +657,7 @@ class M {
    */
   forceClipboardUpdateCallback(A) {
     const I = C.sessionbuilder_forceClipboardUpdateCallback(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @param {string} password
@@ -665,7 +665,7 @@ class M {
    */
   password(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_password(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
   /**
    * @param {string} address
@@ -673,7 +673,7 @@ class M {
    */
   proxyAddress(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_proxyAddress(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
   /**
    * @param {Function} callback
@@ -681,7 +681,7 @@ class M {
    */
   remoteClipboardChangedCallback(A) {
     const I = C.sessionbuilder_remoteClipboardChangedCallback(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @param {HTMLCanvasElement} canvas
@@ -689,7 +689,7 @@ class M {
    */
   renderCanvas(A) {
     const I = C.sessionbuilder_renderCanvas(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @param {string} server_domain
@@ -697,7 +697,7 @@ class M {
    */
   serverDomain(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_serverDomain(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
   /**
    * @param {Function} callback
@@ -705,7 +705,7 @@ class M {
    */
   setCursorStyleCallback(A) {
     const I = C.sessionbuilder_setCursorStyleCallback(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @param {any} context
@@ -713,7 +713,7 @@ class M {
    */
   setCursorStyleCallbackContext(A) {
     const I = C.sessionbuilder_setCursorStyleCallbackContext(this.__wbg_ptr, A);
-    return M.__wrap(I);
+    return Y.__wrap(I);
   }
   /**
    * @param {string} username
@@ -721,18 +721,18 @@ class M {
    */
   username(A) {
     const I = F(A, C.__wbindgen_malloc, C.__wbindgen_realloc), g = R, B = C.sessionbuilder_username(this.__wbg_ptr, I, g);
-    return M.__wrap(B);
+    return Y.__wrap(B);
   }
 }
-Symbol.dispose && (M.prototype[Symbol.dispose] = M.prototype.free);
+Symbol.dispose && (Y.prototype[Symbol.dispose] = Y.prototype.free);
 class e {
   static __wrap(A) {
     const I = Object.create(e.prototype);
-    return I.__wbg_ptr = A, YA.register(I, I.__wbg_ptr, I), I;
+    return I.__wbg_ptr = A, MA.register(I, I.__wbg_ptr, I), I;
   }
   __destroy_into_raw() {
     const A = this.__wbg_ptr;
-    return this.__wbg_ptr = 0, YA.unregister(this), A;
+    return this.__wbg_ptr = 0, MA.unregister(this), A;
   }
   free() {
     const A = this.__destroy_into_raw();
@@ -767,7 +767,7 @@ function SA() {
       },
       __wbg___wbindgen_debug_string_c25d447a39f5578f: function(A, I) {
         const g = QA(I), B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg___wbindgen_is_function_1ff95bcc5517c252: function(A) {
         return typeof A == "function";
@@ -787,12 +787,12 @@ function SA() {
       },
       __wbg___wbindgen_number_get_394265ed1e1b84ee: function(A, I) {
         const g = I, B = typeof g == "number" ? g : void 0;
-        Y().setFloat64(A + 8, a(B) ? 0 : B, true), Y().setInt32(A + 0, !a(B), true);
+        M().setFloat64(A + 8, a(B) ? 0 : B, true), M().setInt32(A + 0, !a(B), true);
       },
       __wbg___wbindgen_string_get_b0ca35b86a603356: function(A, I) {
         const g = I, B = typeof g == "string" ? g : void 0;
         var E = a(B) ? 0 : F(B, C.__wbindgen_malloc, C.__wbindgen_realloc), D = R;
-        Y().setInt32(A + 4, D, true), Y().setInt32(A + 0, E, true);
+        M().setInt32(A + 4, D, true), M().setInt32(A + 0, E, true);
       },
       __wbg___wbindgen_throw_344f42d3211c4765: function(A, I) {
         throw new Error(y(A, I));
@@ -896,17 +896,17 @@ function SA() {
       },
       __wbg_getRandomValues_3f44b700395062e5: function() {
         return o(function(A, I) {
-          globalThis.crypto.getRandomValues(b(A, I));
+          globalThis.crypto.getRandomValues(O(A, I));
         }, arguments);
       },
       __wbg_getRandomValues_bf16787eede473f5: function() {
         return o(function(A, I) {
-          globalThis.crypto.getRandomValues(b(A, I));
+          globalThis.crypto.getRandomValues(O(A, I));
         }, arguments);
       },
       __wbg_getRandomValues_cc7f052a444bb2ce: function() {
         return o(function(A, I) {
-          globalThis.crypto.getRandomValues(b(A, I));
+          globalThis.crypto.getRandomValues(O(A, I));
         }, arguments);
       },
       __wbg_getTime_d6f070c088c9b5ed: function(A) {
@@ -993,7 +993,7 @@ function SA() {
         return I;
       },
       __wbg_ironerror_new: function(A) {
-        return z.__wrap(A);
+        return r.__wrap(A);
       },
       __wbg_isArray_0677c962b281d01a: function(A) {
         return Array.isArray(A);
@@ -1052,7 +1052,7 @@ function SA() {
         return new Uint32Array(WA(A, I));
       },
       __wbg_new_from_slice_77cdfb7977362f3c: function(A, I) {
-        return new Uint8Array(b(A, I));
+        return new Uint8Array(O(A, I));
       },
       __wbg_new_typed_1824d93f294193e5: function(A, I) {
         try {
@@ -1118,7 +1118,7 @@ function SA() {
         return A.performance;
       },
       __wbg_prototypesetcall_4770620bbe4688a0: function(A, I, g) {
-        Uint8Array.prototype.set.call(b(A, I), g);
+        Uint8Array.prototype.set.call(O(A, I), g);
       },
       __wbg_push_d2ae3af0c1217ae6: function(A, I) {
         return A.push(I);
@@ -1139,7 +1139,7 @@ function SA() {
       },
       __wbg_reason_5dc8e429d537d6a9: function(A, I) {
         const g = I.reason, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg_removeEventListener_a3f23c70077bdcc1: function() {
         return o(function(A, I, g, B) {
@@ -1151,7 +1151,7 @@ function SA() {
       },
       __wbg_search_c905fb82fd20bc6b: function(A, I) {
         const g = I.search, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg_send_1733c45567a373ff: function() {
         return o(function(A, I) {
@@ -1164,7 +1164,7 @@ function SA() {
         }, arguments);
       },
       __wbg_session_new: function(A) {
-        return P.__wrap(A);
+        return z.__wrap(A);
       },
       __wbg_sessionterminationinfo_new: function(A) {
         return e.__wrap(A);
@@ -1221,7 +1221,7 @@ function SA() {
       },
       __wbg_stack_3b0d974bbf31e44f: function(A, I) {
         const g = I.stack, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg_static_accessor_GLOBAL_4ef717fb391d88b7: function() {
         const A = typeof global > "u" ? null : global;
@@ -1241,7 +1241,7 @@ function SA() {
       },
       __wbg_statusText_9f08c32741a99815: function(A, I) {
         const g = I.statusText, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg_status_c45b3b9b3033184a: function(A) {
         return A.status;
@@ -1260,12 +1260,12 @@ function SA() {
       },
       __wbg_url_f6cd241d61f89b82: function(A, I) {
         const g = I.url, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-        Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+        M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
       },
       __wbg_userAgent_0558f0ac642f7771: function() {
         return o(function(A, I) {
           const g = I.userAgent, B = F(g, C.__wbindgen_malloc, C.__wbindgen_realloc), E = R;
-          Y().setInt32(A + 4, E, true), Y().setInt32(A + 0, B, true);
+          M().setInt32(A + 4, E, true), M().setInt32(A + 0, B, true);
         }, arguments);
       },
       __wbg_warn_b1370d804fa3e259: function(A) {
@@ -1359,7 +1359,7 @@ const lA = ["blob", "arraybuffer"], $ = typeof FinalizationRegistry > "u" ? { re
 }, unregister: () => {
 } } : new FinalizationRegistry((Q) => C.__wbg_session_free(Q, 1)), IA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
-} } : new FinalizationRegistry((Q) => C.__wbg_sessionbuilder_free(Q, 1)), YA = typeof FinalizationRegistry > "u" ? { register: () => {
+} } : new FinalizationRegistry((Q) => C.__wbg_sessionbuilder_free(Q, 1)), MA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
 } } : new FinalizationRegistry((Q) => C.__wbg_sessionterminationinfo_free(Q, 1));
 function q(Q) {
@@ -1373,7 +1373,7 @@ function t(Q, A) {
   if (!(Q instanceof A))
     throw new Error(`expected instance of ${A.name}`);
 }
-const MA = typeof FinalizationRegistry > "u" ? { register: () => {
+const YA = typeof FinalizationRegistry > "u" ? { register: () => {
 }, unregister: () => {
 } } : new FinalizationRegistry((Q) => C.__wbindgen_destroy_closure(Q.a, Q.b));
 function QA(Q) {
@@ -1415,7 +1415,7 @@ ${Q.stack}` : g;
 }
 function VA(Q, A) {
   Q = Q >>> 0;
-  const I = Y(), g = [];
+  const I = M(), g = [];
   for (let B = Q; B < Q + 4 * A; B += 4)
     g.push(C.__wbindgen_externrefs.get(I.getUint32(B, true)));
   return C.__externref_drop_slice(Q, A), g;
@@ -1423,14 +1423,14 @@ function VA(Q, A) {
 function WA(Q, A) {
   return Q = Q >>> 0, xA().subarray(Q / 4, Q / 4 + A);
 }
-function b(Q, A) {
+function O(Q, A) {
   return Q = Q >>> 0, x().subarray(Q / 1, Q / 1 + A);
 }
 function tA(Q, A) {
   return Q = Q >>> 0, jA().subarray(Q / 1, Q / 1 + A);
 }
 let p = null;
-function Y() {
+function M() {
   return (p === null || p.buffer.detached === true || p.buffer.detached === void 0 && p.buffer !== C.memory.buffer) && (p = new DataView(C.memory.buffer)), p;
 }
 function y(Q, A) {
@@ -1440,13 +1440,13 @@ let m = null;
 function xA() {
   return (m === null || m.byteLength === 0) && (m = new Uint32Array(C.memory.buffer)), m;
 }
-let f = null;
-function x() {
-  return (f === null || f.byteLength === 0) && (f = new Uint8Array(C.memory.buffer)), f;
-}
 let T = null;
+function x() {
+  return (T === null || T.byteLength === 0) && (T = new Uint8Array(C.memory.buffer)), T;
+}
+let f = null;
 function jA() {
-  return (T === null || T.byteLength === 0) && (T = new Uint8ClampedArray(C.memory.buffer)), T;
+  return (f === null || f.byteLength === 0) && (f = new Uint8ClampedArray(C.memory.buffer)), f;
 }
 function o(Q, A) {
   try {
@@ -1471,10 +1471,10 @@ function s(Q, A, I) {
     }
   };
   return B._wbg_cb_unref = () => {
-    --g.cnt === 0 && (C.__wbindgen_destroy_closure(g.a, g.b), g.a = 0, MA.unregister(g));
-  }, MA.register(B, g, g), B;
+    --g.cnt === 0 && (C.__wbindgen_destroy_closure(g.a, g.b), g.a = 0, YA.unregister(g));
+  }, YA.register(B, g, g), B;
 }
-function bA(Q, A) {
+function OA(Q, A) {
   const I = A(Q.length * 1, 1) >>> 0;
   return x().set(Q, I / 1), R = Q.length, I;
 }
@@ -1504,10 +1504,10 @@ function Z(Q) {
 }
 let u = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
 u.decode();
-const OA = 2146435072;
+const bA = 2146435072;
 let gA = 0;
 function mA(Q, A) {
-  return gA += A, gA >= OA && (u = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true }), u.decode(), gA = A), u.decode(x().subarray(Q, Q + A));
+  return gA += A, gA >= bA && (u = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true }), u.decode(), gA = A), u.decode(x().subarray(Q, Q + A));
 }
 const X = new TextEncoder();
 "encodeInto" in X || (X.encodeInto = function(Q, A) {
@@ -1518,10 +1518,10 @@ const X = new TextEncoder();
   };
 });
 let R = 0, C;
-function fA(Q, A) {
-  return C = __trdWatchExports(Q.exports), p = null, m = null, f = null, T = null, C.__wbindgen_start(), C;
+function TA(Q, A) {
+  return C = __trdWatchExports(Q.exports), p = null, m = null, T = null, f = null, C.__wbindgen_start(), C;
 }
-async function TA(Q, A) {
+async function fA(Q, A) {
   if (typeof Response == "function" && Q instanceof Response) {
     if (typeof WebAssembly.instantiateStreaming == "function")
       try {
@@ -1553,8 +1553,8 @@ async function XA(Q) {
   Q !== void 0 && (Object.getPrototypeOf(Q) === Object.prototype ? { module_or_path: Q } = Q : console.warn("using deprecated parameters for the initialization function; pass a single object instead")), Q === void 0 && (Q = new URL("ironrdp_web_bg.wasm", import.meta.url));
   const A = SA();
   (typeof Q == "string" || typeof Request == "function" && Q instanceof Request || typeof URL == "function" && Q instanceof URL) && (Q = fetch(Q));
-  const { instance: I, module: g } = await TA(await Q, A);
-  return fA(I);
+  const { instance: I, module: g } = await fA(await Q, A);
+  return TA(I);
 }
 const nA = "avc1.640033";
 function cA() {
@@ -1618,7 +1618,7 @@ const _U = class _U {
     __publicField(this, "closed", false);
     if (this.options = A, this.maxDecoders = A.maxDecoders ?? _U.MAX_DECODERS, !Number.isInteger(this.maxDecoders) || this.maxDecoders < 1 || this.maxDecoders > _U.MAX_DECODERS)
       throw new RangeError("maxDecoders must be an integer from 1 to 32");
-    this.stallMs = A.stallMs ?? 3e3, this.now = A.now ?? (() => performance.now()), this.opens = new JA(_U.SESSION_OPENS, this.now());
+    this.stallMs = A.stallMs ?? 3e3, this.now = A.now ?? (() => performance.now()), this.opens = new KA(_U.SESSION_OPENS, this.now());
   }
   decode(A, I) {
     if (this.failed !== null || this.closed) {
@@ -1691,7 +1691,7 @@ const _U = class _U {
       if (this.surfaceOpens.size >= _U.MAX_DECODERS)
         for (const [B, E] of this.surfaceOpens)
           E.rested(I) && this.surfaceOpens.delete(B);
-      g = new JA(_U.SURFACE_OPENS, I), this.surfaceOpens.set(A, g);
+      g = new KA(_U.SURFACE_OPENS, I), this.surfaceOpens.set(A, g);
     }
     if (!g.take(I)) {
       const { inARow: B, perSecond: E } = _U.SURFACE_OPENS;
@@ -1806,10 +1806,10 @@ const _U = class _U {
     const w = i.reduce((N, L) => N + L.width * L.height * 4, 0), G = new Uint8Array(w);
     if (i.length === 0)
       return G;
-    let [S, J, K, V] = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+    let [S, K, J, V] = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
     for (const N of i)
-      S = Math.min(S, N.x), J = Math.min(J, N.y), K = Math.max(K, N.x + N.width), V = Math.max(V, N.y + N.height);
-    const H = { x: S, y: J, width: K - S, height: V - J };
+      S = Math.min(S, N.x), K = Math.min(K, N.y), J = Math.max(J, N.x + N.width), V = Math.max(V, N.y + N.height);
+    const H = { x: S, y: K, width: J - S, height: V - K };
     if (i.length === 1)
       return await this.readBox(A, g, H, G), G;
     if (H.width * H.height * 4 > w * _U.BOX_WASTE) {
@@ -1943,7 +1943,7 @@ __publicField(_U, "MAX_READBACK_PIXELS", 128 * 1024 * 1024);
 /** A bounding box may be this many times what its regions hold before they are read one by one instead. */
 __publicField(_U, "BOX_WASTE", 2);
 let U = _U;
-class JA {
+class KA {
   constructor(A, I) {
     __publicField(this, "allowance");
     __publicField(this, "at");
@@ -1974,7 +1974,7 @@ function v(Q) {
 function BA(Q) {
   return Q instanceof Error || Q instanceof DOMException ? `${Q.name}: ${Q.message}` : String(Q);
 }
-const O = {
+const b = {
   /**
    * Request file size (8-byte unsigned integer).
    * When set: position must be 0, size must be 8.
@@ -1986,13 +1986,13 @@ const O = {
    */
   RANGE: 2
 };
-function zA(Q) {
+function rA(Q) {
   return new k("files_available_callback", Q);
 }
-function rA(Q) {
+function PA(Q) {
   return new k("file_contents_request_callback", Q);
 }
-function PA(Q) {
+function zA(Q) {
   return new k("file_contents_response_callback", Q);
 }
 function eA(Q) {
@@ -2057,7 +2057,7 @@ class gI {
     this.finalized || (this.finalized = true, this.chunks = []);
   }
 }
-class KA {
+class JA {
   constructor() {
     __publicField(this, "name", "blob");
   }
@@ -2212,7 +2212,7 @@ function QI(Q) {
 async function CI(Q = "auto", A) {
   var _a, _b;
   if (Q === "blob")
-    return new KA();
+    return new JA();
   if (typeof ((_b = (_a = globalThis.navigator) == null ? void 0 : _a.storage) == null ? void 0 : _b.getDirectory) == "function")
     try {
       const I = await navigator.storage.getDirectory();
@@ -2222,7 +2222,7 @@ async function CI(Q = "auto", A) {
     } catch (I) {
       console.debug("OPFS unavailable, falling back to blob storage:", I);
     }
-  return new KA();
+  return new JA();
 }
 const _c = class _c {
   constructor(A) {
@@ -2335,11 +2335,11 @@ const _c = class _c {
    */
   getBuilderExtensions() {
     return [
-      zA(
+      rA(
         (A, I) => this.handleFilesAvailable(A, I)
       ),
-      rA((A) => this.handleFileContentsRequest(A)),
-      PA((A) => this.handleFileContentsResponse(A)),
+      PA((A) => this.handleFileContentsRequest(A)),
+      zA((A) => this.handleFileContentsResponse(A)),
       eA((A) => this.handleLock(A)),
       vA((A) => this.handleUnlock(A)),
       uA((A) => this.handleLocksExpired(A)),
@@ -2425,7 +2425,7 @@ const _c = class _c {
       this.activeDownloads.set(g, w);
     });
     try {
-      this.sendRequestFileContents(g, I, O.SIZE, 0, 8, B);
+      this.sendRequestFileContents(g, I, b.SIZE, 0, 8, B);
     } catch (D) {
       this.activeDownloads.delete(g);
       const i = {
@@ -2480,8 +2480,8 @@ const _c = class _c {
   async downloadFilesConcurrent(A, I = {}) {
     const g = I.maxConcurrent ?? 3, B = /* @__PURE__ */ new Map(), E = [], D = A.map((w, G) => async () => {
       try {
-        const { completion: S } = this.downloadFile(w, G), J = await S;
-        B.set(G, J);
+        const { completion: S } = this.downloadFile(w, G), K = await S;
+        B.set(G, K);
       } catch (S) {
         E.push({ index: G, error: S });
       }
@@ -2545,12 +2545,12 @@ const _c = class _c {
         this.sendInitiateFileCopy(B), this.emit("upload-batch-started", g, I);
       } catch (S) {
         this.uploadState = void 0, this.resumeUploadMonitoring();
-        const J = {
+        const K = {
           message: "Failed to initiate file upload",
           direction: "upload",
           cause: S
         };
-        this.emit("error", J), G(new Error(J.message, { cause: S }));
+        this.emit("error", K), G(new Error(K.message, { cause: S }));
         return;
       }
       this.armPasteAckWatchdog();
@@ -2932,7 +2932,7 @@ const _c = class _c {
       return;
     }
     if (E == null) {
-      if ((A.flags & O.SIZE) !== 0) {
+      if ((A.flags & b.SIZE) !== 0) {
         const w = new Uint8Array(8);
         this.sendSubmitFileContents(A.streamId, false, w);
       } else
@@ -2940,55 +2940,55 @@ const _c = class _c {
       return;
     }
     const i = E;
-    if ((A.flags & O.SIZE) !== 0) {
+    if ((A.flags & b.SIZE) !== 0) {
       const w = new Uint8Array(8);
       new DataView(w.buffer).setBigUint64(0, BigInt(i.size), true), this.sendSubmitFileContents(A.streamId, false, w), i.size === 0 && this.markUploadFileComplete(A.index, i, I.transferIds.get(A.index) ?? -1);
-    } else if ((A.flags & O.RANGE) !== 0) {
+    } else if ((A.flags & b.RANGE) !== 0) {
       const w = i.slice(A.position, A.position + A.size), G = new FileReader();
       I.activeReaders.set(A.streamId, G);
       const S = setTimeout(() => {
         var _a;
         G.abort(), this.uploadState !== void 0 && (this.uploadState.activeReaders.delete(A.streamId), this.uploadState.readerTimeouts.delete(A.streamId)), this.sendSubmitFileContents(A.streamId, true, new Uint8Array());
-        const J = {
+        const K = {
           message: `File read timeout after ${_c.FILE_READER_TIMEOUT_MS / 1e3}s`,
           transferId: (_a = this.uploadState) == null ? void 0 : _a.transferIds.get(A.index),
           fileIndex: A.index,
           fileName: D.name,
           direction: "upload"
         };
-        this.emit("error", J), this.uploadState !== void 0 && (this.uploadState.failedFiles.add(A.index), this.uploadState.completedFiles.add(A.index), this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount && this.finishUploadBatch(this.uploadState));
+        this.emit("error", K), this.uploadState !== void 0 && (this.uploadState.failedFiles.add(A.index), this.uploadState.completedFiles.add(A.index), this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount && this.finishUploadBatch(this.uploadState));
       }, _c.FILE_READER_TIMEOUT_MS);
       I.readerTimeouts.set(A.streamId, S), G.onload = () => {
         if (this.uploadState !== void 0) {
           this.uploadState.activeReaders.delete(A.streamId);
-          const K = this.uploadState.readerTimeouts.get(A.streamId);
-          K !== void 0 && (clearTimeout(K), this.uploadState.readerTimeouts.delete(A.streamId));
+          const J = this.uploadState.readerTimeouts.get(A.streamId);
+          J !== void 0 && (clearTimeout(J), this.uploadState.readerTimeouts.delete(A.streamId));
         }
-        const J = new Uint8Array(G.result);
-        if (this.sendSubmitFileContents(A.streamId, false, J), this.uploadState !== void 0) {
-          const K = (this.uploadState.bytesServed.get(A.index) ?? 0) + J.length;
-          this.uploadState.bytesServed.set(A.index, K);
+        const K = new Uint8Array(G.result);
+        if (this.sendSubmitFileContents(A.streamId, false, K), this.uploadState !== void 0) {
+          const J = (this.uploadState.bytesServed.get(A.index) ?? 0) + K.length;
+          this.uploadState.bytesServed.set(A.index, J);
           const V = this.uploadState.transferIds.get(A.index) ?? -1, H = {
             transferId: V,
             fileIndex: A.index,
             fileName: D.name,
-            bytesTransferred: K,
+            bytesTransferred: J,
             totalBytes: i.size,
-            percentage: i.size === 0 ? 100 : Math.min(K / i.size * 100, 100)
+            percentage: i.size === 0 ? 100 : Math.min(J / i.size * 100, 100)
           };
-          this.emit("upload-progress", H), K >= i.size && this.markUploadFileComplete(A.index, i, V);
+          this.emit("upload-progress", H), J >= i.size && this.markUploadFileComplete(A.index, i, V);
         }
       }, G.onerror = () => {
         var _a, _b;
         if (this.uploadState !== void 0) {
           this.uploadState.activeReaders.delete(A.streamId);
-          const K = this.uploadState.readerTimeouts.get(A.streamId);
-          K !== void 0 && (clearTimeout(K), this.uploadState.readerTimeouts.delete(A.streamId));
+          const J = this.uploadState.readerTimeouts.get(A.streamId);
+          J !== void 0 && (clearTimeout(J), this.uploadState.readerTimeouts.delete(A.streamId));
         }
         if (((_a = this.uploadState) == null ? void 0 : _a.failedFiles.has(A.index)) === true)
           return;
         this.sendSubmitFileContents(A.streamId, true, new Uint8Array());
-        const J = {
+        const K = {
           message: "Failed to read file chunk",
           transferId: (_b = this.uploadState) == null ? void 0 : _b.transferIds.get(A.index),
           fileIndex: A.index,
@@ -2996,7 +2996,7 @@ const _c = class _c {
           direction: "upload",
           cause: G.error
         };
-        this.emit("error", J), this.uploadState !== void 0 && (this.uploadState.failedFiles.add(A.index), this.uploadState.completedFiles.add(A.index), this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount && this.finishUploadBatch(this.uploadState));
+        this.emit("error", K), this.uploadState !== void 0 && (this.uploadState.failedFiles.add(A.index), this.uploadState.completedFiles.add(A.index), this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount && this.finishUploadBatch(this.uploadState));
       }, G.readAsArrayBuffer(w);
     }
   }
@@ -3259,7 +3259,7 @@ const _c = class _c {
       this.sendRequestFileContents(
         A.streamId,
         A.fileIndex,
-        O.RANGE,
+        b.RANGE,
         I,
         B,
         A.clipDataId
@@ -3322,7 +3322,7 @@ async function NI(Q, A, I) {
 const kI = {
   DesktopSize: l,
   InputTransaction: _,
-  SessionBuilder: M,
+  SessionBuilder: Y,
   ClipboardData: d,
   DeviceEvent: h
 };
@@ -3338,19 +3338,19 @@ function FI(Q, A = "enhanced") {
 function yI(Q) {
   return new k("display_control", Q);
 }
-function YI(Q) {
+function MI(Q) {
   return new k("graphics_pipeline", Q);
 }
 function UI(Q) {
   return new k("h264_decoder", Q);
 }
-function MI(Q) {
+function YI(Q) {
   return new k("audio_playback", Q);
 }
-function JI(Q) {
+function KI(Q) {
   return new k("drive_redirection", Q);
 }
-function KI(Q) {
+function JI(Q) {
   return new k("audio_input", Q);
 }
 function cI(Q) {
@@ -3376,25 +3376,25 @@ function LI(Q) {
     catch (error) { __trdReleaseBrowserRoots(); throw error; }
     return {
         Backend: kI,
-        BlobStorageBackend: KA,
-        FileContentsFlags: O,
+        BlobStorageBackend: JA,
+        FileContentsFlags: b,
         OpfsStorageBackend: j,
         PrinterDriverName: DI,
         RdpFile: iA,
         RdpFileTransferProvider: c,
         WebCodecsH264Decoder: U,
-        audioInput: KI,
+        audioInput: JI,
         audioInputData: cI,
-        audioPlayback: MI,
+        audioPlayback: YI,
         detectStorageBackend: CI,
         displayControl: yI,
-        driveRedirection: JI,
+        driveRedirection: KI,
         enableCredssp: aI,
         enableServerPointer: HI,
-        fileContentsRequestCallback: rA,
-        fileContentsResponseCallback: PA,
-        filesAvailableCallback: zA,
-        graphicsPipeline: YI,
+        fileContentsRequestCallback: PA,
+        fileContentsResponseCallback: zA,
+        filesAvailableCallback: rA,
+        graphicsPipeline: MI,
         h264Decoder: UI,
         h264Supported: EI,
         init: NI,
