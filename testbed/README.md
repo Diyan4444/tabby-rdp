@@ -139,6 +139,28 @@ If the Windows VM runs on a host with user-mode networking (QEMU's `-netdev user
 loopback instead (`hostfwd=tcp:127.0.0.1:13389-:3389,hostfwd=tcp:127.0.0.1:15985-:5985`), use that host as
 `TRD_TEST_WIN_SSH_HOST`, and `127.0.0.1:13389` / `127.0.0.1:15985` as the addresses.
 
+## Windows Server with Remote Desktop Services licensing (optional)
+
+For the `rds` suite ([test/README.md](../test/README.md)): a host that runs the whole licensing exchange, as a Windows
+Server with the Remote Desktop Session Host role does ([#106](https://github.com/meanaverage/tabby-rdp/issues/106)),
+where a plain Windows machine ends it with one message. Any Windows Server 2022 or 2025 evaluation with the desktop,
+prepared with `setup.ps1`, then [`rds.ps1`](windows-server/rds.ps1) in an elevated PowerShell (it restarts the
+machine once and finishes at startup):
+
+```powershell
+.\rds.ps1   # Remote Desktop Session Host + Remote Desktop Licensing, Per Device, the machine as its own license server
+```
+
+The license server is left unactivated: it still issues temporary Per Device licenses, so the exchange runs in full
+(Server License Request, platform challenge, a new license) without a license bought or installed; the evaluation's 180
+days are the limit. Installed unattended as a VM, the same answer file as the Hyper-V host's serves with `rds.ps1` as
+its third first-logon command in place of `server.ps1`. Then:
+
+```sh
+export TRD_TEST_RDS=<address>:3389 TRD_TEST_RDS_USER=tabbyrdp TRD_TEST_RDS_PASSWORD='<the test account password>'
+npm test -- rds
+```
+
 ## Windows Server: a Hyper-V host and an RD Gateway (optional)
 
 For the two ways to a desktop that need a server: a VM's console through its Hyper-V host (port 2179, as Hyper-V

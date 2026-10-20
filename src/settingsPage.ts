@@ -323,6 +323,22 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
                     </select>
                 </div>
 
+                <h5>Diagnostics</h5>
+                <div class="form-line">
+                    <div class="header">
+                        <div class="title">Write a log file</div>
+                        <div class="description">For a bug report: each desktop opened from now on writes what its connection does, with
+                            IronRDP's log at this level, to a file of its own in <a data-action="logs">the log folder</a>, readable by you
+                            alone. Debug is what a report needs; Trace is far larger.
+                            ${this.info('Keys, passwords, licenses, tokens and other byte strings are left out of the file, shown as their length. Names (yours, the desktop\'s, its address) stay: look through the file before you attach it to a report.')}</div>
+                    </div>
+                    <select class="form-control" data-setting="diagnosticLog">
+                        <option value="off">Off</option>
+                        <option value="debug">Debug</option>
+                        <option value="trace">Trace</option>
+                    </select>
+                </div>
+
             </section>
 
             <section data-topic="osd">
@@ -475,6 +491,7 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
             desktop: () => this.newProfile(),
             folder: () => this.shareFolder(),
             profiles: () => this.showTabbySettings('profiles'),
+            logs: () => this.desktop.showLogFolder(),
             'osd-white': () => this.changeOsd({ color: '' }),
             'osd-try': () => {
                 if (!this.desktop.showOsdEverywhere()) {

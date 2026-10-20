@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.7
+
+**Added**
+- **A log file for bug reports** (Settings › Remote Desktop › Settings › Diagnostics). With **Write a log file** on, each
+  desktop opened from then on writes its connection log, with IronRDP's own log at the chosen level (Debug, or Trace),
+  to a file of its own, readable by you alone, in a `tabby-rdp-logs` folder next to Tabby's config; the setting links
+  to the folder. What goes in is washed first: IronRDP's licensing exchange no longer prints its keys, randoms,
+  encrypted hardware id, platform challenge or the license itself at any level, only their lengths (IronRDP patch 56),
+  and the plugin leaves out anything else shaped like a key, a token or a string of bytes. Names and addresses stay.
+
+**Fixed**
+- **Windows Server hosts with Remote Desktop Services licensing connect again**
+  ([#106](https://github.com/meanaverage/tabby-rdp/issues/106)). Such a host runs the whole licensing exchange, and
+  sends network auto-detection requests in the middle of it, and again before it sends its capabilities. The remote
+  desktop answered them only in the connection phase meant for them, and took the ones that came later for the
+  message it was waiting for, so the connection failed with "invalid security header flags" during
+  `SERVER_NEW_LICENSE`. They are answered whenever they come now, as mstsc does. Hosts without licensing, which end
+  the exchange with one message, were not affected.
+
+**Changed**
+- **The published package says how its tests run again.** Its `package.json` keeps its `test` script, the one script it
+  publishes, as 0.5.3 and earlier did with all of them; 0.5.5 and 0.5.6 published none, and Socket took the package for
+  having no tests ([#101](https://github.com/meanaverage/tabby-rdp/issues/101)). The tests are in the source repository,
+  not the package, and CI runs them for every change and release; npm never runs the script when the plugin is
+  installed. Development dependencies, and build and lifecycle scripts, stay out of the package.
+
 ## 0.5.6
 
 **Fixed**

@@ -138,3 +138,12 @@ test('a load failure can retry, while a failed instance keeps the compiled modul
     assert.deepEqual(await loader.create('ERROR'), { instance: 2 })
     assert.equal(loads, 2)
 })
+
+test('a log sink takes the instance\'s log lines in place of the console, without a time stamp', async () => {
+    const { createBackend } = await loadFactory()
+    const module = await WebAssembly.compile(fs.readFileSync(path.join(root, 'vendor/ironrdp_web_bg.wasm')))
+    const lines: string[] = []
+    await createBackend(module, 'DEBUG', (line: string) => lines.push(line))
+    assert.ok(lines.some(line => /^DEBUG\b.*IronRDP is ready$/.test(line)), JSON.stringify(lines))
+    assert.ok(lines.every(line => typeof line === 'string' && !/^\d{4}-\d\d-\d\dT/.test(line)), JSON.stringify(lines))
+})
