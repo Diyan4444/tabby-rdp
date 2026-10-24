@@ -1,0 +1,40 @@
+# Working on tabby-rdp
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for implementation, validation and release requirements.
+
+## Branches, PRs and test builds
+
+- Start new work from current `origin/main`. Check the base of an existing checkout before preparing its PR; port
+  older work onto current `main` while preserving newer fixes.
+- Use one working branch and one PR into `main` for a cohesive feature and its tests, documentation and packaging.
+  `feature/<name>` and `release/<version>` are both suitable source branch names. The PR destination is `main`;
+  an intermediate version branch is unnecessary unless the maintainer specifically requests one.
+- Prepare the PR and a downloadable package for analysis and hands-on testing. Keep the PR as a draft while that
+  work remains. State which client OS/architecture and remote servers were actually tested, and which remain pending.
+- A requested PR authorizes the branch, commits, push and PR needed to make the change reviewable. It does not by
+  itself authorize merging, tagging or publishing. Continue routine implementation and validation without repeatedly
+  asking the maintainer to reconfirm this procedure.
+
+## Release approval
+
+- The package version, working branch and release tag are different things. Use preview versions such as
+  `0.6.0-rc.1` in `package.json` and the root entries of `package-lock.json`; the eventual tag is `v0.6.0-rc.1`.
+- Version preparation and a PR test build do not constitute a release. Use
+  `npm run pack:release -- --pack-destination <directory>` to create a test package without a tag.
+- Wait for the maintainer to complete further analysis and hands-on testing of the PR build. Do not merge until
+  the required checks pass and the maintainer authorizes merging.
+- **Do not create or push a release tag, stage or approve an npm publication, or publish a GitHub release until the
+  maintainer explicitly authorizes that release after testing.** Passing CI or a version bump is not that approval.
+- Once authorized, release from the merged commit on `main`. Follow CONTRIBUTING.md: preview versions use npm's
+  `beta` dist-tag; a release tag triggers package validation and npm staging; independently verify the staged
+  package before approval and verify npm before publishing the GitHub release draft.
+
+## Documentation
+
+- Keep the README focused on what is supported, installation, first use and links to detailed guides in `docs/`.
+- Describe Windows and supported Linux desktops near the top. Distinguish GNOME's automatic headless setup from
+  xrdp sessions and experimental KRDP support without implying that Linux support requires GNOME.
+- Use short comparison tables for connection routes, OS differences and settings. Put detailed credential,
+  certificate, migration and protocol rules in linked guides, retaining the behavior that matters to users.
+- Keep guides in this repository so they stay versioned and reviewed with the implementation. Update links when
+  moving material. Experimental client capabilities must be distinguished from the default IronRDP client.

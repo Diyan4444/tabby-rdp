@@ -1,0 +1,53 @@
+[← README](../README.md)
+
+# Settings and version management
+
+## Versions and recovery
+
+Open **Settings › Remote Desktop › Updates** to manage the installed version:
+
+- **Stable** is the default. **Preview** also offers beta releases and release candidates when available.
+- Automatic checks look for updates once a day. **Check now** checks manually; installation is always your choice.
+- Choose an exact compatible version, **Return to stable**, or **Restore previous version** after an installation
+  from this page. After running **0.5.3**, version changes require **0.5.3 or newer** to preserve separate
+  gateway sign-in prompts; returning to an older stable release is blocked.
+- **Uninstall plugin…** removes the package. **Manage in Tabby…** opens Tabby's plugin controls to disable it.
+  Saved connections, settings, passwords and remote setup are kept.
+
+The confirmation dialog stays open during installation or removal and shows progress, elapsed time and the verified
+result. After success, close remote desktops and restart Tabby. Until then, Updates shows the running version and
+the installed version waiting for restart. Preferences and version history stay on this computer.
+
+See [troubleshooting and recovery](../TROUBLESHOOTING.md#recovery) if the plugin cannot load or you want to clean up saved
+data or remote helpers.
+
+## Settings
+
+Open **Settings › Remote Desktop** in Tabby, right-click the desktop button in Tabby's header, or open **Settings** in the Remote Desktop section of a terminal's or tab's menu.
+Desktop settings are stored in Tabby's config under `remoteDesktop`; update preferences and installation history
+are local to this computer:
+
+| Setting | Default | Behavior |
+|---|---|---|
+| RDP client (`client`) | IronRDP (`ironrdp`) | Experimental FreeRDP (`freerdp`) needs a matching native helper. Profiles and desktops can override the default; changes apply on reconnect. [Capabilities](../native/README.md). |
+| When the pane is resized (`resize`) | Resize the remote desktop to fit (`live`) | Or reconnect at the new size (`reconnect`), or keep the resolution (`off`). |
+| Keep the resolution: scale to fit or actual size (`zoom`) | Scale to fit (`fit`) | With `resize: off`: `actual` shows one remote pixel per point, with scroll bars when the desktop is larger than the pane (a Retina-sized desktop shows at twice the size). |
+| Sharpness (`sharpness`) | Standard (`standard`) | Retina (`retina`): device pixels, with the remote's scale set to match. |
+| For *this desktop* only (`desktopSharpness`) | As above | In the menu of a tab with a desktop open: Standard or Retina for that desktop, whatever the default. Kept by desktop (`user@host`, `user@host#address` for one behind a host, or `rdp#address` for a remote desktop profile's own tab). |
+| Sound (`sound`) | On | Applies on the next connection. |
+| Video decoding (`h264`) | On | H.264 decoded by Tabby's browser engine (hardware-accelerated where available), for what the remote sends as video; applies on the next connection. |
+| Microphone (`microphone`) | Off | Send your microphone to a remote desktop that asks for it, as one does while an app there records. Turning it on applies on the next connection; turning it off stops it at once, also on a desktop still connecting. A desktop's menu can stop it for that desktop alone, until it is turned back on there or that Tabby window is closed. |
+| Clipboard sharing (`clipboard`) | Both ways (`both`) | Or only from the remote desktop to this computer (`fromRemote`), or off (`off`), for text, pictures and files alike; a desktop's own (`clipboard` in its profile or its `desktops` entry) takes its place ([Clipboard](sharing.md#clipboard)). Applies in full on the next connection; narrowing it also stops the sending at once to open desktops that follow it. |
+| Shared folders (`sharedFolders`) | None | `[{ path, name, readOnly }]`: folders shared as drives with every remote desktop ([Shared folders](sharing.md#shared-folders)). Applies on the next connection. |
+| Show connection status (`connectionStatus`) | Off | The indicator in the desktop's corner; fades when the pointer comes near. |
+| Mac shortcuts (`macShortcuts`) | On | macOS. Off: ⌘ is the Windows key. |
+| Send text as typed (`unicodeKeys`) | Off | Sends the characters the keyboard produces rather than key positions, so dead keys and a layout the remote doesn't have come out right; keys with Ctrl, Alt or ⌘ still go by position. Windows types any character; GNOME only those its own layout has (mutter has no keycode for the others). Input methods (CJK) are not supported yet. |
+| Shortcuts (`hotkeys.remote-desktop-*`) | ⌘⇧G / Ctrl+Shift+G for the switch; the rest unbound | Tabby's hotkeys: the switch between desktop and console, view only, screenshot, Ctrl+Alt+Del, type into all, paste to all, connection status, disconnect. Changed on the settings page (Getting started › Shortcuts) or in Settings › Hotkeys. |
+| Saved accounts (`accounts`) | None | `[{ id, name, username, domain }]`; see [Saved accounts](credentials-and-trust.md#saved-accounts). The passwords are in the Vault (encrypted, part of the config) or the keychain, never in plaintext in the config. |
+| Bring the console along with `desk` (`desk`) | Off | Installs `desk` and a login line on each machine you open a desktop on; applies on the next connection there. The key each machine's `desk` sends is kept as a fingerprint (`deskKeys`), from a machine whose desktop was opened with this on, and forgotten when it is opened with this off. |
+| Session backend (`sessionBackend`) | `native` | For `desk`: `native` (trd-pty) or `tmux`. Config file only. |
+| Find virtual machines on SSH hosts (`discoverVMs`) | On | Lists a host's libvirt VMs with a desktop in its menu ([VMs on a host](connections.md#vms-on-a-host)). |
+| Shut down VMs it started (`shutDownIdle`) | Never | 5, 15 or 60: minutes without a desktop open after which a VM the plugin started is shut down again ([VMs on a host](connections.md#vms-on-a-host)). |
+| Write a log file (`diagnosticLog`) | Off | `debug` or `trace`: each desktop opened from then on writes its connection log, with IronRDP's log at that level, to a file of its own in the log folder (`tabby-rdp-logs` next to Tabby's config), readable by you alone, for a bug report. Keys, passwords, licenses, tokens and other byte strings are left out of the file. [Questions and problems](../README.md#questions-and-problems) |
+| Check for updates automatically (Updates tab) | On, Stable | Checks npm once a day; choose Stable or Preview, check manually, and install a compatible version explicitly. [Versions and recovery](#versions-and-recovery). |
+| Desktop name overlay (`osd`) | When it helps | `show` (`auto`, `always`, `off`), `font`, `size`, `position`, `color` (empty: white; else a color name, `#hex`, or a color function of numbers such as `rgb()`) and `seconds`; the settings page previews it, at a resolution you pick. |
