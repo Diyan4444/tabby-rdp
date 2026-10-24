@@ -520,6 +520,7 @@ export class DesktopSession {
 
     setViewOnly (viewOnly: boolean): void {
         this.viewOnly = viewOnly
+        this.ui?.setReadOnly?.(viewOnly)
         this.overlay.classList.toggle('trd-view-only-on', viewOnly)
         this.log.push(`view only: ${viewOnly ? 'on' : 'off'}`)
     }
@@ -4222,6 +4223,7 @@ export class RemoteDesktopService {
         const size = session.initialSize ?? remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
         const native = new FreeRDPProcess()
         const ui = new FreeRDPView(native, session.host)
+        ui.setReadOnly(session.viewOnly)
         session.ui = ui
         ui.setScale(this.screenScale())
         const stop = () => ui.shutdown()

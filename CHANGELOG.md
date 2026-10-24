@@ -15,6 +15,9 @@
   an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
 
 **Fixed**
+- FreeRDP requires CredSSP version 5 or newer before authentication, matching IronRDP’s existing security policy.
+- FreeRDP preserves Unicode shortcuts, AltGr and international keys, releases mouse-button chords correctly, and applies bounded input backpressure.
+- Automatic header hiding settles when resize reconnects, keeps revealed controls under the pointer, and ignores unrelated DOM churn.
 - FreeRDP display-control channels are loaded after the connection-time channel reset, so live resize reaches the server.
 - Synced global FreeRDP defaults preserve connections on computers without its helper; explicit choices still report a missing build.
 - Header auto-hide preserves native menu-bar visibility and avoids synchronous menu IPC on routine DOM changes.

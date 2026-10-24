@@ -16,6 +16,7 @@
 #include <freerdp/transport_io.h>
 #include <freerdp/version.h>
 #include <winpr/synch.h>
+#include <winpr/asn1.h>
 #include <winpr/thread.h>
 #include <winpr/winsock.h>
 #include <winpr/wlog.h>
@@ -50,6 +51,7 @@ typedef struct {
     BOOL inputEnded;
     BOOL inputFailed;
     BOOL displayReady;
+    BOOL needCredSSPVersion;
     UINT32 width, height, scale;
 } Context;
 
@@ -114,7 +116,29 @@ static BOOL tls_connect(rdpTransport* transport) {
     UINT32 protocol = freerdp_settings_get_uint32(base->settings, FreeRDP_SelectedProtocol);
     /* PROTOCOL_HYBRID / PROTOCOL_HYBRID_EX: otherwise stop before TLS and any clear-password sign-in. */
     if (!(protocol & (2 | 8)) && !decision(c, 'N', NULL, 0)) return FALSE;
+    c->needCredSSPVersion = (protocol & (2 | 8)) != 0;
     return c->original.TLSConnect(transport);
+}
+
+static int read_pdu(rdpTransport* transport, wStream* s) {
+    rdpContext* base = transport_get_context(transport);
+    Context* c = (Context*)base;
+    int status = c->original.ReadPdu(transport, s);
+    if (status <= 0 || !c->needCredSSPVersion) return status;
+    /* Match IronRDP's policy: reject pre-CVE-2018-0886 binding before NLA can produce AUTHENTICATE/pubKeyAuth.
+     * ReadPdu supplies a complete first TSRequest. Decode with WinPR, without moving the upstream stream cursor.
+     * FreeRDP itself rejects any later change from this first peer version. */
+    WinPrAsn1Decoder dec = WinPrAsn1Decoder_init(), sequence = WinPrAsn1Decoder_init();
+    WinPrAsn1_INTEGER version = 0;
+    BOOL error = FALSE;
+    WinPrAsn1Decoder_InitMem(&dec, WINPR_ASN1_DER, Stream_Buffer(s), (size_t)status);
+    if (!WinPrAsn1DecReadSequence(&dec, &sequence) ||
+        !WinPrAsn1DecReadContextualInteger(&sequence, 0, &error, &version) || error || version < 5) {
+        freerdp_set_last_error(base, FREERDP_ERROR_SECURITY_NEGO_CONNECT_FAILED);
+        return -1;
+    }
+    c->needCredSSPVersion = FALSE;
+    return status;
 }
 
 static int verify_certificate(freerdp* instance, const BYTE* data, size_t length, const char* host, UINT16 port, DWORD flags) {
@@ -360,7 +384,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i <= 3; i++) { memset(fields[i], 0, strlen(fields[i])); free(fields[i]); }
     free_command(start);
     c->original = *freerdp_get_io_callbacks(instance->context);
-    rdpTransportIo io = c->original; io.TCPConnect = tcp_connect; io.TLSConnect = tls_connect;
+    rdpTransportIo io = c->original; io.TCPConnect = tcp_connect; io.TLSConnect = tls_connect; io.ReadPdu = read_pdu;
     if (!freerdp_set_io_callbacks(instance->context, &io)) return 2;
     instance->PreConnect = pre_connect; instance->PostConnect = post_connect;
     /* FreeRDP replaces the channel collection after PreConnect. Load addins on the replacement, not the old one. */

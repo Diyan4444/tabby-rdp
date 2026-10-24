@@ -43,6 +43,9 @@ export class FreeRDPView {
     readonly canvas: HTMLCanvasElement
     private readonly abort = new AbortController()
     private visible = true
+    private readOnly = false
+    private buttons = 0
+    private pointerPosition = { x: 0, y: 0 }
     private unicode = false
     private scale = 1
     private readonly pressed = new Map<string, { scan: number, text: string }>()
@@ -65,18 +68,18 @@ export class FreeRDPView {
                 if (!event.defaultPrevented && this.visible && document.activeElement === this.element) { this.sendKeyboardEvent(event) }
             })
         }
-        listen(this.canvas, 'blur', () => this.releaseKeys())
-        listen(window, 'blur', () => this.releaseKeys())
+        listen(this.canvas, 'blur', () => this.releaseInput())
+        listen(window, 'blur', () => this.releaseInput())
         listen(this.canvas, 'pointerdown', (event: PointerEvent) => {
             this.canvas.focus()
             this.canvas.setPointerCapture(event.pointerId)
-            this.mouse(event, true)
+            this.mouse(event)
         })
-        listen(this.canvas, 'pointerup', (event: PointerEvent) => this.mouse(event, false))
-        listen(this.canvas, 'pointercancel', (event: PointerEvent) => this.mouse(event, false))
+        listen(this.canvas, 'pointerup', (event: PointerEvent) => this.mouse(event))
+        listen(this.canvas, 'pointercancel', () => this.releaseButtons())
         listen(this.canvas, 'pointermove', (event: PointerEvent) => this.mouse(event))
         listen(this.canvas, 'wheel', (event: WheelEvent) => {
-            if (!this.visible) { return }
+            if (!this.visible || this.readOnly) { return }
             event.preventDefault()
             const { x, y } = this.coordinates(event)
             const delta = Math.max(-255, Math.min(255, Math.round(-event.deltaY)))
@@ -97,7 +100,8 @@ export class FreeRDPView {
         this.canvas.getContext('2d')!.putImageData(new ImageData(frame.rgba, frame.width, frame.height), frame.x, frame.y)
     }
 
-    setVisibility (visible: boolean): void { this.visible = visible; if (!visible) { this.releaseKeys() } }
+    setVisibility (visible: boolean): void { this.visible = visible; if (!visible) { this.releaseInput() } }
+    setReadOnly (readOnly: boolean): void { this.readOnly = readOnly; if (readOnly) { this.releaseInput() } }
     setKeyboardUnicodeMode (unicode: boolean): void { this.unicode = unicode }
     setScale (scale: number): void { this.scale = scale; this.fit() }
     resize (width: number, height: number, scale = 100): void { this.native.send('R', numbers(width, height, scale)) }
@@ -117,15 +121,29 @@ export class FreeRDPView {
         }
     }
 
-    private mouse (event: PointerEvent, down?: boolean): void {
-        if (!this.visible) { return }
+    private mouse (event: PointerEvent): void {
+        if (!this.visible || this.readOnly) { return }
         const { x, y } = this.coordinates(event)
-        const button = [0x1000, 0x4000, 0x2000][event.button]
-        if (down !== undefined && !button) { return }
-        this.native.send('M', numbers(down === undefined ? 0x0800 : button | (down ? 0x8000 : 0), x, y))
+        this.pointerPosition = { x, y }
+        // Pointer Events report intermediate button presses/releases as moves. Reconcile the complete mask,
+        // including those moves, so chords cannot leave a remote button held after both local buttons are up.
+        const next = event.buttons & 7
+        for (const [mask, flag] of [[1, 0x1000], [2, 0x2000], [4, 0x4000]]) {
+            if ((this.buttons & mask) !== (next & mask)) this.native.send('M', numbers(flag | (next & mask ? 0x8000 : 0), x, y))
+        }
+        this.buttons = next
+        if (event.type === 'pointermove') this.native.send('M', numbers(0x0800, x, y))
+    }
+
+    private releaseButtons (): void {
+        for (const [mask, flag] of [[1, 0x1000], [2, 0x2000], [4, 0x4000]]) {
+            if (this.buttons & mask) this.native.send('M', numbers(flag, this.pointerPosition.x, this.pointerPosition.y))
+        }
+        this.buttons = 0
     }
 
     sendKeyboardEvent (event: KeyboardEvent): void {
+        if (this.readOnly && event.type === 'keydown') { return }
         const release = event.type === 'keyup'
         const key = release ? this.pressed.get(event.code) ?? nativeKey(event, this.unicode, this.pressed.keys()) : nativeKey(event, this.unicode, this.pressed.keys())
         if (!key) { return }
@@ -145,8 +163,10 @@ export class FreeRDPView {
         this.pressed.clear()
     }
 
+    private releaseInput (): void { this.releaseKeys(); this.releaseButtons() }
+
     shutdown (): void {
-        this.releaseKeys()
+        this.releaseInput()
         this.abort.abort()
         this.native.shutdown()
     }

@@ -40,6 +40,19 @@ function key (type: string, code: string) {
     }
 }
 
+test('typing into all retains AltGraph character semantics for other Unicode desktops', t => {
+    const page = installDocument(); t.after(page.restore)
+    const current = pane('rdp'), app = { activeTab: current }, mirrored: any[] = []
+    const desktop = { isVisible: () => true, isViewOnly: () => false, settings: () => ({ macShortcuts: false }),
+        isBroadcast: () => false, pasteClipboardFiles: () => false,
+        broadcastKey: (_pane: unknown, _type: string, init: unknown) => mirrored.push(init) }
+    const keyboard = new DesktopKeyboard(app, {}, desktop, {})
+    current.desktop.focus()
+    keyboard.route(Object.assign(key('keydown', 'KeyQ'), { key: '@', ctrlKey: true, altKey: true, getModifierState: (name: string) => name === 'AltGraph' }))
+    assert.equal(mirrored.length, 1)
+    assert.equal(mirrored[0].modifierAltGraph, true)
+})
+
 test('a key typed while a desktop has the focus in a pane the user isn\'t in goes nowhere, view only or not', t => {
     const page = installDocument()
     t.after(page.restore)

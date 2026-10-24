@@ -243,6 +243,7 @@ export class DesktopKeyboard {
         this.mirror(event.type, {
             key: event.key, code: event.code, location: event.location, repeat: event.repeat,
             shiftKey: event.shiftKey, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+            modifierAltGraph: event.getModifierState?.('AltGraph') ?? false,
         })
     }
 
@@ -259,6 +260,7 @@ export class DesktopKeyboard {
             altKey: event.altKey,
             ctrlKey: macShortcuts ? event.ctrlKey || event.metaKey : event.ctrlKey,
             metaKey: macShortcuts ? false : event.metaKey,
+            modifierAltGraph: event.getModifierState?.('AltGraph') ?? false,
             cancelable: true,
         }
         const copy = new KeyboardEvent(type, init)

@@ -129,6 +129,25 @@ test('synthetic Super shortcuts use physical down/up pairs even after the modifi
     assert.deepEqual(packets.map(p => [...Array(3)].map((_, i) => p.readUInt32BE(i * 4))), [[0, 0x15b, 0], [0, 0x13, 0], [0x8000, 0x15b, 0], [0x8000, 0x13, 0]])
 })
 
+test('pointer chords, cancellation and view only release every held remote mouse button', () => {
+    const { FreeRDPView } = require('../../dist/freerdpView.js')
+    const view = Object.create(FreeRDPView.prototype), flags: number[] = []
+    Object.assign(view, { visible: true, readOnly: false, buttons: 0, pointerPosition: { x: 0, y: 0 }, pressed: new Map(),
+        canvas: { width: 800, height: 600, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) },
+        native: { send: (type: string, data: Buffer) => { assert.equal(type, 'M'); flags.push(data.readUInt32BE(0)) } } })
+    const move = (type: string, buttons: number) => view.mouse({ type, buttons, clientX: 20, clientY: 30 })
+    move('pointerdown', 1); move('pointermove', 3); move('pointermove', 2); move('pointerup', 0)
+    assert.deepEqual(flags, [0x9000, 0xa000, 0x0800, 0x1000, 0x0800, 0x2000])
+    flags.length = 0
+    move('pointerdown', 5); view.releaseButtons()
+    assert.deepEqual(flags, [0x9000, 0xc000, 0x1000, 0x4000], 'cancel releases both buttons')
+    flags.length = 0
+    move('pointerdown', 1); view.setReadOnly(true); move('pointermove', 1)
+    assert.deepEqual(flags, [0x9000, 0x1000], 'view only releases the captured drag and ignores later moves')
+    view.setReadOnly(false); move('pointerdown', 2); view.releaseInput()
+    assert.deepEqual(flags.slice(-2), [0xa000, 0x2000], 'blur releases pointer state as well as keys')
+})
+
 test('a missing Windows runtime has actionable startup guidance for signed and unsigned exit codes', () => {
     const { helperStopped } = require('../../dist/freerdp.js')
     for (const code of [0xc0000135, -1073741515]) assert.match(helperStopped(code, null, 'win32').message, /Visual C\+\+.*Redistributable/)
@@ -245,5 +264,70 @@ for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'truste
         assert.ok(requests.length)
         assert.ok(requests.every(r => !r.includes(Buffer.from('private-test-username')) && !r.includes(Buffer.from('PRIVATE'))))
         assert.equal(application.length, 0, 'no CredSSP or RDP credentials reach the rejected peer')
+    })
+}
+
+/** A raw NTLM server challenge with timestamp, as used by the gateway's independent wire tests. */
+function credsspChallenge (): Buffer {
+    const info = Buffer.concat([Buffer.from('02000400', 'hex'), Buffer.from('GW', 'utf16le'), Buffer.from('070008000090d336b734c30100000000', 'hex')])
+    const message = Buffer.alloc(56)
+    message.write('NTLMSSP\0', 'latin1'); message.writeUInt32LE(2, 8); message.writeUInt32LE(56, 16)
+    message.writeUInt32LE(0xe28a8215, 20); Buffer.from('0123456789abcdef', 'hex').copy(message, 24)
+    message.writeUInt16LE(info.length, 40); message.writeUInt16LE(info.length, 42); message.writeUInt32LE(56, 44)
+    return Buffer.concat([message, info])
+}
+function der (tag: number, ...parts: Buffer[]): Buffer {
+    const body = Buffer.concat(parts)
+    assert.ok(body.length < 256)
+    return Buffer.concat([Buffer.from(body.length < 128 ? [tag, body.length] : [tag, 0x81, body.length]), body])
+}
+for (const version of [0, 2, 3, 4, 5, 6, -1, 'overflow', 'missing'] as const) {
+    test(`native CredSSP policy ${version}: authentication requires nonce-bound version 5 or newer`, { skip: !native, timeout: 12000 }, async t => {
+        const cert = selfSigned('native.test', 'subjectAltName=DNS:native.test')
+        if (!cert) { t.skip('openssl is unavailable'); return }
+        const sockets = new Set<any>(), application: Buffer[] = []
+        let challenged = false, initial = Buffer.alloc(0)
+        const allowed = typeof version === 'number' && version >= 5
+        const server = createServer(socket => {
+            sockets.add(socket); socket.on('error', () => {})
+            let request = Buffer.alloc(0)
+            const receive = (data: Buffer) => {
+                request = Buffer.concat([request, data])
+                if (request.length < 4 || request.length < request.readUInt16BE(2)) return
+                socket.removeListener('data', receive)
+                socket.write(Buffer.from('030000130ed000000000000200080002000000', 'hex'))
+                const tls = new TLSSocket(socket, { isServer: true, secureContext: createSecureContext({ key: cert.key, cert: cert.cert }) })
+                sockets.add(tls); tls.on('error', () => {})
+                tls.on('data', data => {
+                    if (challenged) { application.push(Buffer.from(data)); tls.destroy(); return }
+                    initial = Buffer.concat([initial, data])
+                    const ntlm = initial.indexOf(Buffer.from('NTLMSSP\0', 'latin1'))
+                    if (ntlm < 0 || initial.length < ntlm + 12) return
+                    assert.equal(initial.readUInt32LE(ntlm + 8), 1)
+                    challenged = true
+                    const value = version === 'overflow' ? Buffer.from('0100000004', 'hex') : Buffer.from([typeof version === 'number' ? version & 255 : 6])
+                    const reply = der(0x30, der(version === 'missing' ? 0xa2 : 0xa0, der(0x02, value)),
+                        der(0xa1, der(0x30, der(0x30, der(0xa0, der(0x04, credsspChallenge()))))))
+                    // ReadPdu can return an incomplete read before it sees a whole TSRequest.
+                    tls.write(reply.subarray(0, 3))
+                    setTimeout(() => { if (!tls.destroyed) tls.write(reply.subarray(3)) }, 5)
+                })
+            }
+            socket.on('data', receive)
+        })
+        server.listen(0, '127.0.0.1'); await once(server, 'listening')
+        const client = new FreeRDPProcess()
+        t.after(() => { client.shutdown(); for (const socket of sockets) socket.destroy(); server.close() })
+        await assert.rejects(client.connect({
+            host: 'native.test', username: 'private-test-username', password: 'private-test-password', domain: 'PRIVATE',
+            width: 800, height: 600, pipeline: false, authorities: [cert.cert.toString()],
+            open: async () => { const socket = connect((server.address() as any).port, '127.0.0.1'); await once(socket, 'connect'); return socket },
+            certificate: () => {}, withoutNla: () => { throw new Error('NLA required') }, frame: () => { throw new Error('not connected') },
+        }), /FreeRDP/)
+        assert.ok(challenged, 'the synthetic peer reached the first CredSSP version decision')
+        const reply = Buffer.concat(application), at = reply.indexOf(Buffer.from('NTLMSSP\0', 'latin1'))
+        const authenticated = at >= 0 && reply.length >= at + 12 && reply.readUInt32LE(at + 8) === 3
+        assert.equal(authenticated, allowed, allowed ? 'v5/v6 control must still reach NTLM authentication' : 'legacy/malformed versions must not receive NTLM AUTHENTICATE or public-key binding')
+        if (!allowed) assert.equal(reply.length, 0, 'reject before any CredSSP authentication response')
     })
 }

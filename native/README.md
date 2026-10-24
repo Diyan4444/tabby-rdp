@@ -92,7 +92,7 @@ routing cookie or authentication payload reaches a rejected peer. Real Windows S
 qualification require a dedicated test machine; these local protocol tests do not substitute for that work.
 
 The native protocol/security suite passes on macOS ARM64, Windows ARM64/x64 and Linux ARM64/x64. It exercises
-certificate/name/NLA rejection before credentials, large trust stores, relay authentication, IPC and build inventories.
+certificate/name/NLA rejection before credentials, the same CredSSP minimum version (5) as IronRDP, large trust stores, relay authentication, IPC and build inventories.
 
 | Client | Live Windows Server 2025 coverage |
 |---|---|
