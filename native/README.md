@@ -97,7 +97,7 @@ certificate/name/NLA rejection before credentials, the same CredSSP minimum vers
 | Client | Live Windows Server 2025 coverage |
 |---|---|
 | macOS ARM64 | Earlier packed-plugin lifecycle passed; latest helper passes protocol/security checks. Final maintainer testing remains pending. |
-| Linux ARM64, Ubuntu 24.04 | Packed plugin: pixels, input routing, larger/smaller live resize without reconnecting, fixed-resolution fitting, view only, cleanup, reconnect and switching to IronRDP. |
+| Linux ARM64, Ubuntu 24.04 | Packed plugin: pixels, input routing, larger/smaller live resize without reconnecting, fixed-resolution fitting, view only, cleanup, reconnect, switching to IronRDP, input-burst recovery and Automatic header/reconnect stability with both clients. |
 | Windows ARM64, Windows 11 | Same packed-plugin lifecycle coverage as Linux ARM64. |
 | Linux x64 / Windows x64 | Native protocol/security checks in hosted CI; live RDP qualification remains pending. |
 

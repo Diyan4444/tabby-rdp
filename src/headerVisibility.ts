@@ -40,8 +40,8 @@ app-root.trd-auto-hide-header { position: relative; }
 .trd-auto-hide-header .trd-auto-tabbar { position: absolute !important; z-index: 1040; }
 .trd-auto-hide-header[data-trd-header-edge=top] .trd-auto-tabbar { top: var(--trd-titlebar-height); left: 0; right: 0; width: 100%; }
 .trd-auto-hide-header[data-trd-header-edge=bottom] .trd-auto-tabbar { bottom: 0; left: 0; right: 0; width: 100%; }
-.trd-auto-hide-header[data-trd-header-edge=left] .trd-auto-tabbar { top: 0; bottom: 0; left: 0; height: 100%; }
-.trd-auto-hide-header[data-trd-header-edge=right] .trd-auto-tabbar { top: 0; bottom: 0; right: 0; height: 100%; }
+.trd-auto-hide-header[data-trd-header-edge=left] .trd-auto-tabbar { top: var(--trd-titlebar-height); bottom: 0; left: 0; height: auto; }
+.trd-auto-hide-header[data-trd-header-edge=right] .trd-auto-tabbar { top: var(--trd-titlebar-height); bottom: 0; right: 0; height: auto; }
 .trd-auto-hide-header:not(.trd-header-revealed) .trd-auto-titlebar,
 .trd-auto-hide-header:not(.trd-header-revealed) .trd-auto-tabbar { opacity: 0; visibility: hidden; pointer-events: none; }
 .trd-header-edge { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 1039;

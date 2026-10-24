@@ -132,10 +132,10 @@ test('synthetic Super shortcuts use physical down/up pairs even after the modifi
 test('pointer chords, cancellation and view only release every held remote mouse button', () => {
     const { FreeRDPView } = require('../../dist/freerdpView.js')
     const view = Object.create(FreeRDPView.prototype), flags: number[] = []
-    Object.assign(view, { visible: true, readOnly: false, buttons: 0, pointerPosition: { x: 0, y: 0 }, pressed: new Map(),
+    Object.assign(view, { visible: true, readOnly: false, buttons: 0, pointerId: null, pointerPosition: { x: 0, y: 0 }, pressed: new Map(),
         canvas: { width: 800, height: 600, getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) },
         native: { send: (type: string, data: Buffer) => { assert.equal(type, 'M'); flags.push(data.readUInt32BE(0)) } } })
-    const move = (type: string, buttons: number) => view.mouse({ type, buttons, clientX: 20, clientY: 30 })
+    const move = (type: string, buttons: number) => { if (type === 'pointerdown') view.pointerId = 1; view.mouse({ type, buttons, pointerId: 1, clientX: 20, clientY: 30 }) }
     move('pointerdown', 1); move('pointermove', 3); move('pointermove', 2); move('pointerup', 0)
     assert.deepEqual(flags, [0x9000, 0xa000, 0x0800, 0x1000, 0x0800, 0x2000])
     flags.length = 0
@@ -143,9 +143,13 @@ test('pointer chords, cancellation and view only release every held remote mouse
     assert.deepEqual(flags, [0x9000, 0xc000, 0x1000, 0x4000], 'cancel releases both buttons')
     flags.length = 0
     move('pointerdown', 1); view.setReadOnly(true); move('pointermove', 1)
+    for (const type of ['keydown', 'keyup']) view.sendKeyboardEvent({ type, code: 'KeyA', key: 'a', preventDefault () {} })
     assert.deepEqual(flags, [0x9000, 0x1000], 'view only releases the captured drag and ignores later moves')
     view.setReadOnly(false); move('pointerdown', 2); view.releaseInput()
     assert.deepEqual(flags.slice(-2), [0xa000, 0x2000], 'blur releases pointer state as well as keys')
+    flags.length = 0
+    move('pointermove', 1); move('pointerup', 0)
+    assert.deepEqual(flags, [0x0800], 'a drag started outside the canvas only moves the remote pointer')
 })
 
 test('a missing Windows runtime has actionable startup guidance for signed and unsigned exit codes', () => {
@@ -267,14 +271,19 @@ for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'truste
     })
 }
 
-/** A raw NTLM server challenge with timestamp, as used by the gateway's independent wire tests. */
+/** A synthetic NTLMv2 challenge with sealing and both computer/domain names required by Windows SSPI. */
 function credsspChallenge (): Buffer {
-    const info = Buffer.concat([Buffer.from('02000400', 'hex'), Buffer.from('GW', 'utf16le'), Buffer.from('070008000090d336b734c30100000000', 'hex')])
-    const message = Buffer.alloc(56)
-    message.write('NTLMSSP\0', 'latin1'); message.writeUInt32LE(2, 8); message.writeUInt32LE(56, 16)
-    message.writeUInt32LE(0xe28a8215, 20); Buffer.from('0123456789abcdef', 'hex').copy(message, 24)
-    message.writeUInt16LE(info.length, 40); message.writeUInt16LE(info.length, 42); message.writeUInt32LE(56, 44)
-    return Buffer.concat([message, info])
+    const av = (id: number, value: Buffer) => { const h = Buffer.alloc(4); h.writeUInt16LE(id); h.writeUInt16LE(value.length, 2); return Buffer.concat([h, value]) }
+    const timestamp = Buffer.alloc(8); timestamp.writeBigUInt64LE((BigInt(Date.now()) + 11644473600000n) * 10000n)
+    const u16 = (text: string) => Buffer.from(text, 'utf16le')
+    const info = Buffer.concat([av(2, u16('PRIVATE')), av(1, u16('NATIVE')), av(4, u16('native.test')), av(3, u16('native.test')),
+        av(5, u16('native.test')), av(6, Buffer.alloc(4)), av(7, timestamp), av(0, Buffer.alloc(0))])
+    const target = Buffer.from('GW', 'utf16le'), message = Buffer.alloc(56)
+    message.write('NTLMSSP\0', 'latin1'); message.writeUInt32LE(2, 8); message.writeUInt16LE(target.length, 12); message.writeUInt16LE(target.length, 14); message.writeUInt32LE(56, 16)
+    message.writeUInt32LE(0xe28a8235, 20); Buffer.from('0123456789abcdef', 'hex').copy(message, 24)
+    message.writeUInt16LE(info.length, 40); message.writeUInt16LE(info.length, 42); message.writeUInt32LE(56 + target.length, 44)
+    Buffer.from('0601b11d0000000f', 'hex').copy(message, 48)
+    return Buffer.concat([message, target, info])
 }
 function der (tag: number, ...parts: Buffer[]): Buffer {
     const body = Buffer.concat(parts)
@@ -299,15 +308,25 @@ for (const version of [0, 2, 3, 4, 5, 6, -1, 'overflow', 'missing'] as const) {
                 const tls = new TLSSocket(socket, { isServer: true, secureContext: createSecureContext({ key: cert.key, cert: cert.cert }) })
                 sockets.add(tls); tls.on('error', () => {})
                 tls.on('data', data => {
-                    if (challenged) { application.push(Buffer.from(data)); tls.destroy(); return }
+                    if (challenged) {
+                        application.push(Buffer.from(data))
+                        const reply = Buffer.concat(application), at = reply.indexOf(Buffer.from('NTLMSSP\0', 'latin1'))
+                        if (at >= 0 && reply.length >= at + 12) tls.destroy()
+                        return
+                    }
                     initial = Buffer.concat([initial, data])
                     const ntlm = initial.indexOf(Buffer.from('NTLMSSP\0', 'latin1'))
                     if (ntlm < 0 || initial.length < ntlm + 12) return
                     assert.equal(initial.readUInt32LE(ntlm + 8), 1)
                     challenged = true
                     const value = version === 'overflow' ? Buffer.from('0100000004', 'hex') : Buffer.from([typeof version === 'number' ? version & 255 : 6])
+                    const challenge = credsspChallenge()
+                    // Windows SSPI negotiates SPNEGO; WinPR's NTLM client sends a raw NTLM token. Reply in kind.
+                    const spnego = initial.includes(Buffer.from('06062b0601050502', 'hex'))
+                    const token = spnego ? der(0xa1, der(0x30, der(0xa0, der(0x0a, Buffer.from([1]))),
+                        der(0xa1, Buffer.from('060a2b06010401823702020a', 'hex')), der(0xa2, der(0x04, challenge)))) : challenge
                     const reply = der(0x30, der(version === 'missing' ? 0xa2 : 0xa0, der(0x02, value)),
-                        der(0xa1, der(0x30, der(0x30, der(0xa0, der(0x04, credsspChallenge()))))))
+                        der(0xa1, der(0x30, der(0x30, der(0xa0, der(0x04, token))))))
                     // ReadPdu can return an incomplete read before it sees a whole TSRequest.
                     tls.write(reply.subarray(0, 3))
                     setTimeout(() => { if (!tls.destroyed) tls.write(reply.subarray(3)) }, 5)

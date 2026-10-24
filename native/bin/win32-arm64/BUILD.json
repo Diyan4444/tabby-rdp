@@ -13,33 +13,33 @@
   "platform": "win32",
   "arch": "arm64",
   "buildSources": {
-    "native/main.c": "1e72c2490b7688bd4eb8d7468200cd17deca45d7e998d2808285a40ecafb1b8b",
+    "native/main.c": "5ae0d6ecc14e775e312863335d1a140c591cd01cbce8381c91c08257506ad6a7",
     "native/options.cmake": "228ae20f83200a8a76a6a05bf73deb2b9aa94487b0ffca023bbb8fefd76cd1b8",
     "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
-    "scripts/build-freerdp.mjs": "41f20d6b316ef9089c42e46356de034bf6c280a024014bd14929f5b8f17a60db",
+    "scripts/build-freerdp.mjs": "bee69bc743102493457586fa49b5539fb02c9e1d7b52ef2b6306146a32a65118",
     "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
     "scripts/build-freerdp-ci.mjs": "11d38612fafb3bf49ae59ba8f2a94087715274a1eecea624de029ca5e61d8fd1"
   },
   "files": [
     {
       "path": "freerdp-client3.dll",
-      "sha256": "9766fdbc4fbd35d16486e97467becb3d4b9e9f575fe0a967e15275ef6b3c7a40"
+      "sha256": "6304811422c92c326b9494db2e527a8410e305cf7a27ff2cee527231b6c3ba11"
     },
     {
       "path": "freerdp3.dll",
-      "sha256": "1df9e149e2433b121e9743b47002e6861166c89fb5188417b1d2c6f73dab9f87"
+      "sha256": "ed6380fc0b6b020c5eda6538bf7878ed6dcace7254d2e8530b6b26d094e26a96"
     },
     {
       "path": "legacy.dll",
-      "sha256": "d1bd3010fd56de1ce26c53da76d5f1799c8b858c579a81c15c6d1cedfc7eafd4"
+      "sha256": "e9a370cd08da35085f977b8a3d5d59d7397b7321bdeea5187a8cb69b2f976e25"
     },
     {
       "path": "libcrypto-3-arm64.dll",
-      "sha256": "2539034578f40d0e16228234c9a9775a83b431dc55ef4ccaaad6e04b162105b4"
+      "sha256": "4070ccc4ba8f7fd6a4059be11cab414689682deb55a291802c514805a9a9ed09"
     },
     {
       "path": "libssl-3-arm64.dll",
-      "sha256": "c3b902501868c577c82ed66b80829bb2fc8879d8289fb8d4807112334503591b"
+      "sha256": "b7301714c9733fa6b7084b5f878abd8018495cea5cb8fc8d707eae73f2eaa3b2"
     },
     {
       "path": "licenses/FreeRDP-LICENSE",
@@ -63,11 +63,11 @@
     },
     {
       "path": "tabby-freerdp.exe",
-      "sha256": "2200efdc2d935547b474b6d540be3c0d867aff31a4e42715010a781f283f8245"
+      "sha256": "41da406f1a88934891c2bafaa6a5d2302e6fb288a9871d79d7e21ece279f8423"
     },
     {
       "path": "winpr3.dll",
-      "sha256": "923027e23bdc0f4ebdac5b8289f6bccdbdd3b006bb6f13db3781830b77636257"
+      "sha256": "8150592ac89f2b3d5e35e203d0918962cae44dcf19db6f36ee41c2f74c9ee0bf"
     }
   ]
 }

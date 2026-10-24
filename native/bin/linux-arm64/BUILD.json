@@ -13,10 +13,10 @@
   "platform": "linux",
   "arch": "arm64",
   "buildSources": {
-    "native/main.c": "1e72c2490b7688bd4eb8d7468200cd17deca45d7e998d2808285a40ecafb1b8b",
+    "native/main.c": "5ae0d6ecc14e775e312863335d1a140c591cd01cbce8381c91c08257506ad6a7",
     "native/options.cmake": "228ae20f83200a8a76a6a05bf73deb2b9aa94487b0ffca023bbb8fefd76cd1b8",
     "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
-    "scripts/build-freerdp.mjs": "41f20d6b316ef9089c42e46356de034bf6c280a024014bd14929f5b8f17a60db",
+    "scripts/build-freerdp.mjs": "bee69bc743102493457586fa49b5539fb02c9e1d7b52ef2b6306146a32a65118",
     "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
     "scripts/build-freerdp-ci.mjs": "11d38612fafb3bf49ae59ba8f2a94087715274a1eecea624de029ca5e61d8fd1"
   },
@@ -27,15 +27,15 @@
     },
     {
       "path": "libcrypto.so.3",
-      "sha256": "a15fe54ca03b8c2298a33cf900d234423acf53531bb8a9ccf7d2c39a7aa23798"
+      "sha256": "845cebaa3da08c8553262502911d1488cefb3bb5ea23012ba978ab32ff3e1388"
     },
     {
       "path": "libfreerdp-client3.so.3",
-      "sha256": "3f2006b371c0b4192b202c8f5521f2256761ef07cc20fc91088981a2057cc2fd"
+      "sha256": "1a08db673b2df6a5be94a397d499e569c843813b5740dc20842b283be150a2b2"
     },
     {
       "path": "libfreerdp3.so.3",
-      "sha256": "74d25ee9dac3541ad853f12e3604c2ad8b430793a20bd7047473c3d938cccbad"
+      "sha256": "3f898fd82531f780e9e20e36188ba3b3504b735053529d9b83f4baa9ff584a4f"
     },
     {
       "path": "libssl.so.3",
@@ -43,7 +43,7 @@
     },
     {
       "path": "libwinpr3.so.3",
-      "sha256": "e66c125a65d1cf890a23c413a0e4ae1ac5457b3626679cd43329b53c879e1cd9"
+      "sha256": "20e9eb15ccb58a1c50605c8ed53ae5472ad93abcff197061074c794419f2205e"
     },
     {
       "path": "licenses/FreeRDP-LICENSE",
@@ -67,7 +67,7 @@
     },
     {
       "path": "tabby-freerdp",
-      "sha256": "27785d084bb1e7551950b1cd029e6741376921da788346b492d987392ece319d"
+      "sha256": "2a02f94bdc91d424b00acd3d06faa0adacf524f15e99c2073bfeac8e8856b723"
     }
   ]
 }
