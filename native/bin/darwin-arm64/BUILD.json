@@ -5,14 +5,14 @@
     "sha256": "9ccb8357bf0188044a460de775c7ea289ca7d2a2a917eca0f0a7c4dc9c8b08ea"
   },
   "opensslSource": null,
-  "version": "tabby-freerdp IPC 1; FreeRDP 3.32.2",
+  "version": "tabby-freerdp IPC 2; FreeRDP 3.32.2",
   "platform": "darwin",
   "arch": "arm64",
   "buildSources": {
-    "native/main.c": "7619ef702ada0943f11a12185f18f6f1156552d6eb153689934089e5db88def2",
-    "native/options.cmake": "f2cf997755be1524d718f0cfb5d73fd2bfeef02030e211ac1a5c85cc0ba617e3",
+    "native/main.c": "fa4c3ed7faf112b01fc2d5fd58955e18c4663786d8147ab484ed03bf90eb4bca",
+    "native/options.cmake": "228ae20f83200a8a76a6a05bf73deb2b9aa94487b0ffca023bbb8fefd76cd1b8",
     "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
-    "scripts/build-freerdp.mjs": "c11b8c45c98665b624dd6967ec2ff197ecb110b44892984534bd3f96eaf82c66",
+    "scripts/build-freerdp.mjs": "66ea9227aa9ad591390d404017e7da11e8dde812736ccf52afd2fd58b402bbcd",
     "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
     "scripts/build-freerdp-ci.mjs": "e067ba607f66254f92977dae07c003e5223014f81efe30d016023449bf676c94"
   },
@@ -27,11 +27,11 @@
     },
     {
       "path": "libfreerdp-client3.3.dylib",
-      "sha256": "df2b797072f3750ecfd1c3763ab2511b704754881cebf31f4ce2def31108a06f"
+      "sha256": "233ddeace660f6e5e6749bdea255ec022a84c4520890ce91b40a298212894ea6"
     },
     {
       "path": "libfreerdp3.3.dylib",
-      "sha256": "e5a50885b7b5a01e9071e2439743336e6a1a6de1b29e214ffff408d11f240f76"
+      "sha256": "0001c7eacef256fa5dfb601c1949e2ee98a91cf2727b50ce07d51373bdb96383"
     },
     {
       "path": "libssl.3.dylib",
@@ -39,7 +39,7 @@
     },
     {
       "path": "libwinpr3.3.dylib",
-      "sha256": "d428b589c555e2cb413a4dec0f2554bfb2d3d88288b55486871dee36658dd2da"
+      "sha256": "6910c1b38ccf3e52499a5986cc5e5edcbfb123534a87c513be99bd26b6458777"
     },
     {
       "path": "licenses/FreeRDP-LICENSE",
@@ -59,7 +59,7 @@
     },
     {
       "path": "tabby-freerdp",
-      "sha256": "aff06964c6bcc8ff57f2c8eb77a2b636ebd3d630a343d40647f5703806f969ac"
+      "sha256": "0a13dafe51001612c5b80abf7e12ebfdcdfa49c1701a3ef267878021ed840af7"
     }
   ]
 }

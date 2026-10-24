@@ -74,6 +74,29 @@ await suite('freerdp', async t => {
     await t.dump('H.nativePane', 'freerdp-input')
     await t.press('a')
     t.check('ordinary keys reach the native client through Tabby keyboard routing', await t.ev('return H.nativeKeys >= 2'))
+    const paneStyle = await t.ev<string>('return H.nativePane.element.nativeElement.style.cssText')
+    t.onCleanup(() => t.ev(`if (H.nativePane?.element?.nativeElement) H.nativePane.element.nativeElement.style.cssText = ${JSON.stringify(paneStyle)}`))
+    const setPane = (width: number, height: number) => t.ev(`
+        const el = H.nativePane.element.nativeElement
+        el.style.flex = 'none'; el.style.minWidth = '0'; el.style.minHeight = '0'; el.style.width = '${width}px'; el.style.height = '${height}px'
+    `)
+    await setPane(800, 560)
+    await t.settings({ resize: 'live' })
+    const matchesPane = (width: number, height: number) => `const c = H.canvas(H.nativePane); return !!c && Math.abs(c.paneW - ${width}) <= 2 && Math.abs(c.paneH - ${height}) <= 2 && Math.abs(c.w - c.paneW) <= 2 && Math.abs(c.h - c.paneH) <= 2 && c.colors > 20`
+    t.check('live resize draws pixels at the larger pane resolution', !!await t.waitFor(matchesPane(800, 560), 15), await t.ev('return H.canvas(H.nativePane)'))
+    const large = await t.ev<CanvasInfo>('return H.canvas(H.nativePane)')
+    await setPane(640, 480)
+    t.check('live resize draws pixels at the smaller pane resolution', !!await t.waitFor(matchesPane(640, 480), 15), await t.ev('return H.canvas(H.nativePane)'))
+    const small = await t.ev<CanvasInfo>('return H.canvas(H.nativePane)')
+    t.check('display-control resize changes the remote dimensions without reconnecting', small.w < large.w &&
+        await t.ev('return H.nativeProcess.child.pid === H.nativePid'), { large, small })
+    await t.dump('H.nativePane', 'freerdp-resized')
+    await t.settings({ resize: 'off' })
+    await setPane(740, 520)
+    await t.sleep(600)
+    const fixed = await t.ev<CanvasInfo>('return H.canvas(H.nativePane)')
+    t.check('fixed-resolution mode retains the remote size and fits the picture into the pane', fixed.w === small.w && fixed.h === small.h &&
+        fixed.cssW <= fixed.paneW + 2 && fixed.cssH <= fixed.paneH + 2, fixed)
     await t.ev('H.inZone(() => RD.desktop.setViewOnly(H.nativePane, true)); H.nativeKeys = 0')
     await t.press('b')
     t.check('view only blocks native keyboard input', await t.ev('return H.nativeKeys === 0'))

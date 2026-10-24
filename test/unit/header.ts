@@ -289,11 +289,12 @@ test('a desktop\'s menu turns its microphone off and on again, while the setting
 
 test('a desktop\'s menu offers paste and typing into all as the desktops showing count, and Type into all while it is on', async () => {
     const { RemoteDesktopContextMenu } = require('../../dist/ui.js')
-    const items = async (showing: number, broadcast: boolean) => {
+    const items = async (showing: number, broadcast: boolean, files = true) => {
         const calls: string[] = []
         const desktop = {
             has: () => true,
             isConnected: () => true,
+            canSendFiles: () => files,
             isVisible: () => true,
             hasConsole: () => false,
             choicesOf: () => ({ specs: [], current: null }),
@@ -314,12 +315,15 @@ test('a desktop\'s menu offers paste and typing into all as the desktops showing
             pasteToAll: () => calls.push('paste to all'),
         }
         const menu = new RemoteDesktopContextMenu(desktop, { cached: () => null, targetOf: async () => null }, {}, {}, { tabs: [] }, {})
-        const all = (await menu.getItems({ profile: { type: 'rdp' }, element: { nativeElement: {} } }) as any[])
+        const full = await menu.getItems({ profile: { type: 'rdp' }, element: { nativeElement: {} } }) as any[]
+        assert.equal(full.some(i => i.label === 'Send files…'), files)
+        const all = full
             .filter(i => /all .*desktops in this tab/.test(i.label ?? ''))
         return { labels: all.map(i => `${i.label}${i.type === 'checkbox' ? ` [${i.checked ? 'x' : ' '}]` : ''}`), click: (n: number) => all[n].click(), calls }
     }
     assert.deepEqual((await items(3, false)).labels, ['Paste to all 3 desktops in this tab', 'Type into all 3 desktops in this tab [ ]'])
     assert.deepEqual((await items(1, false)).labels, [])
+    await items(1, false, false) // FreeRDP has no file-transfer capability.
     // On, while the others' consoles are in front: it can still be turned off from here.
     const on = await items(1, true)
     assert.deepEqual(on.labels, ['Type into all desktops in this tab [x]'])

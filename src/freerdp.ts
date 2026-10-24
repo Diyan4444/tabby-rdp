@@ -9,6 +9,13 @@ import { ByteQueue } from './byteQueue'
 import { certificateAuthorities, certificateDetails, CertificateDetails } from './authorities'
 
 const MAX_FRAME = 1024 * 1024
+const MAX_AUTHORITIES = 16 * 1024 * 1024
+
+export function freeRDPAuthorities (authorities: readonly string[]): Buffer {
+    const text = authorities.join('\n')
+    if (Buffer.byteLength(text) > MAX_AUTHORITIES) { throw new Error('FreeRDP certificate authority store exceeds 16 MiB') }
+    return Buffer.from(text)
+}
 
 export function helperEnvironment (): NodeJS.ProcessEnv {
     // The helper needs OS paths/locale, not the parent app's API keys or the test runner's passwords.
@@ -23,10 +30,12 @@ export function nativeHelperPath (): string {
 }
 
 export function requireFreeRDP (): void {
-    if (!existsSync(nativeHelperPath())) {
+    if (!hasFreeRDP()) {
         throw new Error(`FreeRDP is not installed for ${process.platform}-${process.arch}. Build the native helper as described in native/README.md, or choose IronRDP in this desktop's settings.`)
     }
 }
+
+export function hasFreeRDP (): boolean { return existsSync(nativeHelperPath()) }
 
 export function ipcFrame (type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
     if (type.length !== 1 || payload.length > MAX_FRAME) { throw new Error('Invalid FreeRDP IPC message') }
@@ -189,6 +198,7 @@ export class FreeRDPProcess {
         started.catch(() => undefined)
         try {
             requireFreeRDP()
+            const authorities = freeRDPAuthorities(options.authorities ?? certificateAuthorities() ?? rootCertificates)
             this.relay = await freeRDPRelay(options.open)
             if (this.closed) { this.relay.close(); throw new Error('FreeRDP connection cancelled') }
             const child = this.child = spawn(nativeHelperPath(), [], { stdio: 'pipe', windowsHide: true, env: helperEnvironment() })
@@ -205,8 +215,13 @@ export class FreeRDPProcess {
             child.once('close', (code, signal) => {
                 if (!this.closed) { this.fail(new Error(`The FreeRDP helper stopped (${signal ?? code ?? 'unknown'})`)) }
             })
-            const strings = [options.host, options.username, options.password, options.domain,
-                (options.authorities ?? certificateAuthorities() ?? rootCertificates).join('\n'), this.relay.token]
+            // Trust stores can exceed one IPC frame. Flush bounded chunks before the start frame; the helper
+            // accumulates these under its own total limit before it opens any network connection.
+            for (let at = 0; at < authorities.length; at += 64 * 1024) {
+                if (this.closed) { throw new Error('FreeRDP connection cancelled') }
+                await new Promise<void>((resolve, reject) => child.stdin.write(ipcFrame('A', authorities.subarray(at, at + 64 * 1024)), error => error ? reject(error) : resolve()))
+            }
+            const strings = [options.host, options.username, options.password, options.domain, '', this.relay.token]
             const fields = strings.map(value => {
                 if (value.includes('\0')) { throw new Error('FreeRDP settings cannot contain a null character') }
                 const text = Buffer.from(value)

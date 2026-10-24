@@ -126,5 +126,6 @@ writeFileSync(join(stage, 'BUILD.json'), JSON.stringify({ source: manifest,
     opensslSource: existsSync(opensslSource) ? JSON.parse(readFileSync(opensslSource)) : null,
     version, platform: process.platform, arch: process.arch, buildSources, files: artifacts }, null, 2) + '\n')
 rmSync(destination, { recursive: true, force: true })
+mkdirSync(dirname(destination), { recursive: true })
 renameSync(stage, destination)
 console.log(`Built ${destination}: ${version}`)

@@ -244,7 +244,7 @@ export class RemoteDesktopContextMenu extends TabContextMenuItemProvider {
             ] })
         }
         if (this.desktop.isConnected(pane)) {
-            items.push({ label: 'Send files…', click: () => this.desktop.sendFiles(pane) })
+            if (this.desktop.canSendFiles(pane)) { items.push({ label: 'Send files…', click: () => this.desktop.sendFiles(pane) }) }
             items.push(...desktopActions(this.desktop, this.keyboard, pane))
             // Several desktops showing in this tab: paste on all of them, or type into all of them. Typing into all, once
             // on, stays here to be turned off while fewer of them show (those hidden get nothing: see

@@ -11,7 +11,7 @@ import { createSecureContext, TLSSocket } from 'node:tls'
 import { selfSigned } from './support/certificates.js'
 
 const require = createRequire(import.meta.url)
-const { FreeRDPFrames, ipcFrame, numbers, decodeNativeFrame, freeRDPRelay, FreeRDPProcess, FreeRDPError, nativeHelperPath, helperEnvironment } = require('../../dist/freerdp.js')
+const { FreeRDPFrames, ipcFrame, numbers, decodeNativeFrame, freeRDPRelay, FreeRDPProcess, FreeRDPError, nativeHelperPath, helperEnvironment, freeRDPAuthorities } = require('../../dist/freerdp.js')
 const { nativeKey } = require('../../dist/freerdpView.js')
 const { ownRDPClient, rdpClient } = require('../../dist/rdpClient.js')
 const { specOf, sessionKey } = require('../../dist/desktops.js')
@@ -72,6 +72,12 @@ test('IPC handles split headers/bodies, coalesced frames and rejects oversized f
     for (const byte of stream) decoder.push(Buffer.from([byte]), (type: string, data: Buffer) => result.push([type, data.toString('hex')]))
     assert.deepEqual(result, [['D', numbers(1280, 720).toString('hex')], ['N', ''], ['X', numbers(0, 0).toString('hex')]])
     assert.throws(() => decoder.push(Buffer.from([70, 127, 255, 255, 255]), () => {}), /oversized/)
+})
+
+test('certificate stores can exceed one IPC frame while retaining a bounded total', () => {
+    const text = 'certificate\n'.repeat(100000)
+    assert.equal(freeRDPAuthorities([text]).toString(), text)
+    assert.throws(() => freeRDPAuthorities(['x'.repeat(16 * 1024 * 1024 + 1)]), /authority store exceeds/)
 })
 
 test('native display updates must fit both the tile and the bounded remote screen', () => {
@@ -155,7 +161,7 @@ test('a refused SSH/gateway transport preserves its reason for the connection lo
     await once(socket, 'close')
     assert.equal(relay.failure?.message, 'SSH forwarding is disabled for this account')
 })
-for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'trusted-certificate', 'wrong-name'] as const) {
+for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'trusted-certificate', 'wrong-name', 'large-authorities'] as const) {
     test(`native helper refuses ${mode} before sending credentials and can be cancelled`, { skip: !native, timeout: 12000 }, async t => {
         const cert = selfSigned('native.test', 'subjectAltName=DNS:native.test')
         if (!cert) { t.skip('openssl is unavailable'); return }
@@ -184,7 +190,7 @@ for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'truste
         let checked = false, withoutNla = 0, observedValid: boolean | undefined
         await assert.rejects(process.connect({
             host: mode === 'wrong-name' ? 'other.test' : 'native.test', username: 'private-test-username', password: 'private-test-password', domain: 'PRIVATE', width: 800, height: 600, pipeline: false,
-            ...mode === 'trusted-certificate' || mode === 'wrong-name' ? { authorities: [cert.cert.toString()] } : {},
+            ...mode === 'trusted-certificate' || mode === 'wrong-name' || mode === 'large-authorities' ? { authorities: Array(mode === 'large-authorities' ? Math.ceil(1200000 / cert.cert.length) : 1).fill(cert.cert.toString()) } : {},
             open: async () => {
                 const socket = connect((server.address() as any).port, '127.0.0.1'); await once(socket, 'connect')
                 // Pointer/key activity while connecting must never be consumed as the certificate/NLA answer.
@@ -196,7 +202,7 @@ for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'truste
             frame: () => { throw new Error('not connected') },
         }), /FreeRDP/)
         assert.equal(checked, mode !== 'without-nla')
-        if (checked) assert.equal(observedValid, mode === 'trusted-certificate', 'trust anchors and the destination name are both verified')
+        if (checked) assert.equal(observedValid, mode === 'trusted-certificate' || mode === 'large-authorities', 'trust anchors and the destination name are both verified')
         assert.equal(withoutNla, mode === 'certificate-nla' ? 0 : 1)
         assert.ok(requests.length)
         assert.ok(requests.every(r => !r.includes(Buffer.from('private-test-username')) && !r.includes(Buffer.from('PRIVATE'))))

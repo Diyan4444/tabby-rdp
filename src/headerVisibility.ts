@@ -7,7 +7,9 @@ import { HeaderAutoHide } from './hostCompat'
 export const HEADER_MENU_ID = 'tabby-rdp-hide-header'
 
 /** Rebuild through Electron's supported API, retaining all the host's existing menu items and their roles. */
-export function installHeaderMenu (remote: any, mode: HeaderAutoHide, click: (mode: HeaderAutoHide) => void): any | null {
+export function installHeaderMenu (remote: any, mode: HeaderAutoHide, click: (mode: HeaderAutoHide) => void, currentWindow?: any, platform = process.platform): any | null {
+    // Tabby removes native menu bars on some Windows/Linux hosts. Never attach one to those windows.
+    if (platform !== 'darwin' && (!currentWindow || !currentWindow.isMenuBarVisible() && !currentWindow.isMenuBarAutoHide())) { return null }
     const menu = remote.Menu.getApplicationMenu()
     const view = menu?.items.find((item: any) => item.role?.toLowerCase() === 'viewmenu' || item.label?.replace(/&/g, '') === 'View')
     if (!view?.submenu) { return null }
@@ -17,8 +19,13 @@ export function installHeaderMenu (remote: any, mode: HeaderAutoHide, click: (mo
     }))
     const choice = new remote.MenuItem({ id: HEADER_MENU_ID, label: 'Hide Header', submenu: remote.Menu.buildFromTemplate(choices) })
     const submenu = remote.Menu.buildFromTemplate([...view.submenu.items.filter((item: any) => item.id !== HEADER_MENU_ID), choice])
-    remote.Menu.setApplicationMenu(remote.Menu.buildFromTemplate(menu.items.map((item: any) => item === view
-        ? { id: view.id, label: view.label, role: view.role, enabled: view.enabled, visible: view.visible, submenu } : item)))
+    const updated = remote.Menu.buildFromTemplate(menu.items.map((item: any) => item === view
+        ? { id: view.id, label: view.label, role: view.role, enabled: view.enabled, visible: view.visible, submenu } : item))
+    if (platform === 'darwin') { remote.Menu.setApplicationMenu(updated) } else {
+        const visible = currentWindow.isMenuBarVisible(), autoHide = currentWindow.isMenuBarAutoHide()
+        currentWindow.setMenu(updated)
+        currentWindow.setAutoHideMenuBar(autoHide); currentWindow.setMenuBarVisibility(visible)
+    }
     return choice
 }
 
@@ -54,7 +61,9 @@ export class HeaderVisibility {
     private active = false
     private revealed = false
     private remote: any = null
-    private menu: any = null
+    private menuMode?: HeaderAutoHide
+    private menuRebind = true
+    private menuFocused = true
     private menuItem: any = null
     private controlsHidden = false
     private keyboardFocus = false
@@ -71,16 +80,16 @@ export class HeaderVisibility {
             const style = document.createElement('style'); style.textContent = STYLE; document.head.appendChild(style)
             this.desktop.changed$.subscribe(() => this.schedule())
             this.app.activeTabChange$.subscribe(() => this.schedule())
-            this.config.changed$.subscribe(() => this.schedule())
+            this.config.changed$.subscribe(() => { this.menuRebind = true; this.schedule() })
             ;(this.config as any).ready$?.subscribe?.(() => this.schedule())
-            this.host.windowFocused$.subscribe(() => { this.menu = null; this.schedule() })
+            this.host.windowFocused$.subscribe(() => { this.menuFocused = true; this.menuRebind = true; this.schedule() })
             new MutationObserver(() => this.schedule()).observe(document.body, { childList: true, subtree: true })
             window.addEventListener('resize', () => this.schedule())
             window.addEventListener('mousemove', event => this.pointer(event))
             window.addEventListener('mouseout', event => { if (!event.relatedTarget) { this.pointer(event) } })
             window.addEventListener('keydown', () => { this.keyboardFocus = true })
             window.addEventListener('pointerdown', () => { this.keyboardFocus = false })
-            window.addEventListener('blur', () => { this.keyboardFocus = false; this.hideLater() })
+            window.addEventListener('blur', () => { this.menuFocused = false; this.keyboardFocus = false; this.hideLater() })
             document.addEventListener('focusin', () => {
                 this.schedule()
                 if (this.inHeader(document.activeElement)) { this.show() } else { this.hideLater() }
@@ -97,26 +106,28 @@ export class HeaderVisibility {
         setTimeout(() => { this.scheduled = false; this.refresh() }, 16)
     }
 
+    private refreshMenu (mode: HeaderAutoHide): void {
+        if (!this.menuFocused || !this.menuRebind && mode === this.menuMode) { return }
+        // The application menu belongs to the focused window. Rebind after focus so closing another window cannot
+        // leave a callback owned by its destroyed renderer. DOM mutations must not cause synchronous menu IPC.
+        try {
+            const current = this.remote?.getCurrentWindow()
+            if (current?.isFocused()) {
+                this.menuItem = installHeaderMenu(this.remote, mode, value => this.zone.run(() => {
+                    if (this.remote?.getCurrentWindow()?.isFocused()) {
+                        this.desktop.updateSettings({ headerAutoHide: value })
+                    }
+                }), current)
+                this.menuMode = mode
+                this.menuRebind = false
+            } else { this.menuFocused = false }
+        } catch { /* Native menus are optional on hosts that do not expose the Electron bridge. */ }
+    }
+
     private refresh (): void {
         if (!this.config.store) { return } // Windows can render the first frame before Tabby's config is ready.
         const settings = this.desktop.settings()
-        // The application menu belongs to the focused window. Rebind after focus so closing another window cannot
-        // leave a callback owned by its destroyed renderer, and never add a second Hide Header item.
-        try {
-            const current = this.remote?.getCurrentWindow()
-            const menu = this.remote?.Menu.getApplicationMenu()
-            if (current?.isFocused() && menu && menu !== this.menu) {
-                this.menuItem = installHeaderMenu(this.remote, settings.headerAutoHide, mode => this.zone.run(() => {
-                    if (this.remote?.getCurrentWindow()?.isFocused()) {
-                        this.desktop.updateSettings({ headerAutoHide: mode })
-                    }
-                }))
-                this.menu = this.remote.Menu.getApplicationMenu()
-            }
-            if (this.menuItem && current?.isFocused()) {
-                this.menuItem.submenu.items.forEach((item: any) => { item.checked = item.id === `${HEADER_MENU_ID}-${settings.headerAutoHide}` })
-            }
-        } catch { /* Native menus are optional on hosts that do not expose the Electron bridge. */ }
+        this.refreshMenu(settings.headerAutoHide)
         this.root = document.querySelector('app-root')
         const bar = this.root?.querySelector<HTMLElement>('.tab-bar') ?? null
         const title = this.root?.querySelector<HTMLElement>(':scope > title-bar') ?? null

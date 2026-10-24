@@ -32,8 +32,8 @@ test('Hide Header preserves the host menu actions, has one entry and can be rebo
     let current = new Menu([edit, new Item({ label: '&View', submenu: new Menu([devTools, fullscreen]) })])
     const remote = { MenuItem: Item, Menu: { ...Menu, buildFromTemplate: Menu.buildFromTemplate, getApplicationMenu: () => current, setApplicationMenu: (menu: Menu) => { current = menu } } }
     let first = 0, second = 0
-    installHeaderMenu(remote, 'never', () => first++)
-    const item = installHeaderMenu(remote, 'always', () => second++)
+    installHeaderMenu(remote, 'never', () => first++, undefined, 'darwin')
+    const item = installHeaderMenu(remote, 'always', () => second++, undefined, 'darwin')
     assert.equal(current.items[0], edit)
     const entries = current.items[1].submenu.items
     assert.deepEqual(entries.slice(0, 2), [devTools, fullscreen])
@@ -42,7 +42,26 @@ test('Hide Header preserves the host menu actions, has one entry and can be rebo
     assert.deepEqual(item.submenu.items.map((i: Item) => [i.label, i.checked]), [['Automatic', false], ['Never', false], ['Always', true]])
     item.submenu.items[2].click()
     assert.deepEqual([first, second], [0, 1])
-    assert.equal(installHeaderMenu({ Menu: { getApplicationMenu: () => null } }, 'never', () => {}), null)
+    assert.equal(installHeaderMenu({ Menu: { getApplicationMenu: () => null } }, 'never', () => {}, undefined, 'darwin'), null)
+})
+
+test('Windows/Linux menus retain per-window visibility and do not attach a removed menu bar', () => {
+    const original = new Menu([new Item({ label: 'View', submenu: new Menu([new Item({ role: 'togglefullscreen' })]) })])
+    let attached = 0, visible = false, autoHide = false
+    const remote = { MenuItem: Item, Menu: { buildFromTemplate: Menu.buildFromTemplate, getApplicationMenu: () => original,
+        setApplicationMenu: () => assert.fail('must not replace menus in other windows') } }
+    const current = { isMenuBarVisible: () => visible, isMenuBarAutoHide: () => autoHide,
+        setMenu: () => { attached++; visible = true; autoHide = false },
+        setMenuBarVisibility: (value: boolean) => { visible = value }, setAutoHideMenuBar: (value: boolean) => { autoHide = value } }
+    for (const platform of ['win32', 'linux']) {
+        visible = false; autoHide = false
+        assert.equal(installHeaderMenu(remote, 'never', () => {}, current, platform), null)
+        const before = attached
+        autoHide = true
+        assert.ok(installHeaderMenu(remote, 'automatic', () => {}, current, platform))
+        assert.equal(attached, before + 1)
+        assert.equal(visible, false); assert.equal(autoHide, true)
+    }
 })
 
 function harness (t: any) {
@@ -144,4 +163,18 @@ test('Automatic excludes consoles, connecting desktops and all splits, including
 test('header setup waits for the config instead of failing the renderer during startup', () => {
     const visibility = new HeaderVisibility({ settings () { throw new Error('too soon') } }, { store: undefined }, {}, {}, {})
     assert.doesNotThrow(() => visibility.refresh())
+})
+
+test('DOM/layout refreshes do not repeat synchronous native menu IPC', t => {
+    const { visibility, settings } = harness(t)
+    let calls = 0
+    visibility.remote = { getCurrentWindow: () => { calls++; return { isFocused: () => true, isMenuBarVisible: () => false, isMenuBarAutoHide: () => false } },
+        Menu: { getApplicationMenu: () => null } }
+    visibility.refresh()
+    for (let n = 0; n < 100; n++) visibility.refresh()
+    assert.equal(calls, 1)
+    settings.headerAutoHide = 'always'; visibility.refresh()
+    assert.equal(calls, 2)
+    visibility.menuRebind = true; visibility.refresh()
+    assert.equal(calls, 3, 'focus/config changes can rebind a replaced menu')
 })

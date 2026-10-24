@@ -12,7 +12,7 @@ import { consoleScript, DeskGate, deskKeyDigest, DeskRequest, MACHINE_ID_COMMAND
 import { AudioPlayer } from './audio'
 import { IronRDPLoader } from './ironrdp'
 import { RDPClient, ownRDPClient, rdpClient, RDP_CLIENT_LABELS, isRDPElement } from './rdpClient'
-import { FreeRDPProcess, requireFreeRDP } from './freerdp'
+import { FreeRDPProcess, requireFreeRDP, hasFreeRDP } from './freerdp'
 import { FreeRDPView } from './freerdpView'
 import { createH264Decoder } from './h264'
 import { CLIPBOARD_LABELS, ClipboardMode, clipboardSetting, ClipboardWays, clipboardWays, narrowest, ownClipboard, setUpClipboard, splitPaste } from './clipboard'
@@ -533,11 +533,11 @@ export class DesktopSession {
         this.labelTimer = setTimeout(() => osd.classList.remove('trd-shown'), settings.seconds * 1000)
     }
 
-    /** IronRDP's canvas: the remote frame, at the remote resolution. */
     private remoteElement (): Element | null {
         return this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp')
     }
 
+    /** The remote frame, at the remote resolution, for either client. */
     canvas (): HTMLCanvasElement | null {
         return this.remoteElement()?.shadowRoot?.querySelector('canvas') ?? null
     }
@@ -1134,6 +1134,11 @@ export class RemoteDesktopService {
     /** "Send files…": picks files to paste there. */
     sendFiles (pane: DesktopPane): void {
         this.sessions.get(pane)?.files?.pickAndSend().catch(() => null)
+    }
+
+    canSendFiles (pane: DesktopPane): boolean {
+        const session = this.sessions.get(pane)
+        return session?.state === 'connected' && !!session.files
     }
 
     /** Whether the pane's desktop is connected (and so can take files). */
@@ -2926,11 +2931,6 @@ export class RemoteDesktopService {
         }
     }
 
-    /**
-     * Which desktop a pane shows, for a moment (connected, shown, focused), like a TV naming its input. By default only
-     * where nothing else says: in a split, whose pane headers name the SSH connection, and for a desktop other than
-     * that connection's own (behind the host, or where ssh was typed on to).
-     */
     private labelOnFocus (pane: DesktopPane, session: DesktopSession): void {
         // Tabby emits focused$ again for clicks inside an already-focused pane, and also emits it for every child
         // when entering a split tab. Only the foreground desktop's transition into focus starts the overlay timer.
@@ -2939,6 +2939,11 @@ export class RemoteDesktopService {
         this.label(pane, session)
     }
 
+    /**
+     * Which desktop a pane shows, for a moment (connected, shown, focused), like a TV naming its input. By default only
+     * where nothing else says: in a split, whose pane headers name the SSH connection, and for a desktop other than
+     * that connection's own (behind the host, or where ssh was typed on to).
+     */
     private label (pane: DesktopPane, session: DesktopSession, always = false): void {
         // The overlay is cosmetic: whatever goes wrong with it, reading its settings included, mustn't fail the connection
         // it names (see run()).
@@ -3480,7 +3485,9 @@ export class RemoteDesktopService {
         try {
             // Discovered Hyper-V consoles have no per-desktop editor. Keep those on their supported client
             // when FreeRDP is only the global default; an explicit unsupported override is still refused below.
-            const client = spec.hyperv && !ownRDPClient(spec.client) ? 'ironrdp' : this.settingsFor(session).client
+            const preferred = this.settingsFor(session).client
+            const client = !ownRDPClient(spec.client) && (spec.hyperv || preferred === 'freerdp' && !hasFreeRDP()) ? 'ironrdp' : preferred
+            if (client !== preferred) { session.log.push('client: using IronRDP because the global FreeRDP default is unavailable for this desktop on this computer') }
             session.client = client
             if (client === 'freerdp') {
                 if (spec.hyperv) { throw new Error('FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.') }

@@ -2229,6 +2229,29 @@ test('a global FreeRDP default preserves discovered Hyper-V consoles; explicit u
     assert.match(error, /does not support Hyper-V/)
 })
 
+test('a synced FreeRDP default falls back locally when the helper is absent; an explicit override still reports it', async t => {
+    const native = require('../../dist/freerdp.js')
+    const fs = require('node:fs'), exists = fs.existsSync
+    t.mock.method(fs, 'existsSync', (path: string) => path !== native.nativeHelperPath() && exists(path))
+    const { svc } = service({ client: 'freerdp' })
+    const pane = {}, spec = specOf({ host: 'pc', kind: 'windows' }), s = session(spec, 'rdp#pc:3389')
+    svc.sessions.set(pane, s)
+    let loads = 0, prompts = 0
+    svc.loadIronRDP = async () => { loads++; return {} }
+    svc.wakeIfDown = async () => false
+    svc.endpointFor = async () => { prompts++; return null }
+    await svc.connect(pane, { key: 'rdp', label: 'PC' }, spec, s)
+    assert.equal(loads, 1); assert.equal(prompts, 1)
+    assert.equal((s as any).client, 'ironrdp')
+    assert.ok(s.log.some((line: string) => /global FreeRDP default is unavailable/.test(line)))
+    spec.client = 'freerdp'
+    let error = ''
+    svc.afterEnd = (_pane: unknown, _target: unknown, _spec: unknown, _session: unknown, end: any) => { error = end.error }
+    await svc.connect(pane, { key: 'rdp', label: 'PC' }, spec, s)
+    assert.equal(prompts, 1)
+    assert.match(error, /not installed/)
+})
+
 test('the tab client choice persists only to its profile and defers reconnect until accepted', async () => {
     const profile = { id: 'pc-a', type: 'rdp', name: 'Office', options: { host: 'pc', client: 'ironrdp' } }
     const other = { id: 'pc-b', type: 'rdp', name: 'Other user', options: { host: 'pc', client: 'ironrdp' } }

@@ -29,6 +29,7 @@
 #endif
 
 #define MAX_COMMAND (1024 * 1024)
+#define MAX_AUTHORITIES (16 * 1024 * 1024)
 #define MAX_QUEUE 1024
 typedef struct Command { BYTE type; UINT32 length; BYTE* data; struct Command* next; } Command;
 typedef struct {
@@ -275,7 +276,7 @@ static BOOL process_input(Context* c) {
     return !ended;
 }
 int main(int argc, char** argv) {
-    if (argc == 2 && strcmp(argv[1], "--version") == 0) { printf("tabby-freerdp IPC 1; FreeRDP %s\n", FREERDP_VERSION_FULL); return 0; }
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) { printf("tabby-freerdp IPC 2; FreeRDP %s\n", FREERDP_VERSION_FULL); return 0; }
     if (argc != 1) return 2;
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
@@ -291,13 +292,26 @@ int main(int argc, char** argv) {
     Context* c = (Context*)instance->context;
     InitializeCriticalSection(&c->inputLock); InitializeCriticalSection(&c->outputLock);
     c->inputEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    char* authorities = NULL;
+    size_t authorityLength = 0;
     Command* start = read_command();
+    while (start && start->type == 'A') {
+        if (!start->length || start->length > MAX_AUTHORITIES - authorityLength || memchr(start->data, 0, start->length)) return 2;
+        char* expanded = realloc(authorities, authorityLength + start->length + 1);
+        if (!expanded) return 2;
+        authorities = expanded;
+        memcpy(authorities + authorityLength, start->data, start->length);
+        authorityLength += start->length; authorities[authorityLength] = 0;
+        free_command(start); start = read_command();
+    }
     if (!start || start->type != 'S') return 2;
     const BYTE* p = start->data; UINT32 left = start->length;
     char* fields[6] = { 0 };
     for (int i = 0; i < 6; i++) if (!(fields[i] = string_field(&p, &left))) return 2;
     if (left != 20) return 2;
-    c->name = fields[0]; c->authorities = fields[4]; c->token = fields[5]; c->port = read32(p);
+    if (authorities && *fields[4]) return 2;
+    c->name = fields[0]; c->authorities = authorities ? authorities : fields[4]; c->token = fields[5]; c->port = read32(p);
+    if (authorities) free(fields[4]);
     UINT32 w = read32(p + 4), h = read32(p + 8), gfx = read32(p + 12), autologon = read32(p + 16);
     if (!c->inputEvent || !c->port || c->port > 65535 || strlen(c->token) != 64 || w < 200 || w > 7680 || h < 200 || h > 4320) return 2;
     rdpSettings* s = instance->context->settings;

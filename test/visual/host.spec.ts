@@ -113,7 +113,7 @@ test(hostedSmoke ? 'Native Tabby settings smoke (no baseline qualification)' : '
     }
 })
 
-test('View menu auto-hides the windowed header and reveals it without resizing the content', async ({}, info) => {
+test('Windowed header auto-hide reveals without resizing content or changing native menu visibility', async ({}, info) => {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${process.env.TRD_CDP_PORT}`)
     const page = browser.contexts()[0].pages().find(p => !p.url().startsWith('devtools:'))!
     let original: string | undefined, wasVisible = false
@@ -125,19 +125,24 @@ test('View menu auto-hides the windowed header and reveals it without resizing t
             const win = (globalThis as any).require('@electron/remote').getCurrentWindow()
             const visible = win.isVisible()
             win.show(); win.focus()
-            return { mode: (window as any).__remoteDesktop.desktop.settings().headerAutoHide, visible }
+            return { mode: (window as any).__remoteDesktop.desktop.settings().headerAutoHide, visible,
+                menuVisible: process.platform === 'darwin' ? null : win.isMenuBarVisible(),
+                autoHideMenu: process.platform === 'darwin' ? null : win.isMenuBarAutoHide() }
         })
         original = state.mode; wasVisible = state.visible
         const cdp = await browser.contexts()[0].newCDPSession(page)
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false })
         await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
-        await expect.poll(() => page.evaluate(() => {
+        if (process.platform === 'darwin') await expect.poll(() => page.evaluate(() => {
             const menu = (globalThis as any).require('@electron/remote').Menu.getApplicationMenu()
             return menu?.getMenuItemById('tabby-rdp-hide-header-always')?.label
         })).toBe('Always')
         const body = page.locator('app-root .content-tab-active').first()
         const before = (await body.boundingBox())!.height
-        await page.evaluate(() => (globalThis as any).require('@electron/remote').Menu.getApplicationMenu().getMenuItemById('tabby-rdp-hide-header-always').click())
+        await page.evaluate(() => {
+            if (process.platform === 'darwin') (globalThis as any).require('@electron/remote').Menu.getApplicationMenu().getMenuItemById('tabby-rdp-hide-header-always').click()
+            else (window as any).__remoteDesktop.desktop.updateSettings({ headerAutoHide: 'always' })
+        })
         const root = page.locator('app-root'), bar = page.locator('app-root .tab-bar')
         await expect(root).toHaveClass(/trd-auto-hide-header/)
         await expect.poll(async () => (await body.boundingBox())!.height).toBeGreaterThan(before + 10)
@@ -152,9 +157,16 @@ test('View menu auto-hides the windowed header and reveals it without resizing t
         expect([revealedSize.width, revealedSize.height]).toEqual([hiddenSize.width, hiddenSize.height])
         await page.mouse.move(500, 700)
         await expect(bar).toHaveCSS('visibility', 'hidden')
-        await page.evaluate(() => (globalThis as any).require('@electron/remote').Menu.getApplicationMenu().getMenuItemById('tabby-rdp-hide-header-never').click())
+        await page.evaluate(() => {
+            if (process.platform === 'darwin') (globalThis as any).require('@electron/remote').Menu.getApplicationMenu().getMenuItemById('tabby-rdp-hide-header-never').click()
+            else (window as any).__remoteDesktop.desktop.updateSettings({ headerAutoHide: 'never' })
+        })
         await expect(root).not.toHaveClass(/trd-auto-hide-header/)
         await expect(bar).toHaveCSS('visibility', 'visible')
+        if (process.platform !== 'darwin') expect(await page.evaluate(() => {
+            const win = (globalThis as any).require('@electron/remote').getCurrentWindow()
+            return [win.isMenuBarVisible(), win.isMenuBarAutoHide()]
+        })).toEqual([state.menuVisible, state.autoHideMenu])
         expect(errors).toEqual([])
     } finally {
         if (original) await page.evaluate(mode => (window as any).__remoteDesktop.desktop.updateSettings({ headerAutoHide: mode }), original)
