@@ -2228,3 +2228,58 @@ test('a global FreeRDP default preserves discovered Hyper-V consoles; explicit u
     assert.equal(prompts, 1, 'unsupported explicit choice must not ask for credentials')
     assert.match(error, /does not support Hyper-V/)
 })
+
+test('the tab client choice persists only to its profile and defers reconnect until accepted', async () => {
+    const profile = { id: 'pc-a', type: 'rdp', name: 'Office', options: { host: 'pc', client: 'ironrdp' } }
+    const other = { id: 'pc-b', type: 'rdp', name: 'Other user', options: { host: 'pc', client: 'ironrdp' } }
+    const { svc, config, store } = service({ client: 'ironrdp' }, { profiles: [profile, other] })
+    const pane = { profile: structuredClone(profile), element: { nativeElement: {} } }
+    const spec = specOf({ host: 'pc', kind: 'windows', client: 'ironrdp' })
+    const s = Object.assign(session(spec, 'rdp#pc:3389'), { state: 'connected', client: 'ironrdp' })
+    svc.sessions.set(pane, s)
+    const reconnects: unknown[] = [], dialogs: any[] = []
+    svc.reopen = async (pane: unknown) => { reconnects.push(pane) }
+    let response = 1
+    svc.platform.showMessageBox = async (options: unknown) => { dialogs.push(options); return { response } }
+    await svc.setRDPClient(pane, 'freerdp')
+    assert.equal(profile.options.client, 'freerdp')
+    assert.equal(pane.profile.options.client, 'freerdp')
+    assert.equal(other.options.client, 'ironrdp')
+    assert.equal(store.client, 'ironrdp')
+    assert.equal(config.saves, 1)
+    assert.equal(s.spec.client, 'ironrdp', 'live connection keeps its original client')
+    assert.equal(s.client, 'ironrdp')
+    assert.deepEqual(reconnects, [], 'keeping the session must not reconnect')
+    assert.deepEqual(svc.rdpClientChoice(pane), { value: 'freerdp', default: 'ironrdp', active: 'ironrdp' })
+    assert.equal(dialogs[0].buttons[0], 'Reconnect to apply')
+    assert.equal(dialogs[0].defaultId, 1)
+    response = 0
+    await svc.setRDPClient(pane, 'freerdp')
+    assert.deepEqual(reconnects, [pane], 'only the chosen pane reconnects after acceptance')
+})
+
+test('Follow default overrides a group client and works while the desktop is disconnected', async () => {
+    const profile = { id: 'pc-a', type: 'rdp', group: 'servers', options: { host: 'pc' } as any }
+    const { svc, store } = service({ client: 'ironrdp' }, { profiles: [profile] })
+    svc.config.store.groups = [{ id: 'servers', defaults: { rdp: { options: { client: 'freerdp' } } } }]
+    const pane = { profile: structuredClone(profile), element: { nativeElement: {} } }
+    assert.equal(svc.rdpClientChoice(pane).value, 'freerdp')
+    await svc.setRDPClient(pane, null)
+    assert.equal(profile.options.client, '', 'empty is explicit: deleting it would inherit the group again')
+    assert.deepEqual(svc.rdpClientChoice(pane), { value: null, default: 'ironrdp', active: null })
+    assert.equal(store.client, 'ironrdp')
+    assert.equal(svc.rdpClientChoice({ profile: { type: 'ssh' } }), null)
+})
+
+test('a stale reconnect dialog cannot interrupt a replacement connection', async () => {
+    const profile = { id: 'pc-a', type: 'rdp', options: { host: 'pc', client: 'ironrdp' } }
+    const { svc } = service({}, { profiles: [profile] })
+    const pane = { profile: structuredClone(profile), element: { nativeElement: {} } }
+    const s = Object.assign(session(specOf({ host: 'pc' }), 'rdp#pc:3389'), { state: 'connected', client: 'ironrdp' })
+    svc.sessions.set(pane, s)
+    let reconnects = 0
+    svc.reopen = async () => { reconnects++ }
+    svc.platform.showMessageBox = async () => { svc.sessions.set(pane, { ...s }); return { response: 0 } }
+    await svc.setRDPClient(pane, 'freerdp')
+    assert.equal(reconnects, 0)
+})

@@ -302,6 +302,7 @@ test('a desktop\'s menu offers paste and typing into all as the desktops showing
             isViewOnly: () => false,
             microphoneStoppedFor: () => false,
             canSignInAgain: () => false,
+            rdpClientChoice: () => null,
             settings: () => ({ resize: 'live', zoom: 'fit', sharpness: 'standard', clipboard: 'both', microphone: false }),
             ownSharpness: () => null,
             clipboardCapOf: () => 'both',
@@ -463,4 +464,34 @@ test('only the plugin\'s own hotkeys act: a name every object inherits does noth
     } finally {
         process.off('uncaughtException', caught)
     }
+})
+
+test('the RDP tab menu separates the running client from the checked next-connection choice', async () => {
+    const { RemoteDesktopContextMenu } = require('../../dist/ui.js')
+    const pane = { profile: { type: 'rdp' }, element: { nativeElement: {} } }
+    const calls: unknown[] = []
+    let value: string | null = null
+    const desktop = {
+        has: () => true, isConnected: () => false, isVisible: () => true, hasConsole: () => false,
+        choicesOf: () => ({ specs: [], current: null }), vmsCut: () => false, desktopOf: () => null,
+        canSaveFoundDesktop: () => false, canSignInAgain: () => false, configuredDesktops: () => [],
+        ownSharpness: () => null, clipboardCapOf: () => 'both',
+        settings: () => ({ client: 'ironrdp', resize: 'live', sharpness: 'standard', clipboard: 'both' }),
+        rdpClientChoice: () => ({ value, default: 'ironrdp', active: 'freerdp' }),
+        setRDPClient: (p: unknown, c: string | null) => calls.push([p, c]),
+    }
+    const menu = new RemoteDesktopContextMenu(desktop, { cached: () => null, targetOf: async () => null }, {}, {}, { tabs: [] }, {})
+    const choices = async () => (await menu.getItems(pane)).find((item: any) => item.label === 'RDP client').submenu
+    let items = await choices()
+    assert.equal(items[0].label, 'Current session: FreeRDP (experimental)')
+    assert.equal(items[0].enabled, false)
+    assert.deepEqual(items.filter((i: any) => i.type === 'radio').map((i: any) => [i.label, i.checked]), [
+        ['Follow default (IronRDP)', true], ['IronRDP', false], ['FreeRDP (experimental)', false],
+    ])
+    for (const item of items.filter((i: any) => i.type === 'radio')) item.click()
+    assert.deepEqual(calls, [[pane, null], [pane, 'ironrdp'], [pane, 'freerdp']])
+    value = 'ironrdp'
+    items = await choices()
+    assert.equal(items.find((i: any) => i.label === 'IronRDP').checked, true)
+    assert.equal(items.find((i: any) => i.label?.startsWith('Follow default')).checked, false)
 })

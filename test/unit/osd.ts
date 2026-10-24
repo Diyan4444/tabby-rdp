@@ -187,3 +187,16 @@ test('the overlay can\'t fail the connection it names, reading its settings incl
     assert.doesNotThrow(() => svc.label({}, session))
     assert.deepEqual(session.log, ['overlay: unreadable config', 'overlay: no room'])
 })
+
+test('focus-triggered labels still obey the disabled overlay setting', () => {
+    const svc: any = service({ osd: { show: 'off' } })
+    svc.showsInFront = () => true
+    let flashes = 0
+    const session = {
+        state: 'connected', visible: true, labelFocused: false, remote: { label: 'PC', direct: {} },
+        spec: { id: 'pc:3389', name: 'PC' }, log: [], flashLabel: () => { flashes++ },
+    }
+    svc.labelOnFocus({}, session)
+    svc.labelOnFocus({}, session)
+    assert.equal(flashes, 0)
+})

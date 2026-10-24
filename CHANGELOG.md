@@ -8,6 +8,12 @@
   credentials and certificate prompts. The first preview supports display and input; clipboard, audio, shared folders,
   Hyper-V consoles and H.264 decoding are not yet implemented. Native builds are qualified separately for each
   platform and architecture; Windows Server performance comparisons remain pending.
+- RDP profile tabs also offer the client choice in their ellipsis/right-click menu, with a per-profile checkmark and
+  an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
+
+**Fixed**
+- The desktop name overlay now appears once when focus enters a desktop. Repeated clicks within the same desktop
+  no longer restart it; leaving and returning shows it again. Applies to IronRDP and FreeRDP.
 
 ## 0.5.7
 

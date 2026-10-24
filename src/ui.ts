@@ -13,6 +13,7 @@ import { DesktopKeyboard, SEND_KEYS } from './keyboard'
 import { UpdateCheck } from './updates'
 import { isSSHTab } from './ssh'
 import { DesktopPane, desktopPaneOf, RemoteTargets } from './targets'
+import { RDP_CLIENT_LABELS } from './rdpClient'
 
 export { TOGGLE_HOTKEY }
 
@@ -226,6 +227,18 @@ export class RemoteDesktopContextMenu extends TabContextMenuItemProvider {
         const choices = desktopChoices(this.desktop, pane, this.targets.cached(pane)?.label)
         if (choices.length) {
             items.push({ label: 'Desktops', submenu: choices })
+        }
+        const client = this.desktop.rdpClientChoice(pane)
+        if (client) {
+            items.push({ label: 'RDP client', submenu: [
+                ...client.active ? [{ label: `Current session: ${RDP_CLIENT_LABELS[client.active]}`, enabled: false }, { type: 'separator' as const }] : [],
+                { type: 'radio', label: `Follow default (${RDP_CLIENT_LABELS[client.default]})`, checked: client.value === null,
+                    click: () => this.desktop.setRDPClient(pane, null) },
+                ...(['ironrdp', 'freerdp'] as const).map(value => ({
+                    type: 'radio' as const, label: RDP_CLIENT_LABELS[value], checked: client.value === value,
+                    click: () => this.desktop.setRDPClient(pane, value),
+                })),
+            ] })
         }
         if (this.desktop.isConnected(pane)) {
             items.push({ label: 'Send files…', click: () => this.desktop.sendFiles(pane) })

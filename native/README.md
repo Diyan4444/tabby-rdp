@@ -5,6 +5,11 @@ desktop form have an override. An empty override follows Settings. Existing conf
 Changes apply on the next connection; use Reconnect to compare clients on the same desktop. Accounts, certificate
 trust and desktop identities are shared between the clients.
 
+An RDP profile tab's ellipsis/right-click menu also has **RDP client**: **Follow default**, **IronRDP**, or
+**FreeRDP (experimental)**. The checkmark shows the saved next-connection choice; **Current session** names the
+client already running. Changing the choice offers **Reconnect to apply** or **Keep current session**, without
+disconnecting automatically. A saved profile keeps its override; an unsaved quick connection keeps it in that tab.
+
 The initial FreeRDP preview renders inside the Tabby tab and supports keyboard, mouse, Unicode input, view only,
 screenshots, scaling, reconnect and the display-control channel. It uses the plugin's existing direct, SSH and RD
 Gateway transports, credential store and certificate/NLA prompts. Each attempt has its own native process.

@@ -337,6 +337,10 @@ function remoteSizeFor (rect: { width: number, height: number }, settings: Deskt
 
 /** Exported for the unit tests, which use its keys (credentialKey) without a page to put a layer in. */
 export class DesktopSession {
+    /** The client frozen for the current connection attempt, independent of a pending profile change. */
+    client: RDPClient | null = null
+    /** Whether the name overlay has already been offered for this visit to the pane. */
+    labelFocused = false
     state: SessionState = 'connecting'
     visible = false
     readonly overlay: HTMLElement
@@ -1137,6 +1141,60 @@ export class RemoteDesktopService {
     /** The desktop this pane shows or has open, if any. */
     desktopOf (pane: DesktopPane): DesktopSpec | null {
         return this.sessions.get(pane)?.spec ?? null
+    }
+
+    /** The saved profile, or the tab's own profile for a quick connection that has not been saved. */
+    private clientProfile (pane: DesktopPane): any | null {
+        if (!isRDPTab(pane)) { return null }
+        return (this.config.store.profiles ?? []).find((p: any) => p?.type === RDP_PROFILE_TYPE && p.id && p.id === pane.profile?.id) ?? pane.profile
+    }
+
+    /** The profile's next-connection choice, with the currently running client shown separately. */
+    rdpClientChoice (pane: DesktopPane): { value: RDPClient | null, default: RDPClient, active: RDPClient | null } | null {
+        const profile = this.clientProfile(pane)
+        if (!profile) { return null }
+        const session = this.sessions.get(pane)
+        return {
+            value: ownRDPClient(this.profiles.getConfigProxyForProfile(profile).options?.client) ?? null,
+            default: this.settings().client,
+            active: session && session.state !== 'ended' ? session.client : null,
+        }
+    }
+
+    /** Save this profile's override without interrupting it; reconnect only when explicitly chosen. */
+    async setRDPClient (pane: DesktopPane, value: RDPClient | null): Promise<void> {
+        const profile = this.clientProfile(pane)
+        if (!profile) { return }
+        const selected = ownRDPClient(value) ?? ''
+        const options = profile.options ?? (profile.options = {})
+        const before = options.client
+        options.client = selected // An explicit empty value follows the global setting, even under group defaults.
+        try { await this.config.save() } catch (error: any) {
+            if (options.client === selected) {
+                if (before === undefined) { delete options.client } else { options.client = before }
+            }
+            this.notifications.error(`The RDP client could not be saved: ${error?.message ?? error}`)
+            return
+        }
+        if (options.client !== selected) { return }
+        if (pane.profile?.options) { pane.profile.options.client = selected }
+        this.changed$.next()
+        const session = this.sessions.get(pane)
+        const next = ownRDPClient(selected) ?? this.settings().client
+        if (!session || session.state === 'ended' || session.client === next) { return }
+        const { response } = await this.platform.showMessageBox({
+            type: 'warning',
+            message: `Use ${RDP_CLIENT_LABELS[next]} for ${profile.name}?`,
+            detail: 'The choice is saved for this profile. Reconnect to apply it now, or keep the current session until its next connection.',
+            buttons: ['Reconnect to apply', 'Keep current session'],
+            defaultId: 1,
+            cancelId: 1,
+        })
+        // The tab may have closed, reconnected, or changed its choice again while the dialog was open.
+        const current = this.rdpClientChoice(pane)
+        if (response === 0 && this.sessions.get(pane) === session && current && (current.value ?? current.default) === next) {
+            await this.reopen(pane, session.spec)
+        }
     }
 
     /** How far the clipboard of the pane's desktop was narrowed while it was open (DesktopSession.clipboardCap). */
@@ -1952,7 +2010,7 @@ export class RemoteDesktopService {
             const focused = pane.focused$.subscribe(() => {
                 if (created.visible) {
                     setTimeout(() => created.visible && this.showsInFront(created) && created.focusDesktop())
-                    this.label(pane, created)
+                    this.labelOnFocus(pane, created)
                 }
             })
             created.onDispose(() => focused.unsubscribe())
@@ -1963,6 +2021,7 @@ export class RemoteDesktopService {
             // modifier is still down, and its keyup goes where they went. A moment later: Tabby says so before it says
             // which tab is the active one.
             const blurred = pane.blurred$.subscribe(() => {
+                created.labelFocused = false
                 setTimeout(() => this.letGoUnlessInFront(created))
             })
             created.onDispose(() => blurred.unsubscribe())
@@ -1976,7 +2035,7 @@ export class RemoteDesktopService {
         this.syncIndicator(session)
         this.changed$.next()
         this.tip(pane, session)
-        this.label(pane, session)
+        this.labelOnFocus(pane, session)
         const shown = session
         setTimeout(() => this.followPane(pane, shown))
     }
@@ -2344,6 +2403,7 @@ export class RemoteDesktopService {
     showConsole (pane: DesktopPane): void {
         const session = this.sessions.get(pane)
         if (session) {
+            session.labelFocused = false
             session.setVisible(false)
             this.syncIndicator(session)
             this.changed$.next()
@@ -2854,6 +2914,14 @@ export class RemoteDesktopService {
      * where nothing else says: in a split, whose pane headers name the SSH connection, and for a desktop other than
      * that connection's own (behind the host, or where ssh was typed on to).
      */
+    private labelOnFocus (pane: DesktopPane, session: DesktopSession): void {
+        // Tabby emits focused$ again for clicks inside an already-focused pane, and also emits it for every child
+        // when entering a split tab. Only the foreground desktop's transition into focus starts the overlay timer.
+        if (session.state !== 'connected' || !session.visible || !this.showsInFront(session) || session.labelFocused) { return }
+        session.labelFocused = true
+        this.label(pane, session)
+    }
+
     private label (pane: DesktopPane, session: DesktopSession, always = false): void {
         // The overlay is cosmetic: whatever goes wrong with it, reading its settings included, mustn't fail the connection
         // it names (see run()).
@@ -3396,6 +3464,7 @@ export class RemoteDesktopService {
             // Discovered Hyper-V consoles have no per-desktop editor. Keep those on their supported client
             // when FreeRDP is only the global default; an explicit unsupported override is still refused below.
             const client = spec.hyperv && !ownRDPClient(spec.client) ? 'ironrdp' : this.settingsFor(session).client
+            session.client = client
             if (client === 'freerdp') {
                 if (spec.hyperv) { throw new Error('FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.') }
                 requireFreeRDP()
@@ -4182,7 +4251,7 @@ export class RemoteDesktopService {
         session.log.push(`connected: ${size.width}x${size.height}`)
         session.status('')
         this.tip(pane, session)
-        this.label(pane, session)
+        this.labelOnFocus(pane, session)
         this.syncIndicator(session)
         this.changed$.next()
         this.rememberEndpoint(session, endpoint)

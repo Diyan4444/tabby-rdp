@@ -130,6 +130,8 @@ on the GNOME desktop. It is optional and off by default. [How desk works](docs/d
 **Settings › Remote Desktop › Settings › RDP client** selects **IronRDP** or experimental **FreeRDP**. Profiles and
 behind-host desktops can override the default. Changes apply on the next connection.
 
+In an RDP profile tab's **…** menu, choose **RDP client** to switch that profile and optionally **Reconnect to apply**.
+
 | Client | Availability | Capabilities |
 |---|---|---|
 | IronRDP (default) | macOS, Windows and Linux | The features above, subject to the server's capabilities |
