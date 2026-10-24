@@ -96,8 +96,10 @@ test('header controls retain keyboard focus; disabling or full screen restores t
     settings.headerAutoHide = 'always'; visibility.refresh(); visibility.pointer({ clientX: 500, clientY: 1 })
     const button = new FakeElement('button'); bar.appendChild(button); doc.activeElement = button
     visibility.keyboardFocus = true
-    visibility.pointer({ clientX: 500, clientY: 400 }); t.mock.timers.tick(400)
+    visibility.hideLater(); t.mock.timers.tick(400)
     assert.equal(root.classList.contains('trd-header-revealed'), true)
+    visibility.pointer({ clientX: 500, clientY: 400 }); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), false, 'using the pointer must not retain an old keyboard-focus pin')
     doc.activeElement = doc.body
     visibility.hideLater(); settings.headerAutoHide = 'never'; visibility.refresh(); t.mock.timers.tick(400)
     assert.equal(root.classList.contains('trd-auto-hide-header'), false)

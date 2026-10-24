@@ -193,6 +193,7 @@ export class HeaderVisibility {
 
     private pointer (event: MouseEvent): void {
         if (!this.active) { return }
+        this.keyboardFocus = false
         const edge = this.root?.dataset.trdHeaderEdge
         const atEdge = event.clientY <= 3 || edge === 'left' && event.clientX <= 3 ||
             edge === 'right' && event.clientX >= window.innerWidth - 3 || edge === 'bottom' && event.clientY >= window.innerHeight - 3
