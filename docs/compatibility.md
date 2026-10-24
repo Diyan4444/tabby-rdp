@@ -48,9 +48,12 @@ These focused checks do not establish clipboard, shared-folder, audio or microph
 
 ## FreeRDP client preview
 
-The macOS ARM64 helper has passed the packed-plugin lifecycle suite against Windows Server 2025: desktop pixels,
-input, view only, cleanup, reconnect and switching the same profile back to IronRDP. This is functional coverage;
-performance comparisons and Windows/Linux client qualification remain pending. See [capabilities and builds](../native/README.md).
+Native helpers are bundled for macOS ARM64 and Windows/Linux ARM64 and x64. The native protocol/security checks
+pass on all five targets. Packed-plugin lifecycle tests against Windows Server 2025 pass in the existing Windows 11
+ARM64 and Ubuntu 24.04 ARM64 client VMs: pixels, input routing, live resize in both directions, fixed-resolution
+fitting, view only, cleanup, reconnect and switching to IronRDP. macOS passed the earlier lifecycle suite; final
+maintainer testing of the latest build, live x64 RDP qualification and performance comparisons remain pending.
+See [capabilities and build coverage](../native/README.md).
 
 ## Limitations
 

@@ -15,6 +15,10 @@
   an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
 
 **Fixed**
+- FreeRDP display-control channels are loaded after the connection-time channel reset, so live resize reaches the server.
+- Synced global FreeRDP defaults preserve connections on computers without its helper; explicit choices still report a missing build.
+- Header auto-hide preserves native menu-bar visibility and avoids synchronous menu IPC on routine DOM changes.
+- Large certificate-authority stores use bounded IPC chunks, and unavailable file-transfer actions are hidden.
 - Remote Desktop settings use Tabby's native toggle component, matching the host's styling, hit area and theme.
 - The desktop name overlay now appears once when focus enters a desktop. Repeated clicks within the same desktop
   no longer restart it; leaving and returning shows it again. Applies to IronRDP and FreeRDP.

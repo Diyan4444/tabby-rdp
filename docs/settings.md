@@ -29,9 +29,9 @@ are local to this computer:
 
 | Setting | Default | Behavior |
 |---|---|---|
-| RDP client (`client`) | IronRDP (`ironrdp`) | Experimental FreeRDP (`freerdp`) needs a matching native helper. Profiles and desktops can override the default; changes apply on reconnect. [Capabilities](../native/README.md). |
+| RDP client (`client`) | IronRDP (`ironrdp`) | Experimental FreeRDP (`freerdp`) needs a matching native helper. Profiles and desktops can override the default; changes apply on reconnect. A global FreeRDP default falls back to IronRDP locally when its helper is absent; an explicit override reports the missing build. [Capabilities](../native/README.md). |
 | When the pane is resized (`resize`) | Resize the remote desktop to fit (`live`) | Or reconnect at the new size (`reconnect`), or keep the resolution (`off`). |
-| Auto-hide header (`headerAutoHide`) | Never (`never`) | Below the resize setting in Picture. `automatic`: only a connected remote desktop alone in the active tab; any split, even with a maximized pane, keeps the header visible. `always`: auto-hide across all tabs. Also available from **View › Hide Header**. |
+| Auto-hide header (`headerAutoHide`) | Never (`never`) | Below the resize setting in Picture. `automatic`: only a connected remote desktop alone in the active tab; any split, even with a maximized pane, keeps the header visible. `always`: auto-hide across all tabs. Also available from **View › Hide Header** where Tabby has a native View menu. Existing hidden/removed Windows and Linux menu bars stay that way. |
 | Minimum window size (`headerMinWidth`, `headerMinHeight`) | None (`0`, `0`) | Optional limits for Automatic, in logical pixels. Each nonblank dimension must meet its limit. Uses the actual window size, including manually resized windows. Never and Always ignore the limits. |
 | Keep the resolution: scale to fit or actual size (`zoom`) | Scale to fit (`fit`) | With `resize: off`: `actual` shows one remote pixel per point, with scroll bars when the desktop is larger than the pane (a Retina-sized desktop shows at twice the size). |
 | Sharpness (`sharpness`) | Standard (`standard`) | Retina (`retina`): device pixels, with the remote's scale set to match. |

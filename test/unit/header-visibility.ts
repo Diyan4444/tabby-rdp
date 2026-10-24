@@ -177,4 +177,8 @@ test('DOM/layout refreshes do not repeat synchronous native menu IPC', t => {
     assert.equal(calls, 2)
     visibility.menuRebind = true; visibility.refresh()
     assert.equal(calls, 3, 'focus/config changes can rebind a replaced menu')
+    visibility.remote.getCurrentWindow = () => { calls++; throw new Error('optional bridge unavailable') }
+    visibility.menuRebind = true; visibility.refresh()
+    for (let n = 0; n < 100; n++) visibility.refresh()
+    assert.equal(calls, 4, 'an unsupported bridge is retried only on focus/config changes')
 })

@@ -1,0 +1,73 @@
+{
+  "source": {
+    "version": "3.32.2",
+    "url": "https://codeload.github.com/FreeRDP/FreeRDP/tar.gz/refs/tags/3.32.2",
+    "sha256": "9ccb8357bf0188044a460de775c7ea289ca7d2a2a917eca0f0a7c4dc9c8b08ea"
+  },
+  "opensslSource": {
+    "version": "3.5.9",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+  },
+  "version": "tabby-freerdp IPC 2; FreeRDP 3.32.2",
+  "platform": "win32",
+  "arch": "x64",
+  "buildSources": {
+    "native/main.c": "1e72c2490b7688bd4eb8d7468200cd17deca45d7e998d2808285a40ecafb1b8b",
+    "native/options.cmake": "228ae20f83200a8a76a6a05bf73deb2b9aa94487b0ffca023bbb8fefd76cd1b8",
+    "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
+    "scripts/build-freerdp.mjs": "41f20d6b316ef9089c42e46356de034bf6c280a024014bd14929f5b8f17a60db",
+    "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
+    "scripts/build-freerdp-ci.mjs": "11d38612fafb3bf49ae59ba8f2a94087715274a1eecea624de029ca5e61d8fd1"
+  },
+  "files": [
+    {
+      "path": "freerdp-client3.dll",
+      "sha256": "4ab8ca7d79c13c7f578ca1203ec007b52ad4d0de08c1d31ac522690cac6e216a"
+    },
+    {
+      "path": "freerdp3.dll",
+      "sha256": "dc546f152bd2f1c6ce02eb71a302966601d1b9c29c08a8a95d85850c8017c0f0"
+    },
+    {
+      "path": "legacy.dll",
+      "sha256": "90856b8a8256da27ce9b5a65a5de6286e4eb212be639c57aa186371b96f999df"
+    },
+    {
+      "path": "libcrypto-3-x64.dll",
+      "sha256": "30a8ebf4bb07369e0cde1e8895f94a0912dc94b5f320a14d6b2e58b27a833ad3"
+    },
+    {
+      "path": "libssl-3-x64.dll",
+      "sha256": "75975a0d361475ebe6abb2889c6442c099741d7518f0597160d799c019efee7e"
+    },
+    {
+      "path": "licenses/FreeRDP-LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "licenses/FreeRDP-NOTICE",
+      "sha256": "c870d52f42a8f93023b99a85fe68d02637d6b04e5f35bbcd7f98759adb4e4d49"
+    },
+    {
+      "path": "licenses/NOTICE",
+      "sha256": "986993696ba4058d5f7fe444d6737f128b40c168393eb1fe371b0daa572bfb2b"
+    },
+    {
+      "path": "licenses/OpenSSL-LICENSE",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "path": "licenses/Unicode-NOTICE",
+      "sha256": "47e27f87477adf7e9a6cab4f5dceadb82f40cc2f211dc7fc6496b98a1bbee859"
+    },
+    {
+      "path": "tabby-freerdp.exe",
+      "sha256": "4dc7dbec2e83cd634f59ec90f318c64c2900515272aeb0f1cb9050e70d0b2abc"
+    },
+    {
+      "path": "winpr3.dll",
+      "sha256": "fc27ff192b6c51a0e2ecdc2f69f0c80013226da1ddab26205286c161ec0c1f5f"
+    }
+  ]
+}

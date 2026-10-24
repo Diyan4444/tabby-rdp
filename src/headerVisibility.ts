@@ -121,7 +121,11 @@ export class HeaderVisibility {
                 this.menuMode = mode
                 this.menuRebind = false
             } else { this.menuFocused = false }
-        } catch { /* Native menus are optional on hosts that do not expose the Electron bridge. */ }
+        } catch {
+            // Retry on the next focus/config change, rather than every DOM mutation on an unsupported bridge.
+            this.menuMode = mode
+            this.menuRebind = false
+        }
     }
 
     private refresh (): void {
