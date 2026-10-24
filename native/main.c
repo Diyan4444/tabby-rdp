@@ -221,7 +221,7 @@ static BOOL pre_connect(freerdp* instance) {
     rdpContext* base = instance->context;
     if (PubSub_SubscribeChannelConnected(base->pubSub, channel_connected) < 0 ||
         PubSub_SubscribeChannelDisconnected(base->pubSub, channel_disconnected) < 0) return FALSE;
-    return freerdp_client_load_addins(base->channels, base->settings);
+    return TRUE;
 }
 static BOOL post_connect(freerdp* instance) {
     UINT32 width = freerdp_settings_get_uint32(instance->context->settings, FreeRDP_DesktopWidth);
@@ -338,6 +338,8 @@ int main(int argc, char** argv) {
     rdpTransportIo io = c->original; io.TCPConnect = tcp_connect; io.TLSConnect = tls_connect;
     if (!freerdp_set_io_callbacks(instance->context, &io)) return 2;
     instance->PreConnect = pre_connect; instance->PostConnect = post_connect;
+    /* FreeRDP replaces the channel collection after PreConnect. Load addins on the replacement, not the old one. */
+    instance->LoadChannels = freerdp_client_load_channels;
     instance->VerifyX509Certificate = verify_certificate; instance->AuthenticateEx = authenticate; instance->Redirect = redirect;
     freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0);
     BOOL connected = freerdp_connect(instance);
