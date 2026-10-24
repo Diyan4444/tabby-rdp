@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0-rc.1 (unreleased)
+## 0.6.0-rc.1
 
 **Added**
 - Windowed title/tab-header auto-hide (**View › Hide Header**, or **Settings › Remote Desktop › Settings › Picture**).
