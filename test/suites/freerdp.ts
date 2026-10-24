@@ -70,7 +70,7 @@ await suite('freerdp', async t => {
         H.nativeProcess.send = (type, data) => { if (type === 'K') H.nativeKeys++; send(type, data) }
     `)
     await t.clickDesktop('H.nativePane')
-    await t.press('Escape') // Clear a transient desktop menu/dialog in this dedicated test account.
+    await t.escape() // Clear a transient desktop menu/dialog in this dedicated test account.
     t.check('remote display contains visible content after pointer input', !!await t.waitFor(`return H.canvas(H.nativePane)?.colors > 20`, 5))
     await t.dump('H.nativePane', 'freerdp-input')
     await t.press('a')
