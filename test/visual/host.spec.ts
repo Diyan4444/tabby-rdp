@@ -23,11 +23,42 @@ test(hostedSmoke ? 'Native Tabby settings smoke (no baseline qualification)' : '
         const cdp = await context.newCDPSession(page)
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false })
         await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+        // Compare to Tabby's own control in the same host/theme, rather than asserting a hand-copied CSS design.
+        await page.evaluate(() => (window as any).__remoteDesktop.help.openSettings('window'))
+        const standardToggle = page.locator('window-settings-tab toggle input[type=checkbox]').first()
+        await expect(standardToggle).toBeVisible()
+        const reference = await standardToggle.evaluate(el => {
+            const style = getComputedStyle(el)
+            return { checked: (el as HTMLInputElement).checked, width: style.width, height: style.height,
+                borderRadius: style.borderRadius, backgroundColor: style.backgroundColor,
+                backgroundImage: style.backgroundImage, cursor: style.cursor, fontSize: style.fontSize }
+        })
+        await info.attach('tabby-standard-toggle', { body: await standardToggle.locator('..').screenshot(), contentType: 'image/png' })
         // Open the ordinary settings page. Help-topic navigation schedules smooth scrolling.
         await page.evaluate(() => (window as any).__remoteDesktop.help.openSettings('remote-desktop'))
         const settings = page.locator('.trd-settings')
         await expect(settings).toBeVisible()
         await settings.locator('[data-tab=settings]').click()
+        const soundToggle = settings.locator('[data-setting=sound]')
+        await expect(settings.locator('trd-settings-toggle toggle input[type=checkbox]')).toHaveCount(process.platform === 'darwin' ? 8 : 7)
+        await expect(soundToggle).toHaveAccessibleName('Sound')
+        const originalSound = await soundToggle.isChecked()
+        if (originalSound !== reference.checked) await soundToggle.click()
+        await expect.poll(() => page.evaluate(() => (window as any).__remoteDesktop.desktop.settings().sound)).toBe(reference.checked)
+        await soundToggle.evaluate(el => (el as HTMLInputElement).blur())
+        await expect.poll(() => soundToggle.evaluate(el => {
+            const style = getComputedStyle(el)
+            return { checked: (el as HTMLInputElement).checked, width: style.width, height: style.height,
+                borderRadius: style.borderRadius, backgroundColor: style.backgroundColor,
+                backgroundImage: style.backgroundImage, cursor: style.cursor, fontSize: style.fontSize }
+        })).toEqual(reference)
+        // Space must change the real setting once, and external configuration changes must update the component.
+        await soundToggle.focus()
+        await soundToggle.press('Space')
+        await expect.poll(() => page.evaluate(() => (window as any).__remoteDesktop.desktop.settings().sound)).toBe(!reference.checked)
+        await page.evaluate(sound => (window as any).__remoteDesktop.desktop.updateSettings({ sound }), originalSound)
+        await expect(soundToggle).toBeChecked({ checked: originalSound })
+        await soundToggle.evaluate(el => (el as HTMLInputElement).blur())
         const clientChoice = settings.locator('[data-setting=client]')
         await expect(clientChoice).toBeVisible()
         await expect(clientChoice.locator('option')).toHaveText(['IronRDP', 'FreeRDP (experimental)'])

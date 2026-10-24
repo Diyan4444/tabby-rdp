@@ -12,6 +12,7 @@
   an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
 
 **Fixed**
+- Remote Desktop settings use Tabby's native toggle component, matching the host's styling, hit area and theme.
 - The desktop name overlay now appears once when focus enters a desktop. Repeated clicks within the same desktop
   no longer restart it; leaving and returning shows it again. Applies to IronRDP and FreeRDP.
 
