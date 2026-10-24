@@ -15,7 +15,7 @@ const load = (Module as any)._load
     if (['tabby-core', 'tabby-settings', 'tabby-terminal'].includes(name)) return new Proxy({}, { get: (_, k) => k === '__esModule' ? undefined : k === 'SplitTabComponent' ? SplitTab : class {} })
     return load.call(this, name, ...args)
 }
-const { HeaderVisibility, installHeaderMenu, HEADER_MENU_ID, shouldHideHeader } = require('../../dist/headerVisibility.js')
+const { HeaderVisibility, installHeaderMenu, watchWindowsHeaderPointer, HEADER_MENU_ID, shouldHideHeader } = require('../../dist/headerVisibility.js')
 
 class Item {
     [key: string]: any
@@ -141,6 +141,98 @@ test('focus changes do not hide a revealed header under a stationary pointer', t
     assert.equal(root.classList.contains('trd-header-revealed'), false)
     visibility.pointer({ clientX: -1, clientY: -1 })
     assert.equal(root.classList.contains('trd-header-revealed'), false, 'leaving the window is not an edge hover')
+})
+
+test('a restored Windows resize border reveals the header without a renderer mouse event', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { visibility, root, settings, host } = harness(t)
+    settings.headerAutoHide = 'always'; visibility.refresh()
+    let cursor = { x: 600, y: 101 }, reads = 0
+    const win = { getContentBounds: () => ({ x: 100, y: 100, width: 1000, height: 800 }) }
+    visibility.nativeHoverDispose = watchWindowsHeaderPointer({ getCurrentWindow: () => win, screen: { getCursorScreenPoint: () => { reads++; return cursor } } },
+        (point: any) => visibility.pointer(point), () => { visibility.pointerOverHeader = false; visibility.hideLater() }, 'win32')
+    t.mock.timers.tick(100)
+    assert.equal(root.classList.contains('trd-header-revealed'), true)
+    cursor = { x: 600, y: 135 }; t.mock.timers.tick(100); t.mock.timers.tick(500)
+    assert.equal(root.classList.contains('trd-header-revealed'), true, 'native-to-client transition retains a stationary header hover')
+    cursor = { x: 600, y: 950 }; t.mock.timers.tick(100); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), false)
+    cursor = { x: 600, y: 96 }; t.mock.timers.tick(100)
+    assert.equal(root.classList.contains('trd-header-revealed'), true, 'native border above content is included')
+    host.isFullscreen = true; visibility.refresh()
+    const before = reads; t.mock.timers.tick(1000)
+    assert.equal(reads, before, 'the cursor observer is released when auto-hide no longer owns the header')
+})
+
+test('Windows cursor monitoring leaves host hooks alone and ignores stationary coordinates', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let moves = 0, leaves = 0
+    const remote = { getCurrentWindow: () => ({ getContentBounds: () => ({ x: 0, y: 0, width: 1000, height: 800 }),
+        hookWindowMessage: () => assert.fail('native hooks belong to the host'), unhookWindowMessage: () => assert.fail('native hooks belong to the host') }),
+        screen: { getCursorScreenPoint: () => ({ x: 500, y: 1 }) } }
+    const dispose = watchWindowsHeaderPointer(remote, () => moves++, () => leaves++, 'win32', () => ({ width: 1000, height: 800 }))
+    t.mock.timers.tick(100); t.mock.timers.tick(100)
+    assert.equal(moves, 1, 'stationary pointers cause no repeated header layout work')
+    assert.equal(leaves, 0)
+    dispose(); t.mock.timers.tick(1000)
+    assert.equal(moves, 1)
+    assert.equal(watchWindowsHeaderPointer({}, () => {}, () => {}, 'win32'), null)
+    assert.equal(watchWindowsHeaderPointer(remote, () => {}, () => {}, 'darwin'), null)
+})
+
+test('Windows native cursor coordinates follow Tabby UI zoom', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let cursor = { x: 850, y: 137.5 }
+    const points: any[] = []
+    const remote = { getCurrentWindow: () => ({ getContentBounds: () => ({ x: 100, y: 100, width: 1500, height: 1200 }) }),
+        screen: { getCursorScreenPoint: () => cursor } }
+    const dispose = watchWindowsHeaderPointer(remote, (point: { clientX: number, clientY: number }) => points.push(point), () => {}, 'win32', () => ({ width: 1000, height: 800 }))
+    t.mock.timers.tick(100)
+    assert.deepEqual(points.pop(), { clientX: 500, clientY: 25 }, 'native observations must match renderer hover coordinates')
+    cursor = { x: 850, y: 94 }; t.mock.timers.tick(100)
+    assert.deepEqual(points.pop(), { clientX: 500, clientY: 0 }, 'the resize border still clamps to the CSS edge')
+    dispose()
+})
+
+test('zoomed native hover retains header controls and follows moved right/bottom edges on resize', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { visibility, root, settings } = harness(t)
+    settings.headerAutoHide = 'always'; visibility.refresh()
+    let bounds = { x: 100, y: 100, width: 1500, height: 1200 }
+    let cursor = { x: 850, y: 101.5 }
+    const remote = { getCurrentWindow: () => ({ getContentBounds: () => bounds }), screen: { getCursorScreenPoint: () => cursor } }
+    const dispose = watchWindowsHeaderPointer(remote, (point: { clientX: number, clientY: number }) => visibility.pointer(point, false),
+        () => { visibility.pointerOverHeader = false; visibility.hideLater() }, 'win32')
+    t.mock.timers.tick(100)
+    cursor.y = 167.5; t.mock.timers.tick(100); t.mock.timers.tick(500)
+    assert.equal(root.classList.contains('trd-header-revealed'), true, 'CSS y=45 stays inside the revealed header')
+    root.dataset.trdHeaderEdge = 'right'; cursor = { x: 1585, y: 700 }; t.mock.timers.tick(100)
+    assert.equal(root.classList.contains('trd-header-revealed'), true)
+    // Keep the cursor at CSS x=990 while moving the right edge from 1000 to 1200.
+    window.innerWidth = 1200; bounds = { ...bounds, width: 1800 }; t.mock.timers.tick(100); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), false, 'a changed viewport invalidates stationary-coordinate deduplication')
+    root.dataset.trdHeaderEdge = 'bottom'; cursor = { x: 1000, y: 1285 }; t.mock.timers.tick(100)
+    assert.equal(root.classList.contains('trd-header-revealed'), true, 'CSS bottom edge is mapped independently')
+    dispose()
+})
+
+test('hover reveal does not require hitting a three-pixel strip through remote desktop scaling', t => {
+    const { visibility, root, settings } = harness(t)
+    settings.headerAutoHide = 'always'; visibility.refresh()
+    visibility.pointer({ clientX: 500, clientY: 13 })
+    assert.equal(root.classList.contains('trd-header-revealed'), true)
+})
+
+test('a Windows cursor observation does not clear keyboard focus in the header', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { visibility, root, settings, bar, doc } = harness(t)
+    settings.headerAutoHide = 'always'; visibility.refresh(); visibility.show()
+    const button = new FakeElement('button'); bar.appendChild(button); doc.activeElement = button
+    visibility.keyboardFocus = true
+    visibility.pointer({ clientX: 500, clientY: 400 }, false); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), true)
+    visibility.pointer({ clientX: 500, clientY: 400 }); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), false, 'a real mouse move releases the keyboard pin')
 })
 
 test('unrelated DOM churn is idle; Automatic still notices an in-place split change', t => {

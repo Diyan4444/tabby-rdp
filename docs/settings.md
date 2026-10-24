@@ -57,4 +57,6 @@ are local to this computer:
 Auto-hide frees the title/tab strip's space outside full screen. Move the pointer to the top edge to reveal the
 header over the content; revealing it does not resize the remote desktop. The View menu and dropdown share the same
 saved preference. Full screen continues to use Tabby's existing behavior. Native OS window decorations, when used,
-remain governed by Tabby's frame setting. The microphone indicator stays available while the header is hidden.
+remain governed by Tabby's frame setting. On Windows, the native minimize, maximize and close buttons remain
+visible: hiding those requires support from Tabby itself. Hover reveal works in both restored and maximized windows,
+including the Windows resize border. The microphone indicator stays available while the header is hidden.

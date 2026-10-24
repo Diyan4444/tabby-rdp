@@ -15,6 +15,7 @@
   an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
 
 **Fixed**
+- Header hover reveal works through the native resize border of restored Windows windows, with a wider reveal area.
 - FreeRDP requires CredSSP version 5 or newer before authentication, matching IronRDP’s existing security policy.
 - FreeRDP preserves Unicode shortcuts, AltGr and international keys, releases mouse-button chords correctly, and applies bounded input backpressure.
 - Automatic header hiding settles when resize reconnects, keeps revealed controls under the pointer, and ignores unrelated DOM churn.
