@@ -128,6 +128,9 @@ test('View menu auto-hides the windowed header and reveals it without resizing t
             return { mode: (window as any).__remoteDesktop.desktop.settings().headerAutoHide, visible }
         })
         original = state.mode; wasVisible = state.visible
+        const cdp = await browser.contexts()[0].newCDPSession(page)
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false })
+        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
         await expect.poll(() => page.evaluate(() => {
             const menu = (globalThis as any).require('@electron/remote').Menu.getApplicationMenu()
             return menu?.getMenuItemById('tabby-rdp-hide-header-always')?.label
@@ -139,6 +142,8 @@ test('View menu auto-hides the windowed header and reveals it without resizing t
         await expect(root).toHaveClass(/trd-auto-hide-header/)
         await expect.poll(async () => (await body.boundingBox())!.height).toBeGreaterThan(before + 10)
         await expect(bar).toHaveCSS('visibility', 'hidden')
+        await expect(bar).toHaveCSS('opacity', '0')
+        expect(await bar.evaluate(el => (el as HTMLElement).inert)).toBe(true)
         const hiddenSize = (await body.boundingBox())!
         await info.attach('header-hidden', { body: await page.screenshot({ scale: 'css' }), contentType: 'image/png' })
         await page.mouse.move(500, 1)

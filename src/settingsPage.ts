@@ -620,7 +620,8 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
             const key = el.dataset.setting as keyof DesktopSettings
             if (this.toggles.has(key as Toggle)) { return }
             if (key === 'headerMinWidth' || key === 'headerMinHeight') {
-                (el as HTMLInputElement).value = settings[key] ? String(settings[key]) : ''
+                // A config save or another control can refresh the page while this number is still being typed.
+                if (document.activeElement !== el) { (el as HTMLInputElement).value = settings[key] ? String(settings[key]) : '' }
             } else if (el instanceof HTMLInputElement) {
                 el.checked = !!settings[key]
             } else if (key === 'resize') {

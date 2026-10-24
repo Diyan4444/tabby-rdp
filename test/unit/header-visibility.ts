@@ -73,12 +73,15 @@ test('windowed header auto-hide is opt-in, reveals at the edge and hides repeate
     settings.headerAutoHide = 'always'; visibility.refresh()
     assert.equal(root.classList.contains('trd-auto-hide-header'), true)
     assert.equal(root.dataset.trdHeaderEdge, 'top')
+    assert.equal(visibility.bar.inert, true)
     for (let n = 0; n < 3; n++) {
         visibility.pointer({ clientX: 500, clientY: 1 })
         assert.equal(root.classList.contains('trd-header-revealed'), true)
+        assert.equal(visibility.bar.inert, false)
         visibility.pointer({ clientX: 500, clientY: 400 })
         t.mock.timers.tick(400)
         assert.equal(root.classList.contains('trd-header-revealed'), false)
+        assert.equal(visibility.bar.inert, true)
     }
     visibility.pointer({ clientX: 500, clientY: 1 })
     visibility.pointer({ clientX: 500, clientY: 400 })
@@ -92,6 +95,7 @@ test('header controls retain keyboard focus; disabling or full screen restores t
     const { visibility, root, bar, title, settings, host, doc } = harness(t)
     settings.headerAutoHide = 'always'; visibility.refresh(); visibility.pointer({ clientX: 500, clientY: 1 })
     const button = new FakeElement('button'); bar.appendChild(button); doc.activeElement = button
+    visibility.keyboardFocus = true
     visibility.pointer({ clientX: 500, clientY: 400 }); t.mock.timers.tick(400)
     assert.equal(root.classList.contains('trd-header-revealed'), true)
     doc.activeElement = doc.body
@@ -133,4 +137,9 @@ test('Automatic excludes consoles, connecting desktops and all splits, including
     split.panes = [pane]
     assert.equal(eligible(), true, 'a single-pane tab wrapper is eligible')
     app.activeTab = {}; assert.equal(eligible(), false, 'Settings or a welcome tab is not a desktop')
+})
+
+test('header setup waits for the config instead of failing the renderer during startup', () => {
+    const visibility = new HeaderVisibility({ settings () { throw new Error('too soon') } }, { store: undefined }, {}, {}, {})
+    assert.doesNotThrow(() => visibility.refresh())
 })

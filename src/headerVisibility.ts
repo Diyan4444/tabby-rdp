@@ -36,7 +36,7 @@ app-root.trd-auto-hide-header { position: relative; }
 .trd-auto-hide-header[data-trd-header-edge=left] .trd-auto-tabbar { top: 0; bottom: 0; left: 0; height: 100%; }
 .trd-auto-hide-header[data-trd-header-edge=right] .trd-auto-tabbar { top: 0; bottom: 0; right: 0; height: 100%; }
 .trd-auto-hide-header:not(.trd-header-revealed) .trd-auto-titlebar,
-.trd-auto-hide-header:not(.trd-header-revealed) .trd-auto-tabbar { visibility: hidden; pointer-events: none; }
+.trd-auto-hide-header:not(.trd-header-revealed) .trd-auto-tabbar { opacity: 0; visibility: hidden; pointer-events: none; }
 .trd-header-edge { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 1039;
     background: none; border: none; padding: 0; -webkit-app-region: no-drag; }
 .trd-header-edge:focus-visible { height: 6px; outline: 2px solid var(--bs-primary, #5af); }
@@ -57,6 +57,7 @@ export class HeaderVisibility {
     private menu: any = null
     private menuItem: any = null
     private controlsHidden = false
+    private keyboardFocus = false
 
     constructor (
         private desktop: RemoteDesktopService, private config: ConfigService, private zone: NgZone,
@@ -71,11 +72,15 @@ export class HeaderVisibility {
             this.desktop.changed$.subscribe(() => this.schedule())
             this.app.activeTabChange$.subscribe(() => this.schedule())
             this.config.changed$.subscribe(() => this.schedule())
+            ;(this.config as any).ready$?.subscribe?.(() => this.schedule())
             this.host.windowFocused$.subscribe(() => { this.menu = null; this.schedule() })
             new MutationObserver(() => this.schedule()).observe(document.body, { childList: true, subtree: true })
             window.addEventListener('resize', () => this.schedule())
             window.addEventListener('mousemove', event => this.pointer(event))
-            window.addEventListener('blur', () => this.hideLater())
+            window.addEventListener('mouseout', event => { if (!event.relatedTarget) { this.pointer(event) } })
+            window.addEventListener('keydown', () => { this.keyboardFocus = true })
+            window.addEventListener('pointerdown', () => { this.keyboardFocus = false })
+            window.addEventListener('blur', () => { this.keyboardFocus = false; this.hideLater() })
             document.addEventListener('focusin', () => {
                 this.schedule()
                 if (this.inHeader(document.activeElement)) { this.show() } else { this.hideLater() }
@@ -93,6 +98,7 @@ export class HeaderVisibility {
     }
 
     private refresh (): void {
+        if (!this.config.store) { return } // Windows can render the first frame before Tabby's config is ready.
         const settings = this.desktop.settings()
         // The application menu belongs to the focused window. Rebind after focus so closing another window cannot
         // leave a callback owned by its destroyed renderer, and never add a second Hide Header item.
@@ -122,6 +128,8 @@ export class HeaderVisibility {
         if (!this.active) {
             clearTimeout(this.timer); this.timer = undefined
             this.bar?.classList.remove('trd-auto-tabbar'); this.title?.classList.remove('trd-auto-titlebar')
+            if (this.bar) { this.bar.inert = false }
+            if (this.title) { this.title.inert = false }
             this.root?.classList.remove('trd-header-revealed')
             this.edge?.remove(); this.edge = null; this.revealed = false
             this.nativeControls(false)
@@ -132,6 +140,7 @@ export class HeaderVisibility {
         const edge = this.config.store.appearance?.tabsLocation
         this.root!.dataset.trdHeaderEdge = ['left', 'right', 'bottom'].includes(edge) ? edge : 'top'
         this.bar?.classList.add('trd-auto-tabbar'); this.title?.classList.add('trd-auto-titlebar')
+        this.headerInput(!this.revealed)
         if (!this.edge) {
             this.edge = document.createElement('button'); this.edge.className = 'trd-header-edge'
             this.edge.setAttribute('aria-label', 'Show Tabby header')
@@ -153,11 +162,19 @@ export class HeaderVisibility {
         return !!element && (!!this.bar?.contains(element) || !!this.title?.contains(element) || element === this.edge)
     }
 
+    private headerInput (hidden: boolean): void {
+        // A few host tab descendants explicitly restore visibility. Inert also prevents invisible close buttons
+        // taking clicks or keyboard focus; the separate edge button and native View menu remain accessible.
+        if (this.bar) { this.bar.inert = hidden }
+        if (this.title) { this.title.inert = hidden }
+    }
+
     private show (): void {
         if (!this.active) { return }
         clearTimeout(this.timer)
         this.timer = undefined
         this.revealed = true; this.root?.classList.add('trd-header-revealed')
+        this.headerInput(false)
         this.nativeControls(false)
         this.header.headerVisibilityChanged()
     }
@@ -166,8 +183,9 @@ export class HeaderVisibility {
         if (!this.active || this.timer) { return }
         this.timer = setTimeout(() => {
             this.timer = undefined
-            if (this.inHeader(document.activeElement) || document.querySelector('.dropdown-menu.show, .modal.show')) { return }
+            if (this.keyboardFocus && this.inHeader(document.activeElement) || document.querySelector('.dropdown-menu.show, .modal.show')) { return }
             this.revealed = false; this.root?.classList.remove('trd-header-revealed')
+            this.headerInput(true)
             this.nativeControls(true)
             this.header.headerVisibilityChanged()
         }, 400)
