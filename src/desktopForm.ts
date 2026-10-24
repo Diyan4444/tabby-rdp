@@ -6,6 +6,7 @@ import { parseGateway } from './gateway'
 import { configNumber } from './osd'
 import { wakeFromText } from './wake'
 import { terminalInputs } from './hostCompat'
+import { ownRDPClient, RDP_CLIENT_LABELS } from './rdpClient'
 
 /** host:port, [v6]:port, or a bare host (RDP's 3389); null if it doesn't look like an address. */
 export function parseAddress (text: string): { host: string, port: number } | null {
@@ -70,6 +71,8 @@ export function askDesktop (pane: HTMLElement, options: DesktopFormOptions): Pro
                     <option value="xrdp">xrdp (Linux: KDE, XFCE, MATE, …)</option>
                     <option value="gnome">GNOME Remote Desktop (needs the graphics pipeline)</option>
                 </select>
+                <select class="form-control" name="client" aria-label="RDP client" title="RDP client. Applies on the next connection."></select>
+                <div class="text-muted small">FreeRDP preview: display and input; clipboard, sound and shared folders are unavailable.</div>
                 <select class="form-control" name="account" title="Saved accounts are added in Settings › Remote Desktop › Accounts"></select>
                 <input class="form-control" name="username" placeholder="User name (optional; asked when connecting)" spellcheck="false">
                 <input class="form-control" name="domain" placeholder="Domain (optional)" spellcheck="false">
@@ -99,6 +102,9 @@ export function askDesktop (pane: HTMLElement, options: DesktopFormOptions): Pro
     form.querySelector('datalist')!.append(...(options.hosts ?? []).map(h => new Option(h)))
     field('address').value = formatAddress(configText(initial.host ?? '127.0.0.1'), configNumber(initial.port ?? 3389))
     field<HTMLSelectElement>('kind').value = initial.kind === 'gnome' || initial.kind === 'xrdp' ? initial.kind : 'windows'
+    const client = field<HTMLSelectElement>('client')
+    client.append(new Option('RDP client: as in Settings', ''), ...Object.entries(RDP_CLIENT_LABELS).map(([id, label]) => new Option(label, id)))
+    client.value = ownRDPClient(initial.client) ?? ''
     // A VM saved from the host's list is xrdp on the host's word (see xrdpFromHost), which is a choice of its own here:
     // kept as long as it is chosen, so that the desktop still asks before signing in without NLA. Any kind picked is
     // the user's, xrdp included.
@@ -227,8 +233,9 @@ export function askDesktop (pane: HTMLElement, options: DesktopFormOptions): Pro
                 gateway: gatewayText || undefined,
                 gatewayAccount: gatewayText && gatewayAccount.value || undefined,
                 clipboard: clipboard.value || undefined,
+                client: ownRDPClient(client.value),
             }
-            for (const key of ['username', 'domain', 'account', 'wake', 'gateway', 'gatewayAccount', 'clipboard'] as const) {
+            for (const key of ['username', 'domain', 'account', 'wake', 'gateway', 'gatewayAccount', 'clipboard', 'client'] as const) {
                 if (entry[key] === undefined) {
                     delete entry[key]
                 }

@@ -849,3 +849,39 @@ test('a take-over\'s setup is the one whose key is kept; a host no longer GNOME\
     const s = await setUp(h, target)
     assert.ok(s.log.includes('setup: desk\'s line stays in /home/alice/.zshrc: it can\'t be written (read-only?)'), JSON.stringify(s.log))
 })
+
+for (const client of ['ironrdp', 'freerdp']) {
+    test(`${client}: repeated focus events and clicks do not restart the name overlay; leaving and returning does`, async t => {
+        const { Subject } = require('rxjs')
+        const page = installDocument()
+        t.after(page.restore)
+        const { specOf } = require('../../dist/desktops.js')
+        const { svc, app } = harness({ key: 'rdp', label: 'PC', exec: async () => '' }, { osd: { show: 'always' } })
+        const pane = { profile: { type: 'rdp' }, element: { nativeElement: new FakeElement() }, destroyed$: new Subject(), focused$: new Subject(), blurred$: new Subject() }
+        const other = { profile: { type: 'rdp' }, element: { nativeElement: new FakeElement() } }
+        app.activeTab = pane
+        app.tabs = [pane, other]
+        let flashes = 0
+        svc.label = () => { flashes++ }
+        svc.tip = () => { }
+        svc.connect = async (_pane: unknown, _target: unknown, _spec: unknown, s: any) => { s.state = 'connected'; s.client = client }
+        const spec = specOf({ host: '10.0.0.5', kind: 'windows' })
+        await svc.showDesktop(pane, undefined, { target: { key: 'rdp', label: 'PC', direct: spec, isOpen: () => true } })
+        assert.equal(flashes, 1, 'first entry shows the name')
+        for (let i = 0; i < 10; i++) pane.focused$.next()
+        await svc.showDesktop(pane)
+        assert.equal(flashes, 1, 'repeat clicks and showing an already-visible desktop keep the original timer')
+        app.activeTab = other
+        pane.blurred$.next()
+        pane.focused$.next() // Tabby emits this for unfocused children when entering a split.
+        assert.equal(flashes, 1, 'background pane never flashes')
+        app.activeTab = pane
+        pane.focused$.next()
+        assert.equal(flashes, 2, 'returning to the pane shows its name again')
+        svc.showConsole(pane)
+        await svc.showDesktop(pane)
+        assert.equal(flashes, 3, 'returning from its console is another focus entry')
+        svc.disconnect(pane)
+        await new Promise(resolve => setTimeout(resolve, 5))
+    })
+}

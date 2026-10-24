@@ -3,6 +3,7 @@ import { AppService, HotkeysService } from 'tabby-core'
 import { RemoteDesktopService } from './desktop.service'
 import { DesktopKind } from './desktops'
 import { desktopPaneOf, DesktopPane } from './targets'
+import { isRDPElement } from './rdpClient'
 
 /**
  * Tabby shortcuts that keep working while a desktop covers the pane: getting back to the console, and moving
@@ -119,7 +120,7 @@ export class DesktopKeyboard {
     private route (event: KeyboardEvent): void {
         const pane = this.startedOn.has(event) ? this.startedOn.get(event) : this.coveredPane()
         const focused = document.activeElement
-        if (focused?.tagName !== 'IRON-REMOTE-DESKTOP') {
+        if (!isRDPElement(focused)) {
             return
         }
         if (!pane || !pane.element.nativeElement.contains(focused)) {
@@ -242,6 +243,7 @@ export class DesktopKeyboard {
         this.mirror(event.type, {
             key: event.key, code: event.code, location: event.location, repeat: event.repeat,
             shiftKey: event.shiftKey, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+            modifierAltGraph: event.getModifierState?.('AltGraph') ?? false,
         })
     }
 
@@ -258,6 +260,7 @@ export class DesktopKeyboard {
             altKey: event.altKey,
             ctrlKey: macShortcuts ? event.ctrlKey || event.metaKey : event.ctrlKey,
             metaKey: macShortcuts ? false : event.metaKey,
+            modifierAltGraph: event.getModifierState?.('AltGraph') ?? false,
             cancelable: true,
         }
         const copy = new KeyboardEvent(type, init)

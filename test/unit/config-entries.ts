@@ -137,6 +137,7 @@ function menuDesktop (entries: unknown[], calls: string[] = []) {
         discoverVMs: async () => undefined,
         canSaveFoundDesktop: () => false,
         canSignInAgain: () => false,
+        rdpClientChoice: () => null,
     }
 }
 

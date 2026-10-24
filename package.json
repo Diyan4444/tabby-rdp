@@ -1,7 +1,7 @@
 {
   "name": "tabby-rdp",
-  "version": "0.5.7",
-  "description": "Remote desktops in Tabby's SSH tabs: Linux (GNOME) and Windows, through the SSH connection, with clipboard, files and sound. Built on IronRDP.",
+  "version": "0.6.0-rc.1",
+  "description": "Windows and Linux remote desktops in Tabby, through SSH, direct RDP or RD Gateway. IronRDP with an experimental FreeRDP client.",
   "keywords": [
     "tabby-plugin",
     "tabby",
@@ -29,6 +29,8 @@
     "!dist/**/*.map",
     "vendor",
     "remote",
+    "native/bin",
+    "native/README.md",
     "LICENSE",
     "CHANGELOG.md",
     "TROUBLESHOOTING.md",
@@ -46,6 +48,7 @@
     "test:smoke": "tsx test/run.ts --packed --hidden smoke-host smoke-rdp direct",
     "test:unit": "tsx --test test/unit/*.ts",
     "build:ironrdp": "scripts/build-ironrdp.sh",
+    "build:freerdp": "node scripts/build-freerdp.mjs",
     "prepublishOnly": "npm run build",
     "qa": "node scripts/qa/server.mjs",
     "test:visual": "npm run build && tsx test/run.ts --hidden visual-host",

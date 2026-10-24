@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0-rc.1
+
+**Added**
+- Windowed title/tab-header auto-hide (**View › Hide Header**, or **Settings › Remote Desktop › Settings › Picture**).
+  Automatic applies only to a connected desktop alone in its active tab, with optional minimum window dimensions;
+  Never and Always are also available. Hover reveals the header without resizing the desktop. Addresses #111.
+- Choose the RDP client in Remote Desktop settings, with overrides in RDP profiles and desktop forms. IronRDP
+  remains the default. The experimental FreeRDP native helper runs inside the tab, using the existing connections,
+  credentials and certificate prompts. The first preview supports display and input; clipboard, audio, shared folders,
+  Hyper-V consoles and H.264 decoding are not yet implemented. Native builds are qualified separately for each
+  platform and architecture; Windows Server performance comparisons remain pending.
+- RDP profile tabs also offer the client choice in their ellipsis/right-click menu, with a per-profile checkmark and
+  an optional reconnect action. Changing the choice keeps the current session running until reconnect is chosen.
+
+**Fixed**
+- Header hover reveal works through the native resize border of restored Windows windows, with a wider reveal area.
+- FreeRDP requires CredSSP version 5 or newer before authentication, matching IronRDP’s existing security policy.
+- FreeRDP preserves Unicode shortcuts, AltGr and international keys, releases mouse-button chords correctly, and applies bounded input backpressure.
+- Automatic header hiding settles when resize reconnects, keeps revealed controls under the pointer, and ignores unrelated DOM churn.
+- FreeRDP display-control channels are loaded after the connection-time channel reset, so live resize reaches the server.
+- Synced global FreeRDP defaults preserve connections on computers without its helper; explicit choices still report a missing build.
+- Header auto-hide preserves native menu-bar visibility and avoids synchronous menu IPC on routine DOM changes.
+- Large certificate-authority stores use bounded IPC chunks, and unavailable file-transfer actions are hidden.
+- Remote Desktop settings use Tabby's native toggle component, matching the host's styling, hit area and theme.
+- The desktop name overlay now appears once when focus enters a desktop. Repeated clicks within the same desktop
+  no longer restart it; leaving and returning shows it again. Applies to IronRDP and FreeRDP.
+
 ## 0.5.7
 
 **Added**

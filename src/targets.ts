@@ -47,7 +47,7 @@ export interface RemoteTarget {
 export interface DesktopPane extends BaseTabComponent {
     element: { nativeElement: HTMLElement }
     frontend?: { focus (): void } | null
-    profile?: { type?: string, name?: string, options?: { host?: string, user?: string, port?: number } }
+    profile?: { id?: string, type?: string, name?: string, options?: { host?: string, user?: string, port?: number, client?: string } }
     /** tabby-local session: getChildProcesses(): Promise<{ pid, ppid, command }[]> */
     session?: any
 }

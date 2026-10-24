@@ -35,7 +35,9 @@ try {
         }
         const target = path.join(stage, name)
         fs.mkdirSync(path.dirname(target), { recursive: true })
-        fs.writeFileSync(target, metadata[name] ?? fs.readFileSync(source))
+        // Preserve executable helpers when staging: writeFileSync's default mode would make the native RDP client
+        // non-executable in the tarball even though it works from the source checkout.
+        fs.writeFileSync(target, metadata[name] ?? fs.readFileSync(source), { mode: fs.statSync(source).mode & 0o777 })
     }
     for (const [name, data] of Object.entries(metadata)) fs.writeFileSync(path.join(stage, name), data)
     fs.mkdirSync(destination, { recursive: true })

@@ -1,4 +1,4 @@
-import { Component, ElementRef, HostBinding, Injectable, Injector, NgZone, OnDestroy, OnInit } from '@angular/core'
+import { Component, ComponentRef, ElementRef, HostBinding, Injectable, Injector, NgZone, OnDestroy, OnInit, ViewContainerRef } from '@angular/core'
 import { basename } from 'path'
 import { Subscription } from 'rxjs'
 import { AppService, ConfigService, HotkeyDescription, HotkeysService, NotificationsService, PlatformService, ProfilesService } from 'tabby-core'
@@ -15,6 +15,8 @@ import { renderReleaseSettings } from './releaseSettings'
 import { RDP_PROFILE_TYPE } from './targets'
 import { showable } from './unshowable'
 import { HostCompatibility } from './hostCompat'
+import { RDP_CLIENT_LABELS } from './rdpClient'
+import { SettingsToggleComponent } from './settingsToggle'
 
 const REPO = 'https://github.com/meanaverage/tabby-rdp'
 
@@ -127,6 +129,9 @@ const STYLE = `
 .trd-settings .form-line .description kbd { font-size: 10px; }
 .trd-settings .form-line { gap: 24px; }
 .trd-settings .form-line > .header { min-width: 0; }
+.trd-settings trd-settings-toggle { display: inline-flex; flex: none; }
+.trd-settings .trd-header-size { display: flex; align-items: center; gap: 8px; flex: none; }
+.trd-settings .trd-header-size input { width: 90px; }
 .trd-settings .form-line select { min-width: 200px; flex: none; }
 .trd-settings .trd-osd-preview { position: relative; aspect-ratio: 16 / 9; max-width: 520px; margin: 4px 0 14px; border-radius: 6px;
     overflow: hidden; background: linear-gradient(115deg, #e9edf1 0%, #cfd6dd 38%, #3a4048 62%, #1c1f24 100%); }
@@ -163,6 +168,7 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
     @HostBinding('class.content-box') contentBox = true
     @HostBinding('class.trd-settings') trdSettings = true
     private subscriptions: Subscription[] = []
+    private toggles = new Map<Toggle, ComponentRef<SettingsToggleComponent>>()
 
     constructor (
         private element: ElementRef<HTMLElement>,
@@ -204,6 +210,8 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
 
     ngOnDestroy (): void {
         this.subscriptions.forEach(s => s.unsubscribe())
+        this.toggles.forEach(toggle => toggle.destroy())
+        this.toggles.clear()
     }
 
     private get root (): HTMLElement {
@@ -246,6 +254,16 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
 
             <section data-topic="settings">
                 <h4>Settings</h4>
+                <div class="form-line">
+                    <div class="header">
+                        <div class="title">RDP client</div>
+                        <div class="description">Default for new connections. Each desktop can choose its own client.
+                            FreeRDP preview supports display and input; clipboard, sound and shared folders are unavailable.</div>
+                    </div>
+                    <select class="form-control" data-setting="client" aria-label="RDP client">
+                        ${Object.entries(RDP_CLIENT_LABELS).map(([id, label]) => `<option value="${id}">${esc(label)}</option>`).join('')}
+                    </select>
+                </div>
                 <h5>Picture</h5>
                 <div class="form-line">
                     <div class="header">
@@ -258,6 +276,30 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
                         <option value="fit">Keep the size, scaled</option>
                         <option value="actual">Keep the size, 1:1</option>
                     </select>
+                </div>
+                <div class="form-line">
+                    <div class="header">
+                        <div class="title">Auto-hide header</div>
+                        <div class="description">Automatic hides it only for a connected remote desktop alone in its tab, never a split. Always applies to every tab.
+                            Move the pointer to the top edge to reveal it. Full screen follows Tabby's settings.</div>
+                    </div>
+                    <select class="form-control" data-setting="headerAutoHide" aria-label="Auto-hide header">
+                        <option value="automatic">Automatic</option>
+                        <option value="never">Never</option>
+                        <option value="always">Always</option>
+                    </select>
+                </div>
+                <div class="form-line" data-header-size>
+                    <div class="header">
+                        <div class="title">Minimum window size (optional)</div>
+                        <div class="description">For Automatic only, in logical pixels. Leave dimensions blank for any size;
+                            every size entered must be met. Works with manually resized windows too.</div>
+                    </div>
+                    <div class="trd-header-size">
+                        <input class="form-control" type="number" min="0" max="32768" step="1" placeholder="Width" aria-label="Minimum window width" data-setting="headerMinWidth">
+                        <span>×</span>
+                        <input class="form-control" type="number" min="0" max="32768" step="1" placeholder="Height" aria-label="Minimum window height" data-setting="headerMinHeight">
+                    </div>
                 </div>
                 <div class="form-line">
                     <div class="header">
@@ -460,7 +502,9 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
             this.root.appendChild(body)
         }
         this.showTab(lastTab)
+        this.mountToggles()
         this.root.querySelectorAll<HTMLElement>('[data-setting]').forEach(el => {
+            if (this.toggles.has(el.dataset.setting as Toggle)) { return }
             el.addEventListener('change', () => this.zone.run(() => this.changeSetting(el)))
         })
         const resolution = this.root.querySelector<HTMLSelectElement>('[data-preview-resolution]')!
@@ -526,9 +570,27 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
     private toggleLine (key: Toggle, title: string, description: string): string {
         return `
             <div class="form-line">
-                <div class="header"><div class="title">${esc(title)}</div><div class="description">${description}</div></div>
-                <div class="form-check form-switch"><input type="checkbox" class="form-check-input" data-setting="${key}"></div>
+                <div class="header"><div class="title" id="trd-${key}-title">${esc(title)}</div><div class="description" id="trd-${key}-description">${description}</div></div>
+                <div data-toggle="${key}"></div>
             </div>`
+    }
+
+    private mountToggles (): void {
+        const views = this.injector.get(ViewContainerRef)
+        this.root.querySelectorAll<HTMLElement>('[data-toggle]').forEach(slot => {
+            const key = slot.dataset.toggle as Toggle
+            const toggle = views.createComponent(SettingsToggleComponent)
+            toggle.instance.model = !!this.desktop.settings()[key]
+            toggle.instance.changed = value => this.zone.run(() => this.desktop.updateSettings({ [key]: value }))
+            toggle.changeDetectorRef.detectChanges()
+            const host = toggle.location.nativeElement as HTMLElement
+            const input = host.querySelector('input')!
+            input.dataset.setting = key
+            input.setAttribute('aria-labelledby', `trd-${key}-title`)
+            input.setAttribute('aria-describedby', `trd-${key}-description`)
+            slot.replaceWith(host)
+            this.toggles.set(key, toggle)
+        })
     }
 
     private changeOsd (change: Partial<OsdSettings>): void {
@@ -537,7 +599,11 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
 
     private changeSetting (el: HTMLElement): void {
         const key = el.dataset.setting!
-        if (el instanceof HTMLInputElement) {
+        if (key === 'headerMinWidth' || key === 'headerMinHeight') {
+            const input = el as HTMLInputElement
+            if (!input.checkValidity()) { input.reportValidity(); return }
+            this.desktop.updateSettings({ [key]: input.value === '' ? 0 : input.valueAsNumber })
+        } else if (el instanceof HTMLInputElement) {
             this.desktop.updateSettings({ [key]: el.checked } as Partial<DesktopSettings>)
         } else if (key === 'resize') {
             const value = (el as HTMLSelectElement).value
@@ -552,13 +618,22 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
         const settings = this.desktop.settings()
         this.root.querySelectorAll<HTMLElement>('[data-setting]').forEach(el => {
             const key = el.dataset.setting as keyof DesktopSettings
-            if (el instanceof HTMLInputElement) {
+            if (this.toggles.has(key as Toggle)) { return }
+            if (key === 'headerMinWidth' || key === 'headerMinHeight') {
+                // A config save or another control can refresh the page while this number is still being typed.
+                if (document.activeElement !== el) { (el as HTMLInputElement).value = settings[key] ? String(settings[key]) : '' }
+            } else if (el instanceof HTMLInputElement) {
                 el.checked = !!settings[key]
             } else if (key === 'resize') {
                 (el as HTMLSelectElement).value = settings.resize === 'off' ? settings.zoom : settings.resize
             } else {
                 (el as HTMLSelectElement).value = String(settings[key])
             }
+        })
+        this.root.querySelector<HTMLElement>('[data-header-size]')!.hidden = settings.headerAutoHide !== 'automatic'
+        this.toggles.forEach((toggle, key) => {
+            toggle.instance.model = !!settings[key]
+            toggle.changeDetectorRef.detectChanges()
         })
         // Update notices and controls belong to the Updates page.
         const updates = this.injector.get(UpdateCheck)

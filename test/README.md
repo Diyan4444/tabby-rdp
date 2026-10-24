@@ -16,6 +16,7 @@ npm test -- gateway               # desktops behind an RD Gateway (TRD_TEST_GATE
 npm test -- rds                   # a Windows Server with RDS licensing, with the diagnostic log (TRD_TEST_RDS)
 npm test -- xrdp                  # the xrdp suite (TRD_TEST_XRDP_*)
 npm test -- direct                # a desktop reached directly, not through SSH (TRD_TEST_DIRECT_*, else the test host)
+npm test -- --packed freerdp      # opt-in native client and switch back to IronRDP (TRD_TEST_DIRECT_*, native helper required)
 npm test -- --packed e2e          # with the plugin installed as npm would install it (the release packer)
 npm test -- --keep e2e            # leave the test Tabby open afterwards
 npm test -- --port 9334 e2e       # use a Tabby already running with --remote-debugging-port=9334

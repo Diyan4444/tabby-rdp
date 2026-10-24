@@ -1,4 +1,10 @@
 /** Host identity is diagnostic information; behavior follows capabilities, including on forks and nightlies. */
+export type HeaderAutoHide = 'automatic' | 'never' | 'always'
+
+export function headerAutoHide (value: unknown): HeaderAutoHide {
+    return value === 'automatic' || value === 'always' ? value : 'never'
+}
+
 export interface HostInfo {
     readonly name: string | null
     readonly version: string | null

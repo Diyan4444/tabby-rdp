@@ -15,6 +15,23 @@ function canvas () {
     return { element: { getContext: () => context }, context, original, calls }
 }
 
+test('native statistics count completed paints rather than individual display tiles', t => {
+    const page = installDocument()
+    t.after(page.restore)
+    let frames = 0
+    const indicator = new ConnectionStatus(new FakeElement(), { runOutsideAngular: (f: () => void) => f() },
+        { path: () => '', bytes: () => null, frameCount: () => frames })
+    t.after(() => indicator.dispose())
+    const frame = canvas()
+    indicator.setActive(true, frame.element)
+    assert.equal(frame.context.putImageData, frame.original, 'native tile blits are not counted by the canvas hook')
+    frame.context.putImageData('tile one', 0, 0)
+    frame.context.putImageData('tile two', 1, 1)
+    frames = 1
+    indicator.tick()
+    assert.equal(indicator.last.frames, 1)
+})
+
 test('statistics release their canvas when hidden and rehook it without stacking frame counters', async t => {
     const page = installDocument()
     t.after(page.restore)

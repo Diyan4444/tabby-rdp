@@ -10,6 +10,8 @@ export const STYLE = `
 
 /** What the indicator says about the connection besides the numbers; asked on every update. */
 export interface ConnectionInfo {
+    /** A native client reports completed paints; individual IPC tiles must not be counted as whole frames. */
+    frameCount?: () => number | undefined
     /** e.g. "Windows VM via buildhost · bitmaps · Standard" */
     path (): string
     /** RDP bytes relayed so far (the proxy's counters), if a proxy runs. */
@@ -64,7 +66,7 @@ export class ConnectionStatus {
 
     /** Starts or stops the indicator. `canvas`: the remote display, whose updates are counted as frames. */
     setActive (active: boolean, canvas?: HTMLCanvasElement | null): void {
-        if (active && canvas) {
+        if (active && canvas && this.info.frameCount?.() === undefined) {
             this.countFrames(canvas)
         } else if (!active) {
             this.releaseCanvas()
@@ -138,7 +140,7 @@ export class ConnectionStatus {
     private tick (): void {
         const now = performance.now()
         const bytes = this.info.bytes() ?? { bytesIn: 0, bytesOut: 0 }
-        const current = { at: now, bytesIn: bytes.bytesIn, bytesOut: bytes.bytesOut, frames: this.frames }
+        const current = { at: now, bytesIn: bytes.bytesIn, bytesOut: bytes.bytesOut, frames: this.info.frameCount?.() ?? this.frames }
         const parts: string[] = []
         if (this.last && now > this.last.at) {
             const seconds = (now - this.last.at) / 1000

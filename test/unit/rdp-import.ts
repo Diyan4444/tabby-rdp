@@ -103,7 +103,7 @@ async function importing (file: string, defaults: Record<string, unknown>, more:
     return { made, opened, detail, message, tabs, errors }
 }
 
-test('an imported profile sets every option the provider defaults name, but the clipboard, so none is inherited', async () => {
+test('an imported profile sets every destination/sign-in option; clipboard and client follow defaults', async () => {
     // What the provider has a default for: each of them can also come from a group's defaults.
     const keys = Object.keys(new RDPProfilesService({}, {}).configDefaults.options)
     assert.ok(keys.includes('account') && keys.includes('clipboard'), keys.join(', '))
@@ -111,12 +111,12 @@ test('an imported profile sets every option the provider defaults name, but the 
     // go to the file's address without a sign-in prompt), a gateway, an SSH profile to go through, and so on.
     const defaults = {
         host: 'elsewhere.example', port: 3390, kind: 'xrdp', username: 'admin', domain: 'CORP', account: 'k3f9x2ab',
-        via: 'ssh:custom:jump', gateway: 'rdgw.example.com', gatewayAccount: 'k3f9x2ab', clipboard: 'fromRemote',
+        via: 'ssh:custom:jump', gateway: 'rdgw.example.com', gatewayAccount: 'k3f9x2ab', clipboard: 'fromRemote', client: 'freerdp',
     }
     assert.deepEqual(Object.keys(defaults).sort(), [...keys].sort(), 'a default for each')
     const { profile, options } = await imported('full address:s:pc17.corp.example\r\nusername:s:alice', defaults)
     const own = keys.filter(k => Object.prototype.hasOwnProperty.call(profile.options, k))
-    assert.deepEqual(keys.filter(k => !own.includes(k)), ['clipboard'], 'the import sets all of them but the clipboard')
+    assert.deepEqual(keys.filter(k => !own.includes(k)), ['clipboard', 'client'], 'only clipboard and client follow defaults')
     // In particular `account`, whose absence would adopt the group's or the global default saved account, the gateway's
     // account (its proof would go to the gateway the file named) and the kind (an xrdp one signs in without NLA, unasked):
     // null, none of them whatever the defaults, and Windows.
@@ -128,6 +128,7 @@ test('an imported profile sets every option the provider defaults name, but the 
     assert.deepEqual([spec.kind, spec.account, spec.gatewayAccount], ['windows', undefined, undefined])
     // The clipboard is the group's: the user's own word for where imports go, and named in the import's question.
     assert.equal(options.clipboard, 'fromRemote')
+    assert.equal(options.client, 'freerdp')
 })
 
 /**

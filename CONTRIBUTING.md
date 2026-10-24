@@ -13,7 +13,7 @@ Issues and pull requests are welcome. For anything larger than a fix, please ope
 | `test/` | End-to-end suites, their harness and runner, and trd-pty's own tests. |
 | `testbed/` | Scripts to set up test machines. |
 | `scripts/` | Development helpers: a separate Tabby for trying changes, and the IronRDP build. |
-| `docs/` | Design notes and README images. |
+| `docs/` | User guides, design notes, test coverage and README images. |
 
 ## How changes land
 
@@ -25,6 +25,11 @@ patched crates' Rust tests ([ironrdp/README.md](ironrdp/README.md#reproducing-ve
 pull request, so they can't be required checks, but a release runs them whatever changed and is made only if they pass
 (below). The end-to-end suites need test machines, so they aren't in CI; say in the pull request which ones you ran.
 `main` only changes by merging a pull request that CI passed. Releases are tags on `main` (below).
+
+Prepare an isolated test package from the PR before release. Keep the PR as a draft while analysis and the
+maintainer's hands-on testing remain; merge only after approval and passing checks. A version such as
+`0.6.0-rc.1` can be prepared on the PR without creating a release. Do not tag or publish until the maintainer
+explicitly approves the release after testing. [AGENTS.md](AGENTS.md) records this procedure for coding agents.
 
 The pull request template has a short checklist, and the issue forms ask for what helps most with a connection
 problem: versions, what kind of desktop, and the connection log (Settings › Remote Desktop › Desktops › Open desktops › Copy log).

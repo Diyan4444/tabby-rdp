@@ -102,11 +102,12 @@ const page = {
         shown ? this.body.append(this.right) : this.right.remove()
     },
 }
+const appRoot = new FakeElement()
 page.tabBar = true
 g.document = {
     body: page.body,
     head: new FakeElement(),
-    querySelector: (selector: string) => selector === 'app-root .btn-space ~ .btn-group' && page.right.isConnected ? page.right : null,
+    querySelector: (selector: string) => selector === 'app-root' ? appRoot : selector === 'app-root .btn-space ~ .btn-group' && page.right.isConnected ? page.right : null,
     querySelectorAll: () => [],
     createElement: () => new FakeElement(),
 }
@@ -288,11 +289,12 @@ test('a desktop\'s menu turns its microphone off and on again, while the setting
 
 test('a desktop\'s menu offers paste and typing into all as the desktops showing count, and Type into all while it is on', async () => {
     const { RemoteDesktopContextMenu } = require('../../dist/ui.js')
-    const items = async (showing: number, broadcast: boolean) => {
+    const items = async (showing: number, broadcast: boolean, files = true) => {
         const calls: string[] = []
         const desktop = {
             has: () => true,
             isConnected: () => true,
+            canSendFiles: () => files,
             isVisible: () => true,
             hasConsole: () => false,
             choicesOf: () => ({ specs: [], current: null }),
@@ -302,6 +304,7 @@ test('a desktop\'s menu offers paste and typing into all as the desktops showing
             isViewOnly: () => false,
             microphoneStoppedFor: () => false,
             canSignInAgain: () => false,
+            rdpClientChoice: () => null,
             settings: () => ({ resize: 'live', zoom: 'fit', sharpness: 'standard', clipboard: 'both', microphone: false }),
             ownSharpness: () => null,
             clipboardCapOf: () => 'both',
@@ -312,12 +315,15 @@ test('a desktop\'s menu offers paste and typing into all as the desktops showing
             pasteToAll: () => calls.push('paste to all'),
         }
         const menu = new RemoteDesktopContextMenu(desktop, { cached: () => null, targetOf: async () => null }, {}, {}, { tabs: [] }, {})
-        const all = (await menu.getItems({ profile: { type: 'rdp' }, element: { nativeElement: {} } }) as any[])
+        const full = await menu.getItems({ profile: { type: 'rdp' }, element: { nativeElement: {} } }) as any[]
+        assert.equal(full.some(i => i.label === 'Send files…'), files)
+        const all = full
             .filter(i => /all .*desktops in this tab/.test(i.label ?? ''))
         return { labels: all.map(i => `${i.label}${i.type === 'checkbox' ? ` [${i.checked ? 'x' : ' '}]` : ''}`), click: (n: number) => all[n].click(), calls }
     }
     assert.deepEqual((await items(3, false)).labels, ['Paste to all 3 desktops in this tab', 'Type into all 3 desktops in this tab [ ]'])
     assert.deepEqual((await items(1, false)).labels, [])
+    await items(1, false, false) // FreeRDP has no file-transfer capability.
     // On, while the others' consoles are in front: it can still be turned off from here.
     const on = await items(1, true)
     assert.deepEqual(on.labels, ['Type into all desktops in this tab [x]'])
@@ -444,7 +450,7 @@ test('only the plugin\'s own hotkeys act: a name every object inherits does noth
     // Every call the module makes on the service is recorded.
     const desktop = new Proxy({}, { get: (_, key) => (...args: unknown[]) => { done.push(String(key)); return key === 'has' ? true : undefined } })
     const ssh = { profile: { type: 'ssh' }, element: { nativeElement: {} } }
-    const injector = { get: () => ({ start () { } }) }
+    const injector = { get: () => ({ start () { }, install () { } }) }
     // eslint-disable-next-line no-new
     new RemoteDesktopModule({ activeTab: ssh }, { hotkey$ }, desktop, { install () { } }, {}, { install () { } }, injector)
     // A hotkey handler that throws does so outside the call (RxJS reports it later, as an uncaught exception).
@@ -462,5 +468,52 @@ test('only the plugin\'s own hotkeys act: a name every object inherits does noth
         assert.deepEqual(done, ['has', 'disconnect'])
     } finally {
         process.off('uncaughtException', caught)
+    }
+})
+
+test('the RDP tab menu separates the running client from the checked next-connection choice', async () => {
+    const { RemoteDesktopContextMenu } = require('../../dist/ui.js')
+    const pane = { profile: { type: 'rdp' }, element: { nativeElement: {} } }
+    const calls: unknown[] = []
+    let value: string | null = null
+    const desktop = {
+        has: () => true, isConnected: () => false, isVisible: () => true, hasConsole: () => false,
+        choicesOf: () => ({ specs: [], current: null }), vmsCut: () => false, desktopOf: () => null,
+        canSaveFoundDesktop: () => false, canSignInAgain: () => false, configuredDesktops: () => [],
+        ownSharpness: () => null, clipboardCapOf: () => 'both',
+        settings: () => ({ client: 'ironrdp', resize: 'live', sharpness: 'standard', clipboard: 'both' }),
+        rdpClientChoice: () => ({ value, default: 'ironrdp', active: 'freerdp' }),
+        setRDPClient: (p: unknown, c: string | null) => calls.push([p, c]),
+    }
+    const menu = new RemoteDesktopContextMenu(desktop, { cached: () => null, targetOf: async () => null }, {}, {}, { tabs: [] }, {})
+    const choices = async () => (await menu.getItems(pane)).find((item: any) => item.label === 'RDP client').submenu
+    let items = await choices()
+    assert.equal(items[0].label, 'Current session: FreeRDP (experimental)')
+    assert.equal(items[0].enabled, false)
+    assert.deepEqual(items.filter((i: any) => i.type === 'radio').map((i: any) => [i.label, i.checked]), [
+        ['Follow default (IronRDP)', true], ['IronRDP', false], ['FreeRDP (experimental)', false],
+    ])
+    for (const item of items.filter((i: any) => i.type === 'radio')) item.click()
+    assert.deepEqual(calls, [[pane, null], [pane, 'ironrdp'], [pane, 'freerdp']])
+    value = 'ironrdp'
+    items = await choices()
+    assert.equal(items.find((i: any) => i.label === 'IronRDP').checked, true)
+    assert.equal(items.find((i: any) => i.label?.startsWith('Follow default')).checked, false)
+})
+
+test('auto-hiding the header keeps the microphone indicator available, and restores it on reveal', () => {
+    const { controls, desktop } = header()
+    desktop.users = [{ pane: alpha, name: 'alpha desktop', inView: false }]
+    const floating = () => page.body.children.find(c => c.className === 'trd-floating-mic')
+    appRoot.classList.toggle('trd-auto-hide-header', true)
+    try {
+        controls.refresh()
+        assert.ok(floating())
+        appRoot.classList.toggle('trd-header-revealed', true)
+        controls.refresh()
+        assert.equal(floating(), undefined)
+    } finally {
+        appRoot.classList.toggle('trd-auto-hide-header', false)
+        appRoot.classList.toggle('trd-header-revealed', false)
     }
 })

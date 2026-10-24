@@ -4,6 +4,7 @@ import { HYPERV_PORT, vmId } from './hyperv'
 import { configNumber } from './osd'
 import { RemoteTarget } from './targets'
 import { parseWake, WakeSpec } from './wake'
+import { ownRDPClient, RDPClient } from './rdpClient'
 
 /**
  * What kind of RDP server a desktop is. 'gnome': the SSH host's own desktop, set up automatically (headless
@@ -26,6 +27,7 @@ export interface OwnDesktopFound {
 
 /** A desktop reachable through an SSH connection. */
 export interface DesktopSpec {
+    client?: RDPClient
     /** 'own' for the SSH host's own desktop, otherwise `host:port`. */
     id: string
     /** For menus and status messages. */
@@ -91,6 +93,7 @@ export interface DesktopSpec {
  *           clipboard: off              # optional: both, fromRemote or off, in place of the setting `clipboard`
  */
 export interface ExtraDesktopConfig {
+    client?: string
     name?: string
     via?: string
     host?: string
@@ -147,7 +150,8 @@ export function configText (value: unknown): string {
 export function specOf (extra: ExtraDesktopConfig): DesktopSpec | null {
     // Its own clipboard sharing, or none (the setting's).
     const clipboard = ownClipboard(extra?.clipboard)
-    const own = clipboard ? { clipboard } : {}
+    const client = ownRDPClient(extra?.client)
+    const own = { ...clipboard ? { clipboard } : {}, ...client ? { client } : {} }
     const hyperv = vmId(extra?.hyperv)
     if (hyperv) {
         return hyperVSpec(hyperv, configText(extra.name) || hyperv, {

@@ -1,4 +1,5 @@
 import { Injector, NgModule } from '@angular/core'
+import TabbyCoreModule from 'tabby-core'
 import {
     AppService, CommandProvider, ConfigProvider, HotkeyProvider, HotkeysService, PlatformService, ProfileProvider, TabContextMenuItemProvider,
     TabRecoveryProvider, VaultService,
@@ -20,11 +21,14 @@ import { RemoteDesktopSettingsComponent, RemoteDesktopSettingsTab } from './sett
 import { UpdateCheck } from './updates'
 import { execRemote } from './ssh'
 import { DesktopPane, desktopPaneOf, RemoteTargets } from './targets'
+import { SettingsToggleComponent } from './settingsToggle'
+import { HeaderVisibility } from './headerVisibility'
 import {
     RemoteDesktopConfig, RemoteDesktopContextMenu, RemoteDesktopHotkeys, RemoteDesktopToolbarButton, TOGGLE_HOTKEY,
 } from './ui'
 
 @NgModule({
+    imports: [TabbyCoreModule],
     providers: [
         { provide: HostCompatibility, useFactory: createHostCompatibility, deps: [PlatformService] },
         { provide: HotkeyProvider, useClass: RemoteDesktopHotkeys, multi: true },
@@ -40,13 +44,14 @@ import {
         // Settings › Remote Desktop: settings, getting started, keys, troubleshooting.
         { provide: SettingsTabProvider, useClass: RemoteDesktopSettingsTab, multi: true },
     ],
-    declarations: [RDPTabComponent, RDPProfileSettingsComponent, RemoteDesktopSettingsComponent],
+    declarations: [RDPTabComponent, RDPProfileSettingsComponent, RemoteDesktopSettingsComponent, SettingsToggleComponent],
 })
 export default class RemoteDesktopModule {
     constructor (app: AppService, hotkeys: HotkeysService, desktop: RemoteDesktopService, header: HeaderControls, targets: RemoteTargets, keyboard: DesktopKeyboard, injector: Injector) {
         const compat = injector.get(HostCompatibility)
         installStyle()
         header.install()
+        injector.get(HeaderVisibility).install()
         // Passwords go to Tabby's Vault while it is enabled (as Tabby's SSH passwords do), else to the system keychain.
         try { useVault(injector.get(VaultService)) } catch { }
         injector.get(UpdateCheck).start()

@@ -107,6 +107,8 @@ export class HeaderControls {
     }
 
     private ensureGroup (): boolean {
+        const root = document.querySelector('app-root')
+        if (root?.classList.contains('trd-auto-hide-header') && !root.classList.contains('trd-header-revealed')) { return false }
         if (this.group?.isConnected) {
             return true
         }
@@ -166,6 +168,8 @@ export class HeaderControls {
         right.insertBefore(this.group, right.firstChild)
         return true
     }
+
+    headerVisibilityChanged (): void { this.schedule() }
 
     private refresh (): void {
         const users = this.desktop.microphoneUsers()
