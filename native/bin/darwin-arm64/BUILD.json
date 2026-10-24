@@ -4,14 +4,17 @@
     "url": "https://codeload.github.com/FreeRDP/FreeRDP/tar.gz/refs/tags/3.32.2",
     "sha256": "9ccb8357bf0188044a460de775c7ea289ca7d2a2a917eca0f0a7c4dc9c8b08ea"
   },
+  "opensslSource": null,
   "version": "tabby-freerdp IPC 1; FreeRDP 3.32.2",
   "platform": "darwin",
   "arch": "arm64",
   "buildSources": {
     "native/main.c": "7619ef702ada0943f11a12185f18f6f1156552d6eb153689934089e5db88def2",
-    "native/options.cmake": "d9c484b417a7a7105613badd4b16235709ff0fa9807105e2404801c6ddd00247",
+    "native/options.cmake": "f2cf997755be1524d718f0cfb5d73fd2bfeef02030e211ac1a5c85cc0ba617e3",
     "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
-    "scripts/build-freerdp.mjs": "ed5350f794af506b09bc392646b47052394f80db6add8b512d806066fce6d00c"
+    "scripts/build-freerdp.mjs": "c11b8c45c98665b624dd6967ec2ff197ecb110b44892984534bd3f96eaf82c66",
+    "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
+    "scripts/build-freerdp-ci.mjs": "e067ba607f66254f92977dae07c003e5223014f81efe30d016023449bf676c94"
   },
   "files": [
     {
@@ -24,11 +27,11 @@
     },
     {
       "path": "libfreerdp-client3.3.dylib",
-      "sha256": "883684e21031c16ce52745e2096b30f0240459df373d681ecac5941f8ff7010e"
+      "sha256": "df2b797072f3750ecfd1c3763ab2511b704754881cebf31f4ce2def31108a06f"
     },
     {
       "path": "libfreerdp3.3.dylib",
-      "sha256": "3fd2ed21f7481ba6b0acf35e76626f8f5d7fd3d95506e6134d077394902650ea"
+      "sha256": "e5a50885b7b5a01e9071e2439743336e6a1a6de1b29e214ffff408d11f240f76"
     },
     {
       "path": "libssl.3.dylib",
@@ -36,7 +39,7 @@
     },
     {
       "path": "libwinpr3.3.dylib",
-      "sha256": "0e9b10887d0e91b38f9685326ca01268b8cbb606f4b653ac8423bfddc380b82e"
+      "sha256": "d428b589c555e2cb413a4dec0f2554bfb2d3d88288b55486871dee36658dd2da"
     },
     {
       "path": "licenses/FreeRDP-LICENSE",

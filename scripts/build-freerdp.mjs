@@ -118,9 +118,13 @@ if (process.platform === 'darwin') {
 } else throw new Error(`Unsupported native platform: ${process.platform}`)
 const version = output(join(stage, executable), ['--version'])
 const artifacts = walk(stage).map(p => ({ path: p.slice(stage.length + 1).replaceAll('\\', '/'), sha256: createHash('sha256').update(readFileSync(p)).digest('hex') }))
-const buildSources = Object.fromEntries(['native/main.c', 'native/options.cmake', 'native/CMakeLists.txt', 'scripts/build-freerdp.mjs'].map(p =>
+const buildSources = Object.fromEntries(['native/main.c', 'native/options.cmake', 'native/CMakeLists.txt', 'scripts/build-freerdp.mjs',
+    'native/openssl-source.json', 'scripts/build-freerdp-ci.mjs'].map(p =>
     [p, createHash('sha256').update(readFileSync(join(root, p))).digest('hex')]))
-writeFileSync(join(stage, 'BUILD.json'), JSON.stringify({ source: manifest, version, platform: process.platform, arch: process.arch, buildSources, files: artifacts }, null, 2) + '\n')
+const opensslSource = join(openssl, 'tabby-source.json')
+writeFileSync(join(stage, 'BUILD.json'), JSON.stringify({ source: manifest,
+    opensslSource: existsSync(opensslSource) ? JSON.parse(readFileSync(opensslSource)) : null,
+    version, platform: process.platform, arch: process.arch, buildSources, files: artifacts }, null, 2) + '\n')
 rmSync(destination, { recursive: true, force: true })
 renameSync(stage, destination)
 console.log(`Built ${destination}: ${version}`)

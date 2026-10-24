@@ -9,7 +9,8 @@ fs.mkdirSync(path.join(root, '.qa'), { recursive: true })
 const out = fs.mkdtempSync(path.join(root, '.qa/client-install-'))
 const plugin = path.join(out, 'client-bundle')
 fs.mkdirSync(path.join(plugin, 'node_modules'), { recursive: true })
-for (const file of ['dist', 'vendor', 'remote', 'package.json', 'node_modules/semver', 'node_modules/ws']) {
+for (const file of ['dist', 'vendor', 'remote', 'native/bin', 'native/README.md', 'package.json', 'node_modules/semver', 'node_modules/ws']) {
+    if (!fs.existsSync(path.join(root, file)) && file === 'native/bin') continue
     fs.cpSync(path.join(root, file), path.join(plugin, file), { recursive: true, filter: source => !source.endsWith('.map') })
 }
 for (const file of ['scripts/qa/client.mjs', 'test/fixtures/smoke-credentials.cjs']) {
