@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0-rc.1 (unreleased)
 
 **Added**
 - Choose the RDP client in Remote Desktop settings, with overrides in RDP profiles and desktop forms. IronRDP

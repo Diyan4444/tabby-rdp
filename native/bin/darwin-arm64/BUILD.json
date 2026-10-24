@@ -1,0 +1,62 @@
+{
+  "source": {
+    "version": "3.32.2",
+    "url": "https://codeload.github.com/FreeRDP/FreeRDP/tar.gz/refs/tags/3.32.2",
+    "sha256": "9ccb8357bf0188044a460de775c7ea289ca7d2a2a917eca0f0a7c4dc9c8b08ea"
+  },
+  "version": "tabby-freerdp IPC 1; FreeRDP 3.32.2",
+  "platform": "darwin",
+  "arch": "arm64",
+  "buildSources": {
+    "native/main.c": "7619ef702ada0943f11a12185f18f6f1156552d6eb153689934089e5db88def2",
+    "native/options.cmake": "d9c484b417a7a7105613badd4b16235709ff0fa9807105e2404801c6ddd00247",
+    "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
+    "scripts/build-freerdp.mjs": "ed5350f794af506b09bc392646b47052394f80db6add8b512d806066fce6d00c"
+  },
+  "files": [
+    {
+      "path": "legacy.dylib",
+      "sha256": "e296881b7be510ca20ff6e59446d1a5ab9f4cc2a6029fe60efba7ebdb3754efe"
+    },
+    {
+      "path": "libcrypto.3.dylib",
+      "sha256": "8a95549096f75593a90457f301b8bbd41cdf4c4e479d0e58a58ce90c64f5f55a"
+    },
+    {
+      "path": "libfreerdp-client3.3.dylib",
+      "sha256": "883684e21031c16ce52745e2096b30f0240459df373d681ecac5941f8ff7010e"
+    },
+    {
+      "path": "libfreerdp3.3.dylib",
+      "sha256": "3fd2ed21f7481ba6b0acf35e76626f8f5d7fd3d95506e6134d077394902650ea"
+    },
+    {
+      "path": "libssl.3.dylib",
+      "sha256": "74eab6d7f8990e47f6d2a781c1225e194f9146b9f540780f587a07f25c6a4d98"
+    },
+    {
+      "path": "libwinpr3.3.dylib",
+      "sha256": "0e9b10887d0e91b38f9685326ca01268b8cbb606f4b653ac8423bfddc380b82e"
+    },
+    {
+      "path": "licenses/FreeRDP-LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "licenses/FreeRDP-NOTICE",
+      "sha256": "c870d52f42a8f93023b99a85fe68d02637d6b04e5f35bbcd7f98759adb4e4d49"
+    },
+    {
+      "path": "licenses/NOTICE",
+      "sha256": "92650185822a0d49e56b7d554a75b1a6083d892c5b065bab5759e2d0817c6a10"
+    },
+    {
+      "path": "licenses/OpenSSL-LICENSE",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "path": "tabby-freerdp",
+      "sha256": "aff06964c6bcc8ff57f2c8eb77a2b636ebd3d630a343d40647f5703806f969ac"
+    }
+  ]
+}

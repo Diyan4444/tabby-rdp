@@ -3,15 +3,45 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { connect, createServer } from 'node:net'
 import { once } from 'node:events'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, lstatSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { createSecureContext, TLSSocket } from 'node:tls'
 import { selfSigned } from './support/certificates.js'
 
 const require = createRequire(import.meta.url)
-const { FreeRDPFrames, ipcFrame, numbers, decodeNativeFrame, freeRDPRelay, FreeRDPProcess, nativeHelperPath, helperEnvironment } = require('../../dist/freerdp.js')
+const { FreeRDPFrames, ipcFrame, numbers, decodeNativeFrame, freeRDPRelay, FreeRDPProcess, FreeRDPError, nativeHelperPath, helperEnvironment } = require('../../dist/freerdp.js')
 const { nativeKey } = require('../../dist/freerdpView.js')
 const { ownRDPClient, rdpClient } = require('../../dist/rdpClient.js')
 const { specOf, sessionKey } = require('../../dist/desktops.js')
+
+test('distributed native helpers retain their recorded source, artifact hashes and license notices', () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url))
+    const binaries = join(root, 'native/bin')
+    const hash = (name: string) => createHash('sha256').update(readFileSync(join(root, name))).digest('hex')
+    // Source-only development checkouts may not have built a helper yet.
+    if (!existsSync(binaries)) return
+    for (const platform of readdirSync(binaries)) {
+        const dir = join(binaries, platform)
+        const record = JSON.parse(readFileSync(join(dir, 'BUILD.json'), 'utf8'))
+        assert.deepEqual(record.source, JSON.parse(readFileSync(join(root, 'native/freerdp-source.json'), 'utf8')))
+        assert.equal(platform, `${record.platform}-${record.arch}`)
+        for (const [source, expected] of Object.entries(record.buildSources)) assert.equal(hash(source), expected, `${source} changed; rebuild FreeRDP`)
+        for (const file of record.files) {
+            assert.equal(hash(`native/bin/${platform}/${file.path}`), file.sha256, `${platform}/${file.path} changed since build`)
+        }
+        const listed = record.files.map((f: { path: string }) => f.path).sort()
+        const files = (dir: string, prefix = ''): string[] => readdirSync(dir).flatMap(name => {
+            const path = join(dir, name), stat = lstatSync(path)
+            assert.ok(!stat.isSymbolicLink(), `native bundle cannot contain a link: ${path}`)
+            return stat.isDirectory() ? files(path, `${prefix}${name}/`) : [`${prefix}${name}`]
+        })
+        assert.deepEqual(files(dir).filter(name => name !== 'BUILD.json').sort(), listed)
+        for (const license of ['FreeRDP-LICENSE', 'FreeRDP-NOTICE', 'OpenSSL-LICENSE', 'NOTICE']) assert.ok(listed.includes(`licenses/${license}`))
+        assert.ok(listed.includes(`tabby-freerdp${record.platform === 'win32' ? '.exe' : ''}`))
+    }
+})
 
 test('client choice defaults to IronRDP; invalid config never runs an arbitrary backend', () => {
     for (const value of [undefined, null, '', 'auto', 'FreeRDP', 'toString', {}, { toString () { throw new Error('not text') } }]) {
@@ -60,6 +90,38 @@ test('native keys retain physical shortcuts and extended scan codes; Unicode sup
     assert.deepEqual(nativeKey({ ...key, ctrlKey: true }, true), { scan: 0x1e, text: '' })
     assert.deepEqual(nativeKey({ ...key, code: 'Delete', key: 'Delete' }, true), { scan: 0x153, text: '' })
     assert.equal(nativeKey({ ...key, code: 'Unknown', key: 'Unidentified' }, true), null)
+})
+
+test('only explicit credential rejection triggers a saved-password retry', () => {
+    assert.equal(new FreeRDPError(0x20014).kind(), 2)
+    assert.equal(new FreeRDPError(0x20015).kind(), 2)
+    for (const code of [0x20009, 0x20008, 0x2000d]) assert.equal(new FreeRDPError(code).kind(), undefined)
+})
+
+test('native input waits until authentication has finished without delaying security decisions', () => {
+    const native = new FreeRDPProcess(), writes: Buffer[] = []
+    native.child = { stdin: { writableLength: 0, write: (data: Buffer) => writes.push(data) } }
+    for (const type of ['M', 'K', 'R', 'N', 'C']) native.send(type, Buffer.from([1]))
+    assert.deepEqual(writes.map(data => String.fromCharCode(data[0])), ['N', 'C'])
+    native.receive('D', numbers(800, 600), {})
+    for (const type of ['M', 'K', 'R']) native.send(type, Buffer.alloc(12))
+    assert.deepEqual(writes.map(data => String.fromCharCode(data[0])), ['N', 'C', 'M', 'K', 'R'])
+})
+
+test('server-directed session endings do not become reconnectable transport failures', async () => {
+    for (const reason of [0, 1, 2, 3, 4, 5, 11, 12]) {
+        const native = new FreeRDPProcess()
+        native.receive('D', numbers(800, 600), {})
+        native.receive('X', numbers(reason ? 0x10000 | reason : 0, reason), {})
+        const end = await native.run()
+        assert.ok(end.reason())
+    }
+    for (const code of [0x2000d, 0x10006, 0x10007]) {
+        const native = new FreeRDPProcess()
+        native.receive('D', numbers(800, 600), {})
+        native.receive('X', numbers(code, 0), {})
+        await assert.rejects(native.run(), /FreeRDP connection failed/)
+    }
 })
 
 test('the native relay authenticates before opening any remote stream and closes relayed sockets', async t => {
@@ -123,7 +185,12 @@ for (const mode of ['without-nla', 'certificate-tls', 'certificate-nla', 'truste
         await assert.rejects(process.connect({
             host: mode === 'wrong-name' ? 'other.test' : 'native.test', username: 'private-test-username', password: 'private-test-password', domain: 'PRIVATE', width: 800, height: 600, pipeline: false,
             ...mode === 'trusted-certificate' || mode === 'wrong-name' ? { authorities: [cert.cert.toString()] } : {},
-            open: async () => { const socket = connect((server.address() as any).port, '127.0.0.1'); await once(socket, 'connect'); return socket },
+            open: async () => {
+                const socket = connect((server.address() as any).port, '127.0.0.1'); await once(socket, 'connect')
+                // Pointer/key activity while connecting must never be consumed as the certificate/NLA answer.
+                process.send('M', numbers(0x0800, 10, 20)); process.send('K', numbers(0, 0x1e, 0))
+                return socket
+            },
             certificate: (_fp: string, valid: boolean) => { checked = true; observedValid = valid; throw new Error('reject test certificate') },
             withoutNla: () => { withoutNla++; if (mode === 'without-nla') throw new Error('reject TLS sign-in') },
             frame: () => { throw new Error('not connected') },

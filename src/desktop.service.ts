@@ -122,6 +122,8 @@ interface StatusAction {
 
 type SessionState = 'connecting' | 'connected' | 'ended'
 
+type ConnectionOutcome = { connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }
+
 /** Where a desktop is and how to sign in there (see endpointFor). */
 interface Endpoint {
     host: string
@@ -474,7 +476,7 @@ export class DesktopSession {
         // View only: the layer takes the mouse, so the wheel scrolls an actual-size picture instead of the remote.
         this.overlay.querySelector('.trd-view-only')!.addEventListener('wheel', event => {
             const wheel = event as WheelEvent
-            (this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp'))?.shadowRoot?.querySelector('.screen-wrapper')?.scrollBy(wheel.deltaX, wheel.deltaY)
+            this.remoteElement()?.shadowRoot?.querySelector('.screen-wrapper')?.scrollBy(wheel.deltaX, wheel.deltaY)
         }, { passive: true })
     }
 
@@ -525,8 +527,12 @@ export class DesktopSession {
     }
 
     /** IronRDP's canvas: the remote frame, at the remote resolution. */
+    private remoteElement (): Element | null {
+        return this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp')
+    }
+
     canvas (): HTMLCanvasElement | null {
-        return (this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp'))?.shadowRoot?.querySelector('canvas') ?? null
+        return this.remoteElement()?.shadowRoot?.querySelector('canvas') ?? null
     }
 
     private readonly container: HTMLElement
@@ -705,7 +711,7 @@ export class DesktopSession {
             }
             return
         }
-        const host = this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp')
+        const host = this.remoteElement()
         this.canvas()?.focus()
         if (host && document.activeElement !== host && attempts > 1 && this.visible) {
             this.focusSoon(attempts - 1, 16)
@@ -3387,10 +3393,12 @@ export class RemoteDesktopService {
         let endpoint: Endpoint | null = null
         let gatewayError: string | undefined
         try {
-            const client = this.settingsFor(session).client
+            // Discovered Hyper-V consoles have no per-desktop editor. Keep those on their supported client
+            // when FreeRDP is only the global default; an explicit unsupported override is still refused below.
+            const client = spec.hyperv && !ownRDPClient(spec.client) ? 'ironrdp' : this.settingsFor(session).client
             if (client === 'freerdp') {
-                requireFreeRDP()
                 if (spec.hyperv) { throw new Error('FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.') }
+                requireFreeRDP()
             }
             const gateway = spec.gateway ? parseGateway(spec.gateway) : null
             if (spec.gateway && !gateway) {
@@ -4068,7 +4076,7 @@ export class RemoteDesktopService {
     /** One RDP connection attempt, until it ends. */
     private async run (
         pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, rdp: any, endpoint: Endpoint,
-    ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+    ): Promise<ConnectionOutcome> {
         const attempt = new AbortController()
         let connectedAt: number | undefined
         let unwatch: (() => void) | undefined
@@ -4103,15 +4111,12 @@ export class RemoteDesktopService {
     private async runFreeRDPConnection (
         pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, endpoint: Endpoint,
         signal: AbortSignal, onConnected: (at: number) => void,
-    ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+    ): Promise<ConnectionOutcome> {
         const alive = () => !signal.aborted && this.sessions.get(pane) === session
         session.certificateProblem = null
         session.gatewayRefused = null
         session.withoutNla = false
         session.plainSignIn = false
-        if (spec.hyperv) {
-            return { connected: false, error: 'FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.' }
-        }
         const settings = this.settingsFor(session)
         const size = remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
         const native = new FreeRDPProcess()
@@ -4134,6 +4139,7 @@ export class RemoteDesktopService {
                 username, password: endpoint.credentials.password, domain, ...size,
                 // GNOME requires the pipeline. Windows uses FreeRDP's native bitmap decoder in this first build.
                 pipeline: spec.kind === 'gnome',
+                autologon: spec.kind === 'xrdp',
                 open: async abort => {
                     const stream = gateway ? await this.throughGateway(target, spec, session, gateway, endpoint, abort) : await target.openTcp(endpoint.host, endpoint.port)
                     if (abort.aborted) { stream.destroy(); throw new Error('Connection cancelled') }
@@ -4151,19 +4157,10 @@ export class RemoteDesktopService {
             onConnected(Date.now())
             session.remoteSize = { ...info, scale: 100 }
             session.graphics = 'FreeRDP native bitmaps'
-            session.state = 'connected'
-            session.status('')
-            session.log.push(`connected: ${info.width}x${info.height}`)
             ui.setVisibility(session.visible)
             this.applyKeyboardMode(session)
             if (size.scale !== 100 || spec.kind === 'windows') { this.applySize(session, size) }
-            this.watchSize(pane, session)
-            this.rememberEndpoint(session, endpoint)
-            this.tip(pane, session)
-            this.label(pane, session)
-            this.syncIndicator(session)
-            this.changed$.next()
-            this.focusIfInFront(pane, session)
+            this.desktopConnected(pane, session, endpoint, info)
             const end = await native.run()
             return alive() ? { connected: true, reason: end.reason() } : { connected: false }
         } catch (error: any) {
@@ -4176,6 +4173,20 @@ export class RemoteDesktopService {
             signal.removeEventListener('abort', stop)
             native.shutdown()
         }
+    }
+
+    /** Shared post-connect UI, watchers and credential guards for both clients. */
+    private desktopConnected (pane: DesktopPane, session: DesktopSession, endpoint: Endpoint, size: { width: number, height: number }): void {
+        this.watchSize(pane, session)
+        session.state = 'connected'
+        session.log.push(`connected: ${size.width}x${size.height}`)
+        session.status('')
+        this.tip(pane, session)
+        this.label(pane, session)
+        this.syncIndicator(session)
+        this.changed$.next()
+        this.rememberEndpoint(session, endpoint)
+        this.focusIfInFront(pane, session)
     }
 
     /** Remember credentials only after a successful sign-in, under the same revision guards for either client. */
@@ -4212,7 +4223,7 @@ export class RemoteDesktopService {
     private async runConnection (
         pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, rdp: any, endpoint: Endpoint,
         signal: AbortSignal, onConnected: (at: number) => void,
-    ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+    ): Promise<ConnectionOutcome> {
         if (rdp.client === 'freerdp') {
             return this.runFreeRDPConnection(pane, target, spec, session, endpoint, signal, onConnected)
         }
@@ -4391,16 +4402,7 @@ export class RemoteDesktopService {
                 // keeps a signed-in session's scale from the last connection: set it either way.
                 this.applySize(session, size)
             }
-            this.watchSize(pane, session)
-            session.state = 'connected'
-            session.log.push(`connected: ${width}x${height}`)
-            session.status('')
-            this.tip(pane, session)
-            this.label(pane, session)
-            this.syncIndicator(session)
-            this.changed$.next()
-            this.rememberEndpoint(session, endpoint)
-            this.focusIfInFront(pane, session)
+            this.desktopConnected(pane, session, endpoint, { width, height })
             let end: any
             try {
                 end = await info.run()

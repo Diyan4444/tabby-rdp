@@ -2208,3 +2208,23 @@ test('ending a connection keeps only a pixel copy of its picture, and disposal r
     desktop.dispose()
     assert.equal(desktop.host.children.length, 0)
 })
+
+test('a global FreeRDP default preserves discovered Hyper-V consoles; explicit unsupported overrides fail before credentials', async () => {
+    const { svc } = service({ client: 'freerdp' })
+    const pane = {}, spec = hyperVSpec('test-vm', 'Test VM')
+    const s = session(spec, 'host#hyperv:test-vm')
+    svc.sessions.set(pane, s)
+    let loads = 0, prompts = 0
+    svc.loadIronRDP = async () => { loads++; return {} }
+    svc.wakeIfDown = async () => false
+    svc.endpointFor = async () => { prompts++; return null }
+    await svc.connect(pane, { key: 'host', label: 'Host' }, spec, s)
+    assert.equal(loads, 1)
+    assert.equal(prompts, 1)
+    spec.client = 'freerdp'
+    let error = ''
+    svc.afterEnd = (_pane: unknown, _target: unknown, _spec: unknown, _session: unknown, end: any) => { error = end.error }
+    await svc.connect(pane, { key: 'host', label: 'Host' }, spec, s)
+    assert.equal(prompts, 1, 'unsupported explicit choice must not ask for credentials')
+    assert.match(error, /does not support Hyper-V/)
+})

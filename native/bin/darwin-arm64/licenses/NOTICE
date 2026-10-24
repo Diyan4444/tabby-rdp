@@ -1,0 +1,2 @@
+This helper uses FreeRDP and WinPR 3.32.2 (Apache-2.0), https://www.freerdp.com/, and OpenSSL 3 (Apache-2.0), https://www.openssl.org/.
+Original license and notice texts accompany this file. The Tabby helper itself is MIT licensed.

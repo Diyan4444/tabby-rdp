@@ -144,6 +144,7 @@ interface FreeRDPOptions {
     width: number
     height: number
     pipeline: boolean
+    autologon?: boolean
     open: (signal: AbortSignal) => Promise<Duplex>
     certificate: (fingerprint: string, valid: boolean, reason: string, details?: CertificateDetails) => void
     withoutNla: () => void
@@ -152,7 +153,19 @@ interface FreeRDPOptions {
 
 export class FreeRDPError extends Error {
     constructor (readonly code: number) { super(`FreeRDP connection failed (0x${code.toString(16).padStart(8, '0')})`) }
-    kind (): number | undefined { return [0x20009, 0x20014, 0x20015].includes(this.code) ? 2 : undefined }
+    // Only explicit logon failure / wrong password should discard a remembered password. The generic
+    // authentication error also covers CredSSP, unsupported mechanisms and transport failures.
+    kind (): number | undefined { return [0x20014, 0x20015].includes(this.code) ? 2 : undefined }
+}
+
+const SESSION_END_REASONS: Record<number, string> = {
+    0x10001: 'The server disconnected the session.',
+    0x10002: 'The server signed out the session.',
+    0x10003: 'The session reached its idle time limit.',
+    0x10004: 'The session reached its sign-in time limit.',
+    0x10005: 'Another connection took over the session.',
+    0x1000b: 'The remote user disconnected the session.',
+    0x1000c: 'The remote user signed out.',
 }
 
 /** One native process, relay and set of promises per attempt. A native crash cannot take another desktop down. */
@@ -199,7 +212,7 @@ export class FreeRDPProcess {
                 const text = Buffer.from(value)
                 return Buffer.concat([numbers(text.length), text])
             })
-            this.send('S', Buffer.concat([...fields, numbers(this.relay.port, options.width, options.height, +options.pipeline)]))
+            this.send('S', Buffer.concat([...fields, numbers(this.relay.port, options.width, options.height, +options.pipeline, +!!options.autologon)]))
         } catch (error) { this.fail(error as Error) }
         return started
     }
@@ -234,14 +247,17 @@ export class FreeRDPProcess {
             this.ready({ width, height })
         } else if ((type === 'E' || type === 'X') && data.length === 8) {
             const code = data.readUInt32BE(0), reason = data.readUInt32BE(4)
-            if (type === 'E' || code && code !== 0x1000c) { this.fail(this.relay?.failure ?? new FreeRDPError(code)); return }
-            this.finish({ reason: `FreeRDP ended the connection (0x${reason.toString(16)})` })
+            if (type === 'E' || code && !SESSION_END_REASONS[code]) { this.fail(this.relay?.failure ?? new FreeRDPError(code)); return }
+            this.finish({ reason: SESSION_END_REASONS[code] ?? `FreeRDP ended the connection (0x${reason.toString(16)})` })
             this.shutdown()
         } else { throw new Error('FreeRDP sent an unexpected IPC message') }
     }
 
     send (type: string, payload: Buffer): void {
         if (this.closed || !this.child) { return }
+        // During freerdp_connect the helper reads certificate/NLA decisions directly from stdin. User input
+        // must not get ahead of those replies and be mistaken for a refusal.
+        if (!this.connected && ['K', 'M', 'R'].includes(type)) { return }
         // A child that has stalled must not accumulate an unbounded queue of mouse/keyboard events.
         if (this.child.stdin.writableLength > MAX_FRAME) { this.fail(new Error('FreeRDP input stopped responding')); return }
         this.child.stdin.write(ipcFrame(type, payload))

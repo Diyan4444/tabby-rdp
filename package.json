@@ -1,7 +1,7 @@
 {
   "name": "tabby-rdp",
-  "version": "0.5.7",
-  "description": "Remote desktops in Tabby's SSH tabs: Linux (GNOME) and Windows, through SSH, with clipboard, files and sound. IronRDP, with an experimental FreeRDP client.",
+  "version": "0.6.0-rc.1",
+  "description": "Windows and Linux remote desktops in Tabby, through SSH, direct RDP or RD Gateway. IronRDP with an experimental FreeRDP client.",
   "keywords": [
     "tabby-plugin",
     "tabby",

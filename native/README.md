@@ -11,7 +11,8 @@ Gateway transports, credential store and certificate/NLA prompts. Each attempt h
 
 The preview does **not** yet implement clipboard, audio playback/capture, shared folders, or Hyper-V VMConnect.
 The supplied build uses native bitmap decoding (and the graphics pipeline for GNOME), with optional H.264 codecs
-disabled. It has not been benchmarked against IronRDP on Windows Server. Native decoding alone does not establish
+disabled. NLA currently uses NTLM; Kerberos/GSSAPI support is not compiled into this preview. Hyper-V consoles that
+inherit the global client setting continue to use IronRDP. It has not been benchmarked against IronRDP on Windows Server. Native decoding alone does not establish
 that this implementation will be faster: the cost of transferring pixels to the canvas also matters.
 
 ## Build
@@ -40,10 +41,16 @@ system ABI; Windows requires the applicable Microsoft C runtime. Builds for othe
 No native executable is downloaded or compiled when Tabby loads the plugin. Selecting FreeRDP without the matching
 helper produces an installation message before asking for credentials. It does not silently change to IronRDP.
 
-`native/bin` is generated and ignored by Git, but included by `npm pack` when present. For a public release, qualify
+`native/bin` is generated and ignored by Git, but included by `npm run pack:release` when present. For a public release, qualify
 each intended platform/architecture and explicitly include the reviewed native outputs in the release commit
 (`git add -f native/bin/<platform>-<arch>`). The existing package checks require distributed files to match the
 release commit. A build on one computer supplies only that computer's platform/architecture.
+
+The PR's **Build and package** CI job uploads **tabby-rdp-test-package**, a ZIP containing the plugin's npm tarball.
+This is a plugin build for an existing Tabby installation. It does not create a release or publish to npm. The
+current PR includes the macOS ARM64 helper; Windows, Linux and Intel Mac FreeRDP builds remain pending. IronRDP
+remains available on those platforms. The package version is prepared as `0.6.0-rc.1`; tagging and publication wait
+for further analysis and manual testing.
 
 ## Licensing
 
@@ -60,6 +67,8 @@ npm run test:unit
 npm test -- --hidden visual-smoke
 # With TRD_TEST_DIRECT, TRD_TEST_DIRECT_USER and TRD_TEST_DIRECT_PASSWORD for a dedicated server:
 npm test -- --hidden freerdp
+# Verify the installed tarball as well, including executable permissions and relocated native libraries:
+npm test -- --packed --hidden freerdp
 ```
 
 The FreeRDP unit tests run framing, bounds, keyboard and authenticated-relay tests on every platform. When the

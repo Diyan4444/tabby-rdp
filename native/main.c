@@ -159,7 +159,11 @@ static BOOL authenticate(freerdp* instance, char** u, char** p, char** d, rdp_au
     (void)instance; (void)u; (void)p; (void)d; (void)reason;
     return FALSE; /* All credential prompts belong to the parent. */
 }
-static BOOL begin_paint(rdpContext* base) { base->gdi->primary->hdc->hwnd->invalid->null = TRUE; return TRUE; }
+static BOOL begin_paint(rdpContext* base) {
+    base->gdi->primary->hdc->hwnd->invalid->null = TRUE;
+    base->gdi->primary->hdc->hwnd->ninvalid = 0;
+    return TRUE;
+}
 static BOOL end_paint(rdpContext* base) {
     Context* c = (Context*)base;
     rdpGdi* g = base->gdi;
@@ -292,9 +296,9 @@ int main(int argc, char** argv) {
     const BYTE* p = start->data; UINT32 left = start->length;
     char* fields[6] = { 0 };
     for (int i = 0; i < 6; i++) if (!(fields[i] = string_field(&p, &left))) return 2;
-    if (left != 16) return 2;
+    if (left != 20) return 2;
     c->name = fields[0]; c->authorities = fields[4]; c->token = fields[5]; c->port = read32(p);
-    UINT32 w = read32(p + 4), h = read32(p + 8), gfx = read32(p + 12);
+    UINT32 w = read32(p + 4), h = read32(p + 8), gfx = read32(p + 12), autologon = read32(p + 16);
     if (!c->inputEvent || !c->port || c->port > 65535 || strlen(c->token) != 64 || w < 200 || w > 7680 || h < 200 || h > 4320) return 2;
     rdpSettings* s = instance->context->settings;
 #define STR(key, value) if (!freerdp_settings_set_string(s, FreeRDP_##key, value)) return 2
@@ -307,6 +311,7 @@ int main(int argc, char** argv) {
     BOOLSET(MstscCookieMode, FALSE); NUM(CookieMaxLength, 0);
     BOOLSET(ExternalCertificateManagement, TRUE); BOOLSET(NlaSecurity, TRUE); BOOLSET(TlsSecurity, TRUE);
     BOOLSET(RdpSecurity, FALSE); BOOLSET(NegotiateSecurityLayer, TRUE); BOOLSET(Authentication, TRUE);
+    BOOLSET(AutoLogonEnabled, autologon != 0);
     BOOLSET(AutoReconnectionEnabled, FALSE); /* The parent owns retries and their fresh native processes. */
     BOOLSET(SupportDisplayControl, TRUE); BOOLSET(DynamicResolutionUpdate, TRUE);
     BOOLSET(SupportGraphicsPipeline, gfx != 0); BOOLSET(GfxH264, FALSE); BOOLSET(GfxAVC444, FALSE);
