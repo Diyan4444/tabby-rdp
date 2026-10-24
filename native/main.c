@@ -280,6 +280,8 @@ int main(int argc, char** argv) {
     if (argc != 1) return 2;
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
+    WSADATA sockets;
+    if (WSAStartup(MAKEWORD(2, 2), &sockets) != 0) return 1;
 #else
     signal(SIGPIPE, SIG_IGN);
 #endif

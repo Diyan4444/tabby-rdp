@@ -9,12 +9,12 @@
   "platform": "darwin",
   "arch": "arm64",
   "buildSources": {
-    "native/main.c": "00b934bf229e04d59ecfd3775a899c3485456a7294275f158b9a627985a3202f",
+    "native/main.c": "1e72c2490b7688bd4eb8d7468200cd17deca45d7e998d2808285a40ecafb1b8b",
     "native/options.cmake": "228ae20f83200a8a76a6a05bf73deb2b9aa94487b0ffca023bbb8fefd76cd1b8",
     "native/CMakeLists.txt": "659585c5dc95ef68bb755290be39fa1c517097728e784bb30ec74c616f6708aa",
     "scripts/build-freerdp.mjs": "66ea9227aa9ad591390d404017e7da11e8dde812736ccf52afd2fd58b402bbcd",
     "native/openssl-source.json": "50082e3fc1b171c9d708fd0437ecb291960e9567b3c9d6648f495f3fb2a3a009",
-    "scripts/build-freerdp-ci.mjs": "e067ba607f66254f92977dae07c003e5223014f81efe30d016023449bf676c94"
+    "scripts/build-freerdp-ci.mjs": "11d38612fafb3bf49ae59ba8f2a94087715274a1eecea624de029ca5e61d8fd1"
   },
   "files": [
     {
@@ -27,11 +27,11 @@
     },
     {
       "path": "libfreerdp-client3.3.dylib",
-      "sha256": "37c076c0c499af4cbac3ca01036a9d80929890305ba1de64ba89357e6da85358"
+      "sha256": "32082bf6385862572ee6485e53cefffe4cb27e3f3c87056a2cc16397dc85b1ed"
     },
     {
       "path": "libfreerdp3.3.dylib",
-      "sha256": "dd167b8f45fea067def4d49c7d539e0562ef5dfc81a6adcea79a9d50b6a3095a"
+      "sha256": "ded1800071d182203d7754fbdc9ceef2c83c23534622f916d784bec3ae545306"
     },
     {
       "path": "libssl.3.dylib",
@@ -39,7 +39,7 @@
     },
     {
       "path": "libwinpr3.3.dylib",
-      "sha256": "06e130a6105f7b65959628558387b7f05c8d186d158859bfbd798d37239b7d69"
+      "sha256": "9e8b6c6c232c5f8670237d25b77af875cd8affba99bc8addb5059aeb2a6529ff"
     },
     {
       "path": "licenses/FreeRDP-LICENSE",

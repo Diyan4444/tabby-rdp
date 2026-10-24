@@ -39,7 +39,8 @@ if (createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== mani
 fs.rmSync(source, { recursive: true, force: true })
 fs.rmSync(prefix, { recursive: true, force: true })
 run('cmake', ['-E', 'tar', 'xzf', archive], work)
-run('perl', ['Configure', configurations[target], `--prefix=${prefix}`, `--openssldir=${path.join(prefix, 'ssl')}`, '--libdir=lib', 'shared', 'no-tests', ...process.platform === 'win32' ? ['no-asm'] : []], source)
+// Each source tree is fresh: dependency scanning would compile every MSVC source twice without helping rebuilds.
+run('perl', ['Configure', configurations[target], `--prefix=${prefix}`, `--openssldir=${path.join(prefix, 'ssl')}`, '--libdir=lib', 'shared', 'no-tests', 'no-makedepend', ...process.platform === 'win32' ? ['no-asm'] : []], source)
 if (process.platform === 'win32') {
     run('nmake', [], source)
     run('nmake', ['install_sw'], source)
