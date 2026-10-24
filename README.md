@@ -705,6 +705,14 @@ config). Keys, passwords, licenses, tokens and other byte strings are left out o
 look through it before you attach it.
 Start with the [troubleshooting guide](TROUBLESHOOTING.md) for common connection and installation problems.
 
+## RDP client preview
+
+Settings › Remote Desktop › Settings › **RDP client** chooses IronRDP (the default) or the experimental FreeRDP
+client. Each RDP profile and desktop can override it; changes apply on reconnect. FreeRDP needs a native build for
+your OS and CPU. Its first preview supports display and input; clipboard, audio, shared folders, Hyper-V consoles
+and H.264 decoding are pending. See [the FreeRDP build and capability notes](native/README.md). Performance against
+Windows Server has not yet been measured.
+
 ## License
 
 [MIT](LICENSE). The bundled IronRDP build is MIT or Apache-2.0 ([vendor/IRONRDP-LICENSE](vendor/IRONRDP-LICENSE)).

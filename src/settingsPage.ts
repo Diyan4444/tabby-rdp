@@ -15,6 +15,7 @@ import { renderReleaseSettings } from './releaseSettings'
 import { RDP_PROFILE_TYPE } from './targets'
 import { showable } from './unshowable'
 import { HostCompatibility } from './hostCompat'
+import { RDP_CLIENT_LABELS } from './rdpClient'
 
 const REPO = 'https://github.com/meanaverage/tabby-rdp'
 
@@ -246,6 +247,16 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
 
             <section data-topic="settings">
                 <h4>Settings</h4>
+                <div class="form-line">
+                    <div class="header">
+                        <div class="title">RDP client</div>
+                        <div class="description">Default for new connections. Each desktop can choose its own client.
+                            FreeRDP preview supports display and input; clipboard, sound and shared folders are unavailable.</div>
+                    </div>
+                    <select class="form-control" data-setting="client" aria-label="RDP client">
+                        ${Object.entries(RDP_CLIENT_LABELS).map(([id, label]) => `<option value="${id}">${esc(label)}</option>`).join('')}
+                    </select>
+                </div>
                 <h5>Picture</h5>
                 <div class="form-line">
                     <div class="header">

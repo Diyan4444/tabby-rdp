@@ -11,6 +11,9 @@ import { DesktopPane, desktopPaneOf, isRDPTab, NestedSSH, RDP_PROFILE_TYPE, Remo
 import { consoleScript, DeskGate, deskKeyDigest, DeskRequest, MACHINE_ID_COMMAND } from './deskScript'
 import { AudioPlayer } from './audio'
 import { IronRDPLoader } from './ironrdp'
+import { RDPClient, ownRDPClient, rdpClient, RDP_CLIENT_LABELS, isRDPElement } from './rdpClient'
+import { FreeRDPProcess, requireFreeRDP } from './freerdp'
+import { FreeRDPView } from './freerdpView'
 import { createH264Decoder } from './h264'
 import { CLIPBOARD_LABELS, ClipboardMode, clipboardSetting, ClipboardWays, clipboardWays, narrowest, ownClipboard, setUpClipboard, splitPaste } from './clipboard'
 import { ConnectionStatus, STYLE as STATS_STYLE } from './connectionStatus'
@@ -225,6 +228,8 @@ const showFingerprint = (fingerprint: string) => fingerprint ? `${fingerprint.sl
 
 /** `remoteDesktop` settings (Tabby config), editable from the menus' Settings and the settings page. */
 export interface DesktopSettings {
+    /** Default client for desktops without their own choice; applies on the next connection. */
+    client: RDPClient
     /** When the pane changes size: 'live' resizes the remote monitor in place, 'reconnect' reconnects at the new size, 'off' keeps the size. */
     resize: 'live' | 'reconnect' | 'off'
     /** 'standard': one remote pixel per CSS pixel. 'retina': device pixels with matching remote scaling (sharper). */
@@ -469,7 +474,7 @@ export class DesktopSession {
         // View only: the layer takes the mouse, so the wheel scrolls an actual-size picture instead of the remote.
         this.overlay.querySelector('.trd-view-only')!.addEventListener('wheel', event => {
             const wheel = event as WheelEvent
-            this.host.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('.screen-wrapper')?.scrollBy(wheel.deltaX, wheel.deltaY)
+            (this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp'))?.shadowRoot?.querySelector('.screen-wrapper')?.scrollBy(wheel.deltaX, wheel.deltaY)
         }, { passive: true })
     }
 
@@ -521,7 +526,7 @@ export class DesktopSession {
 
     /** IronRDP's canvas: the remote frame, at the remote resolution. */
     canvas (): HTMLCanvasElement | null {
-        return this.host.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('canvas') ?? null
+        return (this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp'))?.shadowRoot?.querySelector('canvas') ?? null
     }
 
     private readonly container: HTMLElement
@@ -539,7 +544,7 @@ export class DesktopSession {
         // clipboard (its monitor follows the focus). It goes back where it came from. A click hands it over still:
         // Tabby makes the pane the one in front on the click, and the pane's focus gives the desktop the keyboard. (The
         // layer's own fields and buttons, a sign-in form's, send nothing anywhere until they are used.)
-        if ((event.target as Element | null)?.tagName === 'IRON-REMOTE-DESKTOP' && !this.inFront()) {
+        if (isRDPElement(event.target as Element | null) && !this.inFront()) {
             this.letGo(event.relatedTarget)
         }
     }
@@ -588,6 +593,7 @@ export class DesktopSession {
      */
     setVisible (visible: boolean): void {
         this.visible = visible
+        if (this.ui instanceof FreeRDPView) { this.ui.setVisibility(visible) }
         this.overlay.style.display = visible ? '' : 'none'
         terminalInputs(this.container).forEach(input => {
             input.disabled = visible
@@ -699,7 +705,7 @@ export class DesktopSession {
             }
             return
         }
-        const host = this.host.querySelector('iron-remote-desktop')
+        const host = this.host.querySelector('iron-remote-desktop') ?? this.host.querySelector('.trd-freerdp')
         this.canvas()?.focus()
         if (host && document.activeElement !== host && attempts > 1 && this.visible) {
             this.focusSoon(attempts - 1, 16)
@@ -2477,6 +2483,7 @@ export class RemoteDesktopService {
     settings (): DesktopSettings {
         const store = this.config.store.remoteDesktop ?? {}
         return {
+            client: rdpClient(store.client),
             resize: ['live', 'reconnect', 'off'].includes(store.resize) ? store.resize : 'live',
             sharpness: store.sharpness === 'retina' ? 'retina' : 'standard',
             desk: store.desk === true,
@@ -2545,6 +2552,7 @@ export class RemoteDesktopService {
         const settings = this.settings()
         return {
             ...settings,
+            client: ownRDPClient(session.spec.client) ?? settings.client,
             sharpness: this.sharpnessFor(session.key) ?? settings.sharpness,
             clipboard: narrowest(session.spec.clipboard ?? settings.clipboard, session.clipboardCap),
         }
@@ -2654,11 +2662,12 @@ export class RemoteDesktopService {
                         this.settingsFor(session).sharpness === 'retina' ? 'Retina' : 'Standard',
                     ].filter(Boolean).join(' · ')
                 },
-                bytes: () => session.proxy?.stats ?? null,
+                bytes: () => session.proxy?.stats ?? session.ui?.stats ?? null,
+                frameCount: () => session.ui?.frameCount,
                 ping: remote?.ping ? () => remote.ping!() : undefined,
             })
         }
-        const canvas = session.host.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('canvas')
+        const canvas = session.canvas?.()
         session.indicator?.setActive(on, on ? canvas : null)
     }
 
@@ -2780,7 +2789,7 @@ export class RemoteDesktopService {
         for (let i = 0; i < 30 && this.showsInFront(session); i++) {
             session.focusDesktop(1)
             const focused = document.activeElement
-            if (focused?.tagName === 'IRON-REMOTE-DESKTOP' && session.overlay.contains(focused)) {
+            if (isRDPElement(focused) && session.overlay.contains(focused)) {
                 return true
             }
             await new Promise(resolve => setTimeout(resolve, 16))
@@ -3378,6 +3387,11 @@ export class RemoteDesktopService {
         let endpoint: Endpoint | null = null
         let gatewayError: string | undefined
         try {
+            const client = this.settingsFor(session).client
+            if (client === 'freerdp') {
+                requireFreeRDP()
+                if (spec.hyperv) { throw new Error('FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.') }
+            }
             const gateway = spec.gateway ? parseGateway(spec.gateway) : null
             if (spec.gateway && !gateway) {
                 throw new Error(`"${spec.gateway}" isn't a gateway's address (a name or address, or name:port)`)
@@ -3391,7 +3405,9 @@ export class RemoteDesktopService {
             }
             // Signing in to a Windows account can take a few tries; a GNOME desktop the plugin set up can't fail that way.
             for (let attempt = 0; ; attempt++) {
-                const [asked, rdp]: [Endpoint | null | 'stopped', any] = await Promise.all([endpoint ?? this.endpointFor(pane, target, spec, session, automatic, retryError), this.loadIronRDP(session)])
+                // Resolve availability before opening a credential form; a missing native build asks for no password.
+                const backend = client === 'freerdp' ? Promise.resolve({ client }) : this.loadIronRDP(session)
+                const [asked, rdp]: [Endpoint | null | 'stopped', any] = await Promise.all([endpoint ?? this.endpointFor(pane, target, spec, session, automatic, retryError), backend])
                 if (!alive()) {
                     return
                 }
@@ -3428,7 +3444,7 @@ export class RemoteDesktopService {
                     asked.gatewayAccount = signIn
                 }
                 // The proxy outlives an attempt: it reads the sign-in of the attempt it serves.
-                if (!session.proxy) {
+                if (!session.proxy && client !== 'freerdp') {
                     const proxy = await startRDCleanPathProxy(
                         (_destination, signal) => gateway ? this.throughGateway(target, spec, session, gateway, endpoint!, signal) : target.openTcp(asked.host, asked.port),
                         (fingerprint, valid, reason, details) => this.checkCertificate(session, fingerprint, valid, reason, details),
@@ -4084,10 +4100,123 @@ export class RemoteDesktopService {
         }
     }
 
+    private async runFreeRDPConnection (
+        pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, endpoint: Endpoint,
+        signal: AbortSignal, onConnected: (at: number) => void,
+    ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+        const alive = () => !signal.aborted && this.sessions.get(pane) === session
+        session.certificateProblem = null
+        session.gatewayRefused = null
+        session.withoutNla = false
+        session.plainSignIn = false
+        if (spec.hyperv) {
+            return { connected: false, error: 'FreeRDP does not support Hyper-V consoles in Tabby yet. Choose IronRDP for this desktop.' }
+        }
+        const settings = this.settingsFor(session)
+        const size = remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
+        const native = new FreeRDPProcess()
+        const ui = new FreeRDPView(native, session.host)
+        session.ui = ui
+        ui.setScale(this.screenScale())
+        const stop = () => ui.shutdown()
+        signal.addEventListener('abort', stop, { once: true })
+        session.onConnectionEnd(stop)
+        session.log.push(`client: ${RDP_CLIENT_LABELS.freerdp}`)
+        session.log.push('FreeRDP preview: clipboard, audio, microphone and shared folders are unavailable')
+        session.clipboard = 'off'
+        const [domain, username] = /^([^\\]+)\\(.+)$/.exec(endpoint.credentials.username)?.slice(1) ?? [endpoint.domain ?? spec.domain ?? '', endpoint.credentials.username]
+        const gateway = spec.gateway ? parseGateway(spec.gateway) : null
+        session.status(`Connecting to ${spec.name} with FreeRDP…`)
+        let connected = false
+        try {
+            const info = await native.connect({
+                host: serverNameOf(spec.id === OWN_DESKTOP ? target.hostname ?? target.label : endpoint.host),
+                username, password: endpoint.credentials.password, domain, ...size,
+                // GNOME requires the pipeline. Windows uses FreeRDP's native bitmap decoder in this first build.
+                pipeline: spec.kind === 'gnome',
+                open: async abort => {
+                    const stream = gateway ? await this.throughGateway(target, spec, session, gateway, endpoint, abort) : await target.openTcp(endpoint.host, endpoint.port)
+                    if (abort.aborted) { stream.destroy(); throw new Error('Connection cancelled') }
+                    return stream
+                },
+                certificate: (fingerprint, valid, reason, details) => {
+                    this.checkCertificate(session, fingerprint, valid, reason, details)
+                    if (session.plainSignIn) { this.holdWithoutNla(session, fingerprint) }
+                },
+                withoutNla: () => this.checkWithoutNla(session),
+                frame: frame => ui.paint(frame),
+            })
+            if (!alive()) { return { connected: false } }
+            connected = true
+            onConnected(Date.now())
+            session.remoteSize = { ...info, scale: 100 }
+            session.graphics = 'FreeRDP native bitmaps'
+            session.state = 'connected'
+            session.status('')
+            session.log.push(`connected: ${info.width}x${info.height}`)
+            ui.setVisibility(session.visible)
+            this.applyKeyboardMode(session)
+            if (size.scale !== 100 || spec.kind === 'windows') { this.applySize(session, size) }
+            this.watchSize(pane, session)
+            this.rememberEndpoint(session, endpoint)
+            this.tip(pane, session)
+            this.label(pane, session)
+            this.syncIndicator(session)
+            this.changed$.next()
+            this.focusIfInFront(pane, session)
+            const end = await native.run()
+            return alive() ? { connected: true, reason: end.reason() } : { connected: false }
+        } catch (error: any) {
+            if (session.certificateProblem) { return { connected: false, certificate: session.certificateProblem } }
+            if (session.withoutNla) { return { connected: false, withoutNla: true } }
+            if (session.gatewayRefused) { return { connected: false, signInFailed: session.gatewayRefused, gatewayRefused: true } }
+            if (error?.kind?.() === 2) { return { connected: false, signInFailed: 'The sign-in was refused.' } }
+            return { connected, error: error?.message ?? String(error) }
+        } finally {
+            signal.removeEventListener('abort', stop)
+            native.shutdown()
+        }
+    }
+
+    /** Remember credentials only after a successful sign-in, under the same revision guards for either client. */
+    private rememberEndpoint (session: DesktopSession, endpoint: Endpoint): void {
+        const credentials = endpoint.credentials
+        // Under a saved account only while that account is still there with the same sign-in name: the prompt may
+        // have been open while it was removed or changed in Settings.
+        if (endpoint.remember && endpoint.saveKey) {
+            const key = endpoint.saveKey
+            saveCredentialsIf(key, credentials, () => this.accountCurrent(key, endpoint.saveFor, endpoint.accountRevision), endpoint.saveLabel).then(
+                saved => session.log.push(saved ? `sign-in: saved as the account's password in ${storeName()}` : 'sign-in: not saved: the account changed meanwhile'),
+                e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
+        } else if (endpoint.remember && endpoint.mark !== undefined && forgottenSince(endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey, endpoint.mark)) {
+            // Edited (its user name, gateway or address) or removed while the server delayed the sign-in: what was
+            // forgotten then stays forgotten, and the desktop asks the next time.
+            session.log.push('sign-in: not saved: the desktop was changed or removed meanwhile')
+        } else if (endpoint.remember) {
+            const key = endpoint.saveKey ?? (endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey)
+            const writing = forgetMark()
+            saveCredentials(key, credentials, endpoint.saveLabel).then(
+                () => {
+                    // A forget that came while it was being written (an edit, a removal) found nothing to forget
+                    // yet: it wins, and the password goes again now that it is there.
+                    if (!endpoint.saveKey && forgottenSince(key, writing)) {
+                        session.log.push('sign-in: saved, then forgotten again: the desktop was changed or removed meanwhile')
+                        return forgetCredentials(key)
+                    }
+                    session.log.push(`sign-in: saved ${endpoint.saveKey ? 'as the account\'s password ' : ''}in ${storeName()}`)
+                },
+                e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
+        }
+    }
+
     private async runConnection (
         pane: DesktopPane, target: RemoteTarget, spec: DesktopSpec, session: DesktopSession, rdp: any, endpoint: Endpoint,
         signal: AbortSignal, onConnected: (at: number) => void,
     ): Promise<{ connected: boolean, signInFailed?: string, gatewayRefused?: boolean, withoutNla?: boolean, error?: string, reason?: string, certificate?: CertificateProblem }> {
+        if (rdp.client === 'freerdp') {
+            return this.runFreeRDPConnection(pane, target, spec, session, endpoint, signal, onConnected)
+        }
+        session.log.push('client: IronRDP')
         const credentials = endpoint.credentials
         const alive = () => !signal.aborted && this.sessions.get(pane) === session
         session.certificateProblem = null
@@ -4270,32 +4399,7 @@ export class RemoteDesktopService {
             this.label(pane, session)
             this.syncIndicator(session)
             this.changed$.next()
-            // Under a saved account only while that account is still there with the same sign-in name: the prompt may
-            // have been open while it was removed or changed in Settings.
-            if (endpoint.remember && endpoint.saveKey) {
-                const key = endpoint.saveKey
-                saveCredentialsIf(key, credentials, () => this.accountCurrent(key, endpoint.saveFor, endpoint.accountRevision), endpoint.saveLabel).then(
-                    saved => session.log.push(saved ? `sign-in: saved as the account's password in ${storeName()}` : 'sign-in: not saved: the account changed meanwhile'),
-                    e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
-            } else if (endpoint.remember && endpoint.mark !== undefined && forgottenSince(endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey, endpoint.mark)) {
-                // Edited (its user name, gateway or address) or removed while the server delayed the sign-in: what was
-                // forgotten then stays forgotten, and the desktop asks the next time.
-                session.log.push('sign-in: not saved: the desktop was changed or removed meanwhile')
-            } else if (endpoint.remember) {
-                const key = endpoint.saveKey ?? (endpoint.saveUser !== undefined ? session.credentialKeyFor(endpoint.saveUser) : session.credentialKey)
-                const writing = forgetMark()
-                saveCredentials(key, credentials, endpoint.saveLabel).then(
-                    () => {
-                        // A forget that came while it was being written (an edit, a removal) found nothing to forget
-                        // yet: it wins, and the password goes again now that it is there.
-                        if (!endpoint.saveKey && forgottenSince(key, writing)) {
-                            session.log.push('sign-in: saved, then forgotten again: the desktop was changed or removed meanwhile')
-                            return forgetCredentials(key)
-                        }
-                        session.log.push(`sign-in: saved ${endpoint.saveKey ? 'as the account\'s password ' : ''}in ${storeName()}`)
-                    },
-                    e => session.log.push(`sign-in: ${storeName()}: ${e?.message ?? e}`))
-            }
+            this.rememberEndpoint(session, endpoint)
             this.focusIfInFront(pane, session)
             let end: any
             try {

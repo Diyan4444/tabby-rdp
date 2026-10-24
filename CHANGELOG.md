@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+- Choose the RDP client in Remote Desktop settings, with overrides in RDP profiles and desktop forms. IronRDP
+  remains the default. The experimental FreeRDP native helper runs inside the tab, using the existing connections,
+  credentials and certificate prompts. The first preview supports display and input; clipboard, audio, shared folders,
+  Hyper-V consoles and H.264 decoding are not yet implemented. Native builds are qualified separately for each
+  platform and architecture; Windows Server performance comparisons remain pending.
+
 ## 0.5.7
 
 **Added**

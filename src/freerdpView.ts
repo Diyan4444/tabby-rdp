@@ -1,0 +1,145 @@
+import { FreeRDPProcess, NativeFrame, numbers } from './freerdp'
+
+/** RDP set-1 scan codes. The ninth bit is FreeRDP's KBDEXT flag. */
+const SCANS: Record<string, number> = {
+    Escape: 0x01, Minus: 0x0c, Equal: 0x0d, Backspace: 0x0e, Tab: 0x0f,
+    BracketLeft: 0x1a, BracketRight: 0x1b, Enter: 0x1c, ControlLeft: 0x1d,
+    Semicolon: 0x27, Quote: 0x28, Backquote: 0x29, ShiftLeft: 0x2a, Backslash: 0x2b,
+    Comma: 0x33, Period: 0x34, Slash: 0x35, ShiftRight: 0x36, NumpadMultiply: 0x37,
+    AltLeft: 0x38, Space: 0x39, CapsLock: 0x3a, NumLock: 0x45, ScrollLock: 0x46,
+    Numpad7: 0x47, Numpad8: 0x48, Numpad9: 0x49, NumpadSubtract: 0x4a,
+    Numpad4: 0x4b, Numpad5: 0x4c, Numpad6: 0x4d, NumpadAdd: 0x4e,
+    Numpad1: 0x4f, Numpad2: 0x50, Numpad3: 0x51, Numpad0: 0x52, NumpadDecimal: 0x53,
+    IntlBackslash: 0x56, F11: 0x57, F12: 0x58, NumpadEnter: 0x11c,
+    ControlRight: 0x11d, NumpadDivide: 0x135, PrintScreen: 0x137, AltRight: 0x138,
+    Home: 0x147, ArrowUp: 0x148, PageUp: 0x149, ArrowLeft: 0x14b, ArrowRight: 0x14d,
+    End: 0x14f, ArrowDown: 0x150, PageDown: 0x151, Insert: 0x152, Delete: 0x153,
+    MetaLeft: 0x15b, MetaRight: 0x15c, ContextMenu: 0x15d,
+}
+for (const [keys, start] of [['1234567890', 0x02], ['QWERTYUIOP', 0x10], ['ASDFGHJKL', 0x1e], ['ZXCVBNM', 0x2c]] as const) {
+    Array.from(keys).forEach((key, i) => { SCANS[/\d/.test(key) ? `Digit${key}` : `Key${key}`] = start + i })
+}
+for (let i = 1; i <= 10; i++) { SCANS[`F${i}`] = 0x3a + i }
+
+export function nativeKey (event: Pick<KeyboardEvent, 'code' | 'key' | 'ctrlKey' | 'altKey' | 'metaKey'>, unicode: boolean): { scan: number, text: string } | null {
+    if (unicode && Array.from(event.key).length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        return { scan: 0, text: event.key }
+    }
+    const scan = SCANS[event.code]
+    return scan ? { scan, text: '' } : null
+}
+
+/** Canvas/input adapter for the same session UI operations used by the embedded IronRDP component. */
+export class FreeRDPView {
+    readonly element: HTMLElement
+    readonly canvas: HTMLCanvasElement
+    private readonly abort = new AbortController()
+    private visible = true
+    private unicode = false
+    private scale = 1
+    private readonly pressed = new Map<string, { scan: number, text: string }>()
+
+    constructor (readonly native: FreeRDPProcess, host: HTMLElement) {
+        this.element = document.createElement('div')
+        this.element.className = 'trd-freerdp'
+        this.element.style.cssText = 'display:flex;flex:1;min-width:0;min-height:0'
+        const root = this.element.attachShadow({ mode: 'open' })
+        root.innerHTML = `<style>:host { display:flex;flex:1;min-width:0;min-height:0 }
+            .screen-wrapper { flex:1;min-width:0;min-height:0;overflow:auto;display:flex;align-items:safe center;justify-content:safe center }
+            canvas { display:block;flex:none;outline:none;object-fit:contain }</style><div class="screen-wrapper"><canvas tabindex="0"></canvas></div>`
+        this.canvas = root.querySelector('canvas')!
+        host.replaceChildren(this.element)
+        const listen = (target: EventTarget, name: string, listener: (event: any) => void, options = {}) =>
+            target.addEventListener(name, listener, { ...options, signal: this.abort.signal })
+        for (const name of ['keydown', 'keyup']) {
+            // DesktopKeyboard's window listener runs first and maps Mac shortcuts / handles Tabby's shortcuts.
+            listen(window, name, (event: KeyboardEvent) => {
+                if (!event.defaultPrevented && this.visible && document.activeElement === this.element) { this.sendKeyboardEvent(event) }
+            })
+        }
+        listen(this.canvas, 'blur', () => this.releaseKeys())
+        listen(window, 'blur', () => this.releaseKeys())
+        listen(this.canvas, 'pointerdown', (event: PointerEvent) => {
+            this.canvas.focus()
+            this.canvas.setPointerCapture(event.pointerId)
+            this.mouse(event, true)
+        })
+        listen(this.canvas, 'pointerup', (event: PointerEvent) => this.mouse(event, false))
+        listen(this.canvas, 'pointercancel', (event: PointerEvent) => this.mouse(event, false))
+        listen(this.canvas, 'pointermove', (event: PointerEvent) => this.mouse(event))
+        listen(this.canvas, 'wheel', (event: WheelEvent) => {
+            if (!this.visible) { return }
+            event.preventDefault()
+            const { x, y } = this.coordinates(event)
+            const delta = Math.max(-255, Math.min(255, Math.round(-event.deltaY)))
+            if (delta) { this.native.send('M', numbers(0x0200 | (delta & 0x01ff), x, y)) }
+        }, { passive: false })
+    }
+
+    get stats (): { bytesIn: number, bytesOut: number } | null { return this.native.stats }
+    get frameCount (): number { return this.native.frameCount }
+
+    paint (frame: NativeFrame): void {
+        if (this.abort.signal.aborted) { return }
+        if (this.canvas.width !== frame.screenWidth || this.canvas.height !== frame.screenHeight) {
+            this.canvas.width = frame.screenWidth
+            this.canvas.height = frame.screenHeight
+            this.fit()
+        }
+        this.canvas.getContext('2d')!.putImageData(new ImageData(frame.rgba, frame.width, frame.height), frame.x, frame.y)
+    }
+
+    setVisibility (visible: boolean): void { this.visible = visible; if (!visible) { this.releaseKeys() } }
+    setKeyboardUnicodeMode (unicode: boolean): void { this.unicode = unicode }
+    setScale (scale: number): void { this.scale = scale; this.fit() }
+    resize (width: number, height: number, scale = 100): void { this.native.send('R', numbers(width, height, scale)) }
+
+    private fit (): void {
+        const rect = this.element.getBoundingClientRect()
+        const ratio = this.scale === 3 ? 1 : Math.min(rect.width / this.canvas.width, rect.height / this.canvas.height)
+        this.canvas.style.width = `${Math.max(1, this.canvas.width * ratio)}px`
+        this.canvas.style.height = `${Math.max(1, this.canvas.height * ratio)}px`
+    }
+
+    private coordinates (event: MouseEvent): { x: number, y: number } {
+        const rect = this.canvas.getBoundingClientRect()
+        return {
+            x: Math.max(0, Math.min(this.canvas.width - 1, Math.floor((event.clientX - rect.left) * this.canvas.width / Math.max(1, rect.width)))),
+            y: Math.max(0, Math.min(this.canvas.height - 1, Math.floor((event.clientY - rect.top) * this.canvas.height / Math.max(1, rect.height)))),
+        }
+    }
+
+    private mouse (event: PointerEvent, down?: boolean): void {
+        if (!this.visible) { return }
+        const { x, y } = this.coordinates(event)
+        const button = [0x1000, 0x4000, 0x2000][event.button]
+        if (down !== undefined && !button) { return }
+        this.native.send('M', numbers(down === undefined ? 0x0800 : button | (down ? 0x8000 : 0), x, y))
+    }
+
+    sendKeyboardEvent (event: KeyboardEvent): void {
+        const release = event.type === 'keyup'
+        const key = release ? this.pressed.get(event.code) ?? nativeKey(event, this.unicode) : nativeKey(event, this.unicode)
+        if (!key) { return }
+        event.preventDefault()
+        if (release) { this.pressed.delete(event.code) } else { this.pressed.set(event.code, key) }
+        this.key(key, release)
+    }
+
+    private key (key: { scan: number, text: string }, release: boolean): void {
+        if (key.text) {
+            for (let i = 0; i < key.text.length; i++) { this.native.send('K', numbers(release ? 0x8000 : 0, 0, key.text.charCodeAt(i))) }
+        } else { this.native.send('K', numbers(release ? 0x8000 : 0, key.scan, 0)) }
+    }
+
+    private releaseKeys (): void {
+        for (const key of this.pressed.values()) { this.key(key, true) }
+        this.pressed.clear()
+    }
+
+    shutdown (): void {
+        this.releaseKeys()
+        this.abort.abort()
+        this.native.shutdown()
+    }
+}

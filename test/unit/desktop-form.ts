@@ -60,6 +60,15 @@ async function submitted (entry: Record<string, unknown>, edit: (field: (name: s
 // As 0.3.0 to 0.5.0 saved a VM from a host's list: no mark, the host's kind, started by its name.
 const legacy = { name: 'FakeVM', via: 'h', host: '10.9.9.9', port: 3389, kind: 'xrdp', wake: { vm: 'FakeVM' } }
 
+test('a desktop can select either client, retain it through edits, and return to the global default', async () => {
+    const free = await submitted(legacy, field => { field('client').value = 'freerdp' })
+    assert.equal(free.client, 'freerdp')
+    assert.equal(specOf(free).client, 'freerdp')
+    assert.equal((await submitted(free)).client, 'freerdp')
+    assert.equal((await submitted(free, field => { field('client').value = 'ironrdp' })).client, 'ironrdp')
+    assert.ok(!('client' in await submitted(free, field => { field('client').value = '' })))
+})
+
 test('a VM saved from a host\'s list shows its kind as the host\'s, and keeps it so when saved unchanged', async () => {
     let kind: Element | undefined
     const entry = await submitted(legacy, field => { kind = field('kind') })

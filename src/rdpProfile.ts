@@ -15,6 +15,7 @@ import { parseGateway } from './gateway'
 import { configNumber } from './osd'
 import { isConnected, isSSHTab } from './ssh'
 import { RDP_PROFILE_TYPE, RemoteTargets } from './targets'
+import { ownRDPClient, RDPClient, RDP_CLIENT_LABELS } from './rdpClient'
 
 /**
  * A "Remote desktop (RDP)" profile: an RDP server this computer reaches directly (LAN, VPN), opened in a tab of its
@@ -22,6 +23,8 @@ import { RDP_PROFILE_TYPE, RemoteTargets } from './targets'
  */
 export interface RDPProfile extends ConnectableProfile {
     options: {
+        /** Empty/absent follows Settings › Remote Desktop. Applies on reconnect. */
+        client?: '' | RDPClient
         /** The RDP server: as this computer sees it, or as the `via` host sees it. */
         host: string
         port: number
@@ -197,6 +200,12 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
                 </select>
             </div>
             <div class="mb-3">
+                <label>RDP client</label>
+                <select class="form-control" name="client" aria-label="RDP client"></select>
+                <div class="text-muted small">Applies on the next connection. FreeRDP preview supports display and input;
+                    clipboard, sound and shared folders are unavailable.</div>
+            </div>
+            <div class="mb-3">
                 <label>Account</label>
                 <select class="form-control" name="account"></select>
                 <div class="text-muted small">A saved account's password is kept once, for every desktop that signs in with it.
@@ -244,6 +253,11 @@ export class RDPProfileSettingsComponent implements ProfileSettingsComponent<RDP
             o.kind = kind === 'gnome' || kind === 'xrdp' ? kind : 'windows'
         })
         const desktop = this.injector.get(RemoteDesktopService)
+        const client = field<HTMLSelectElement>('client')
+        client.append(new Option(`As in Settings › Remote Desktop (${RDP_CLIENT_LABELS[desktop.settings().client]})`, ''),
+            ...Object.entries(RDP_CLIENT_LABELS).map(([id, label]) => new Option(label, id)))
+        client.value = ownRDPClient(o.client) ?? ''
+        client.addEventListener('change', () => { o.client = ownRDPClient(client.value) ?? '' })
         const accounts = desktop.accounts()
         const saved = field<HTMLSelectElement>('account')
         const label = (a: { name: string, username: string, domain?: string }) => `${a.name} (${signInName(a)})`
@@ -368,7 +382,7 @@ export class RDPProfilesService extends QuickConnectProfileProvider<RDPProfile> 
     override name = 'Remote desktop (RDP)'
     override settingsComponent = RDPProfileSettingsComponent
     override configDefaults = {
-        options: { host: '', port: 3389, kind: 'windows', username: '', domain: '', account: '', via: '', gateway: '', gatewayAccount: '', clipboard: '' },
+        options: { host: '', port: 3389, kind: 'windows', username: '', domain: '', account: '', via: '', gateway: '', gatewayAccount: '', clipboard: '', client: '' },
         clearServiceMessagesOnConnect: false,
     }
 
@@ -378,7 +392,7 @@ export class RDPProfilesService extends QuickConnectProfileProvider<RDPProfile> 
     }
 
     async getBuiltinProfiles (): Promise<PartialProfile<RDPProfile>[]> {
-        // No clipboard here: a new profile is made from a copy of this, and a value saved with it (even '', the
+        // No clipboard or client here: a new profile is made from a copy of this, and a value saved with it (even '', the
         // setting's) would hide the clipboard its group's or the type's defaults give it, which may well be narrower.
         // Left out, the profile follows those defaults (configDefaults has the key) until it is given one of its own.
         return [{
