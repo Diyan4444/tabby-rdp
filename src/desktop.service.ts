@@ -43,7 +43,7 @@ import { scanVMs, vmSpec } from './vms'
 import { SessionLog } from './sessionLog'
 import { installedVersion } from './updates'
 import { DiagnosticLevel, diagnosticLevel, DiagnosticLog, logDirectory } from './diagnosticLog'
-import { terminalInputs } from './hostCompat'
+import { HeaderAutoHide, headerAutoHide, terminalInputs } from './hostCompat'
 import { UNSHOWABLE, withoutWordJoiners } from './unshowable'
 
 /**
@@ -230,6 +230,9 @@ const showFingerprint = (fingerprint: string) => fingerprint ? `${fingerprint.sl
 
 /** `remoteDesktop` settings (Tabby config), editable from the menus' Settings and the settings page. */
 export interface DesktopSettings {
+    headerAutoHide: HeaderAutoHide
+    headerMinWidth: number
+    headerMinHeight: number
     /** Default client for desktops without their own choice; applies on the next connection. */
     client: RDPClient
     /** When the pane changes size: 'live' resizes the remote monitor in place, 'reconnect' reconnects at the new size, 'off' keeps the size. */
@@ -1136,6 +1139,12 @@ export class RemoteDesktopService {
     /** Whether the pane's desktop is connected (and so can take files). */
     isConnected (pane: DesktopPane): boolean {
         return this.sessions.get(pane)?.state === 'connected'
+    }
+
+    /** Automatic is only for a connected desktop occupying the whole active tab, never a split (even maximized). */
+    singleDesktopVisible (): boolean {
+        const pane = desktopPaneOf(this.app.activeTab)
+        return !!pane && !this.splitOf(pane) && this.isVisible(pane) && this.isConnected(pane)
     }
 
     /** The desktop this pane shows or has open, if any. */
@@ -2549,6 +2558,9 @@ export class RemoteDesktopService {
     settings (): DesktopSettings {
         const store = this.config.store.remoteDesktop ?? {}
         return {
+            headerAutoHide: headerAutoHide(store.headerAutoHide),
+            headerMinWidth: this.headerSize(store.headerMinWidth),
+            headerMinHeight: this.headerSize(store.headerMinHeight),
             client: rdpClient(store.client),
             resize: ['live', 'reconnect', 'off'].includes(store.resize) ? store.resize : 'live',
             sharpness: store.sharpness === 'retina' ? 'retina' : 'standard',
@@ -2608,6 +2620,11 @@ export class RemoteDesktopService {
         const list = this.config.store.remoteDesktop?.desktopSharpness
         const value = (Array.isArray(list) ? list : []).find((e: any) => e?.desktop === key)?.sharpness
         return value === 'retina' || value === 'standard' ? value : null
+    }
+
+    private headerSize (value: unknown): number {
+        const size = configNumber(value)
+        return Number.isInteger(size) && size >= 0 && size <= 32768 ? size : 0
     }
 
     /**

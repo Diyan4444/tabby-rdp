@@ -130,6 +130,8 @@ const STYLE = `
 .trd-settings .form-line { gap: 24px; }
 .trd-settings .form-line > .header { min-width: 0; }
 .trd-settings trd-settings-toggle { display: inline-flex; flex: none; }
+.trd-settings .trd-header-size { display: flex; align-items: center; gap: 8px; flex: none; }
+.trd-settings .trd-header-size input { width: 90px; }
 .trd-settings .form-line select { min-width: 200px; flex: none; }
 .trd-settings .trd-osd-preview { position: relative; aspect-ratio: 16 / 9; max-width: 520px; margin: 4px 0 14px; border-radius: 6px;
     overflow: hidden; background: linear-gradient(115deg, #e9edf1 0%, #cfd6dd 38%, #3a4048 62%, #1c1f24 100%); }
@@ -274,6 +276,30 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
                         <option value="fit">Keep the size, scaled</option>
                         <option value="actual">Keep the size, 1:1</option>
                     </select>
+                </div>
+                <div class="form-line">
+                    <div class="header">
+                        <div class="title">Auto-hide header</div>
+                        <div class="description">Automatic hides it only for a connected remote desktop alone in its tab, never a split. Always applies to every tab.
+                            Move the pointer to the top edge to reveal it. Full screen follows Tabby's settings.</div>
+                    </div>
+                    <select class="form-control" data-setting="headerAutoHide" aria-label="Auto-hide header">
+                        <option value="automatic">Automatic</option>
+                        <option value="never">Never</option>
+                        <option value="always">Always</option>
+                    </select>
+                </div>
+                <div class="form-line" data-header-size>
+                    <div class="header">
+                        <div class="title">Minimum window size (optional)</div>
+                        <div class="description">For Automatic only, in logical pixels. Leave dimensions blank for any size;
+                            every size entered must be met. Works with manually resized windows too.</div>
+                    </div>
+                    <div class="trd-header-size">
+                        <input class="form-control" type="number" min="0" max="32768" step="1" placeholder="Width" aria-label="Minimum window width" data-setting="headerMinWidth">
+                        <span>×</span>
+                        <input class="form-control" type="number" min="0" max="32768" step="1" placeholder="Height" aria-label="Minimum window height" data-setting="headerMinHeight">
+                    </div>
                 </div>
                 <div class="form-line">
                     <div class="header">
@@ -573,7 +599,11 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
 
     private changeSetting (el: HTMLElement): void {
         const key = el.dataset.setting!
-        if (el instanceof HTMLInputElement) {
+        if (key === 'headerMinWidth' || key === 'headerMinHeight') {
+            const input = el as HTMLInputElement
+            if (!input.checkValidity()) { input.reportValidity(); return }
+            this.desktop.updateSettings({ [key]: input.value === '' ? 0 : input.valueAsNumber })
+        } else if (el instanceof HTMLInputElement) {
             this.desktop.updateSettings({ [key]: el.checked } as Partial<DesktopSettings>)
         } else if (key === 'resize') {
             const value = (el as HTMLSelectElement).value
@@ -589,7 +619,9 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
         this.root.querySelectorAll<HTMLElement>('[data-setting]').forEach(el => {
             const key = el.dataset.setting as keyof DesktopSettings
             if (this.toggles.has(key as Toggle)) { return }
-            if (el instanceof HTMLInputElement) {
+            if (key === 'headerMinWidth' || key === 'headerMinHeight') {
+                (el as HTMLInputElement).value = settings[key] ? String(settings[key]) : ''
+            } else if (el instanceof HTMLInputElement) {
                 el.checked = !!settings[key]
             } else if (key === 'resize') {
                 (el as HTMLSelectElement).value = settings.resize === 'off' ? settings.zoom : settings.resize
@@ -597,6 +629,7 @@ export class RemoteDesktopSettingsComponent implements OnInit, OnDestroy {
                 (el as HTMLSelectElement).value = String(settings[key])
             }
         })
+        this.root.querySelector<HTMLElement>('[data-header-size]')!.hidden = settings.headerAutoHide !== 'automatic'
         this.toggles.forEach((toggle, key) => {
             toggle.instance.model = !!settings[key]
             toggle.changeDetectorRef.detectChanges()

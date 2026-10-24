@@ -3,6 +3,9 @@
 ## 0.6.0-rc.1 (unreleased)
 
 **Added**
+- Windowed title/tab-header auto-hide (**View › Hide Header**, or **Settings › Remote Desktop › Settings › Picture**).
+  Automatic applies only to a connected desktop alone in its active tab, with optional minimum window dimensions;
+  Never and Always are also available. Hover reveals the header without resizing the desktop. Addresses #111.
 - Choose the RDP client in Remote Desktop settings, with overrides in RDP profiles and desktop forms. IronRDP
   remains the default. The experimental FreeRDP native helper runs inside the tab, using the existing connections,
   credentials and certificate prompts. The first preview supports display and input; clipboard, audio, shared folders,

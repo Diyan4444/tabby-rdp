@@ -102,11 +102,12 @@ const page = {
         shown ? this.body.append(this.right) : this.right.remove()
     },
 }
+const appRoot = new FakeElement()
 page.tabBar = true
 g.document = {
     body: page.body,
     head: new FakeElement(),
-    querySelector: (selector: string) => selector === 'app-root .btn-space ~ .btn-group' && page.right.isConnected ? page.right : null,
+    querySelector: (selector: string) => selector === 'app-root' ? appRoot : selector === 'app-root .btn-space ~ .btn-group' && page.right.isConnected ? page.right : null,
     querySelectorAll: () => [],
     createElement: () => new FakeElement(),
 }
@@ -445,7 +446,7 @@ test('only the plugin\'s own hotkeys act: a name every object inherits does noth
     // Every call the module makes on the service is recorded.
     const desktop = new Proxy({}, { get: (_, key) => (...args: unknown[]) => { done.push(String(key)); return key === 'has' ? true : undefined } })
     const ssh = { profile: { type: 'ssh' }, element: { nativeElement: {} } }
-    const injector = { get: () => ({ start () { } }) }
+    const injector = { get: () => ({ start () { }, install () { } }) }
     // eslint-disable-next-line no-new
     new RemoteDesktopModule({ activeTab: ssh }, { hotkey$ }, desktop, { install () { } }, {}, { install () { } }, injector)
     // A hotkey handler that throws does so outside the call (RxJS reports it later, as an uncaught exception).
@@ -494,4 +495,21 @@ test('the RDP tab menu separates the running client from the checked next-connec
     items = await choices()
     assert.equal(items.find((i: any) => i.label === 'IronRDP').checked, true)
     assert.equal(items.find((i: any) => i.label?.startsWith('Follow default')).checked, false)
+})
+
+test('auto-hiding the header keeps the microphone indicator available, and restores it on reveal', () => {
+    const { controls, desktop } = header()
+    desktop.users = [{ pane: alpha, name: 'alpha desktop', inView: false }]
+    const floating = () => page.body.children.find(c => c.className === 'trd-floating-mic')
+    appRoot.classList.toggle('trd-auto-hide-header', true)
+    try {
+        controls.refresh()
+        assert.ok(floating())
+        appRoot.classList.toggle('trd-header-revealed', true)
+        controls.refresh()
+        assert.equal(floating(), undefined)
+    } finally {
+        appRoot.classList.toggle('trd-auto-hide-header', false)
+        appRoot.classList.toggle('trd-header-revealed', false)
+    }
 })

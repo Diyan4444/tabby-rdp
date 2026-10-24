@@ -31,6 +31,8 @@ are local to this computer:
 |---|---|---|
 | RDP client (`client`) | IronRDP (`ironrdp`) | Experimental FreeRDP (`freerdp`) needs a matching native helper. Profiles and desktops can override the default; changes apply on reconnect. [Capabilities](../native/README.md). |
 | When the pane is resized (`resize`) | Resize the remote desktop to fit (`live`) | Or reconnect at the new size (`reconnect`), or keep the resolution (`off`). |
+| Auto-hide header (`headerAutoHide`) | Never (`never`) | Below the resize setting in Picture. `automatic`: only a connected remote desktop alone in the active tab; any split, even with a maximized pane, keeps the header visible. `always`: auto-hide across all tabs. Also available from **View › Hide Header**. |
+| Minimum window size (`headerMinWidth`, `headerMinHeight`) | None (`0`, `0`) | Optional limits for Automatic, in logical pixels. Each nonblank dimension must meet its limit. Uses the actual window size, including manually resized windows. Never and Always ignore the limits. |
 | Keep the resolution: scale to fit or actual size (`zoom`) | Scale to fit (`fit`) | With `resize: off`: `actual` shows one remote pixel per point, with scroll bars when the desktop is larger than the pane (a Retina-sized desktop shows at twice the size). |
 | Sharpness (`sharpness`) | Standard (`standard`) | Retina (`retina`): device pixels, with the remote's scale set to match. |
 | For *this desktop* only (`desktopSharpness`) | As above | In the menu of a tab with a desktop open: Standard or Retina for that desktop, whatever the default. Kept by desktop (`user@host`, `user@host#address` for one behind a host, or `rdp#address` for a remote desktop profile's own tab). |
@@ -51,3 +53,8 @@ are local to this computer:
 | Write a log file (`diagnosticLog`) | Off | `debug` or `trace`: each desktop opened from then on writes its connection log, with IronRDP's log at that level, to a file of its own in the log folder (`tabby-rdp-logs` next to Tabby's config), readable by you alone, for a bug report. Keys, passwords, licenses, tokens and other byte strings are left out of the file. [Questions and problems](../README.md#questions-and-problems) |
 | Check for updates automatically (Updates tab) | On, Stable | Checks npm once a day; choose Stable or Preview, check manually, and install a compatible version explicitly. [Versions and recovery](#versions-and-recovery). |
 | Desktop name overlay (`osd`) | When it helps | `show` (`auto`, `always`, `off`), `font`, `size`, `position`, `color` (empty: white; else a color name, `#hex`, or a color function of numbers such as `rgb()`) and `seconds`; the settings page previews it, at a resolution you pick. |
+
+Auto-hide frees the title/tab strip's space outside full screen. Move the pointer to the top edge to reveal the
+header over the content; revealing it does not resize the remote desktop. The View menu and dropdown share the same
+saved preference. Full screen continues to use Tabby's existing behavior. Native OS window decorations, when used,
+remain governed by Tabby's frame setting. The microphone indicator stays available while the header is hidden.

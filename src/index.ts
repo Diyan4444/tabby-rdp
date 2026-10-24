@@ -22,6 +22,7 @@ import { UpdateCheck } from './updates'
 import { execRemote } from './ssh'
 import { DesktopPane, desktopPaneOf, RemoteTargets } from './targets'
 import { SettingsToggleComponent } from './settingsToggle'
+import { HeaderVisibility } from './headerVisibility'
 import {
     RemoteDesktopConfig, RemoteDesktopContextMenu, RemoteDesktopHotkeys, RemoteDesktopToolbarButton, TOGGLE_HOTKEY,
 } from './ui'
@@ -50,6 +51,7 @@ export default class RemoteDesktopModule {
         const compat = injector.get(HostCompatibility)
         installStyle()
         header.install()
+        injector.get(HeaderVisibility).install()
         // Passwords go to Tabby's Vault while it is enabled (as Tabby's SSH passwords do), else to the system keychain.
         try { useVault(injector.get(VaultService)) } catch { }
         injector.get(UpdateCheck).start()

@@ -30,6 +30,9 @@ export class RemoteDesktopConfig extends ConfigProvider {
     override defaults = {
         hotkeys: Object.fromEntries(HOTKEYS.map(h => [h.id, []])),
         remoteDesktop: {
+            headerAutoHide: 'never',
+            headerMinWidth: 0,
+            headerMinHeight: 0,
             client: 'ironrdp',
             // Shareable session for SSH logins ('desk'): 'native' (trd-pty) or 'tmux' (earlier setup).
             sessionBackend: 'native',
