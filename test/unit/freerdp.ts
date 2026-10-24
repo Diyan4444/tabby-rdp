@@ -38,7 +38,7 @@ test('distributed native helpers retain their recorded source, artifact hashes a
             return stat.isDirectory() ? files(path, `${prefix}${name}/`) : [`${prefix}${name}`]
         })
         assert.deepEqual(files(dir).filter(name => name !== 'BUILD.json').sort(), listed)
-        for (const license of ['FreeRDP-LICENSE', 'FreeRDP-NOTICE', 'OpenSSL-LICENSE', 'NOTICE']) assert.ok(listed.includes(`licenses/${license}`))
+        for (const license of ['FreeRDP-LICENSE', 'FreeRDP-NOTICE', 'OpenSSL-LICENSE', 'Unicode-NOTICE', 'NOTICE']) assert.ok(listed.includes(`licenses/${license}`))
         assert.ok(listed.includes(`tabby-freerdp${record.platform === 'win32' ? '.exe' : ''}`))
     }
 })

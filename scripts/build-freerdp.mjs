@@ -48,8 +48,11 @@ mkdirSync(join(stage, 'licenses'), { recursive: true })
 copyFileSync(binary, join(stage, executable))
 copyFileSync(join(source, 'LICENSE'), join(stage, 'licenses/FreeRDP-LICENSE'))
 copyFileSync(join(source, 'winpr/libwinpr/sysinfo/cpufeatures/NOTICE'), join(stage, 'licenses/FreeRDP-NOTICE'))
+const unicodeNotice = readFileSync(join(source, 'winpr/libwinpr/crt/unicode_builtin.c'), 'utf8').match(/^\/\*[\s\S]*?\*\//)?.[0]
+if (!unicodeNotice?.includes('Unicode, Inc.')) throw new Error('Review the built-in Unicode converter notice before distributing it')
+writeFileSync(join(stage, 'licenses/Unicode-NOTICE'), unicodeNotice + '\n')
 copyFileSync(opensslLicense, join(stage, 'licenses/OpenSSL-LICENSE'))
-writeFileSync(join(stage, 'licenses/NOTICE'), `This helper uses FreeRDP and WinPR ${manifest.version} (Apache-2.0), https://www.freerdp.com/, and OpenSSL 3 (Apache-2.0), https://www.openssl.org/.\nOriginal license and notice texts accompany this file. The Tabby helper itself is MIT licensed.\n`)
+writeFileSync(join(stage, 'licenses/NOTICE'), `This helper uses FreeRDP and WinPR ${manifest.version} (Apache-2.0), https://www.freerdp.com/, and OpenSSL 3 (Apache-2.0), https://www.openssl.org/.\nWinPR's built-in Unicode conversion code carries the accompanying Unicode-NOTICE.\nOriginal license and notice texts accompany this file. The Tabby helper itself is MIT licensed.\n`)
 const dependencies = new Map()
 const byName = new Map(files.map(p => [basename(p), p]))
 for (const dir of [join(openssl, 'lib'), join(openssl, 'bin')]) {
