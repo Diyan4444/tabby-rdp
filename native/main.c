@@ -41,12 +41,14 @@ typedef struct {
     UINT32 port;
     DispClientContext* disp;
     HANDLE inputEvent;
+    HANDLE inputSpace;
     CRITICAL_SECTION inputLock;
     CRITICAL_SECTION outputLock;
     Command* first;
     Command* last;
     unsigned queued;
     BOOL inputEnded;
+    BOOL inputFailed;
     BOOL displayReady;
     UINT32 width, height, scale;
 } Context;
@@ -238,7 +240,22 @@ static DWORD WINAPI input_thread(LPVOID arg) {
     Command* cmd;
     while ((cmd = read_command())) {
         EnterCriticalSection(&c->inputLock);
-        if (c->queued >= MAX_QUEUE) { LeaveCriticalSection(&c->inputLock); free_command(cmd); break; }
+        /* A blocked server/renderer must not turn a full queue into a normal session end. Stop reading the
+         * pipe until the main loop drains it; the parent's bounded pipe queue still detects a prolonged stall. */
+        while (c->queued >= MAX_QUEUE) {
+            LeaveCriticalSection(&c->inputLock);
+            if (WaitForSingleObject(c->inputSpace, INFINITE) != WAIT_OBJECT_0) {
+                EnterCriticalSection(&c->inputLock); c->inputFailed = TRUE; c->inputEnded = TRUE;
+                SetEvent(c->inputEvent); LeaveCriticalSection(&c->inputLock); free_command(cmd); return 1;
+            }
+            EnterCriticalSection(&c->inputLock);
+        }
+        /* Only consecutive pure moves are interchangeable. Never discard button, wheel or keyboard ordering. */
+        if (cmd->type == 'M' && cmd->length == 12 && read32(cmd->data) == PTR_FLAGS_MOVE &&
+            c->last && c->last->type == 'M' && c->last->length == 12 && read32(c->last->data) == PTR_FLAGS_MOVE) {
+            memcpy(c->last->data, cmd->data, 12);
+            LeaveCriticalSection(&c->inputLock); free_command(cmd); continue;
+        }
         if (c->last) c->last->next = cmd; else c->first = cmd;
         c->last = cmd; c->queued++;
         SetEvent(c->inputEvent);
@@ -251,6 +268,7 @@ static BOOL process_input(Context* c) {
     EnterCriticalSection(&c->inputLock);
     Command* cmd = c->first;
     c->first = c->last = NULL; c->queued = 0;
+    SetEvent(c->inputSpace);
     BOOL ended = c->inputEnded;
     ResetEvent(c->inputEvent);
     LeaveCriticalSection(&c->inputLock);
@@ -261,6 +279,9 @@ static BOOL process_input(Context* c) {
         if (cmd->type == 'K' && cmd->length == 12) {
             UINT32 flags = read32(p), scan = read32(p + 4), unicode = read32(p + 8);
             if (unicode) (void)freerdp_input_send_unicode_keyboard_event(base->input, (UINT16)flags, (UINT16)unicode);
+            else if (scan == RDP_SCANCODE_PAUSE) {
+                if (!(flags & KBD_FLAGS_RELEASE)) (void)freerdp_input_send_keyboard_pause_event(base->input);
+            }
             else (void)freerdp_input_send_keyboard_event_ex(base->input, (flags & KBD_FLAGS_RELEASE) == 0, FALSE, scan);
         } else if (cmd->type == 'M' && cmd->length == 12) {
             (void)freerdp_input_send_mouse_event(base->input, (UINT16)read32(p), (UINT16)read32(p + 4), (UINT16)read32(p + 8));
@@ -294,6 +315,8 @@ int main(int argc, char** argv) {
     Context* c = (Context*)instance->context;
     InitializeCriticalSection(&c->inputLock); InitializeCriticalSection(&c->outputLock);
     c->inputEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    c->inputSpace = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!c->inputEvent || !c->inputSpace) return 1;
     char* authorities = NULL;
     size_t authorityLength = 0;
     Command* start = read_command();
@@ -358,6 +381,9 @@ int main(int argc, char** argv) {
         }
     }
     UINT32 error = freerdp_get_last_error(instance->context);
+    EnterCriticalSection(&c->inputLock);
+    if (c->inputFailed && !error) error = FREERDP_ERROR_CONNECT_TRANSPORT_FAILED;
+    LeaveCriticalSection(&c->inputLock);
     BYTE result[8]; write32(result, error); write32(result + 4, freerdp_error_info(instance));
     (void)output(c, connected ? 'X' : 'E', result, 8);
     /* The stdin reader may be waiting on its pipe; the parent closes it and reaps this process. Exiting releases all

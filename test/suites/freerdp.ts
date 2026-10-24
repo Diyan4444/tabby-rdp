@@ -91,6 +91,24 @@ await suite('freerdp', async t => {
     t.check('display-control resize changes the remote dimensions without reconnecting', small.w < large.w &&
         await t.ev('return H.nativeProcess.child.pid === H.nativePid'), { large, small })
     await t.dump('H.nativePane', 'freerdp-resized')
+    // Hold the renderer pipe while a resize produces several tiles. The input reader must bound/coalesce a
+    // burst, retaining key ordering and applying backpressure rather than ending a live desktop normally.
+    await t.ev(`
+        H.nativeProcess.child.stdout.pause()
+        H.nativeProcess.send('R', Buffer.from([0,0,3,0, 0,0,2,0, 0,0,0,100]))
+    `)
+    await t.sleep(350)
+    await t.ev(`
+        const numbers = (...values) => { const b = Buffer.alloc(values.length * 4); values.forEach((n,i) => b.writeUInt32BE(n,i*4)); return b }
+        try {
+            for (let i = 0; i < 4096; i++) H.nativeProcess.send('M', numbers(0x0800, i % 500, i % 400))
+            for (let i = 0; i < 1200; i++) { H.nativeProcess.send('K', numbers(0, 0x2a, 0)); H.nativeProcess.send('K', numbers(0x8000, 0x2a, 0)) }
+        } finally { H.nativeProcess.child.stdout.resume() }
+    `)
+    await t.sleep(1500)
+    t.check('renderer backpressure and an input burst retain the native session', await t.ev(`return H.session(H.nativePane)?.state === 'connected' && H.session(H.nativePane).ui.native.child.pid === H.nativePid`))
+    await t.ev(`H.session(H.nativePane).ui.resize(640,480,100)`)
+    t.check('display/input recover after the pipe drains', !!await t.waitFor(`const c = H.canvas(H.nativePane); return c?.w === 640 && c?.h === 480 && c?.colors > 20`, 15))
     await t.settings({ resize: 'off' })
     await setPane(740, 520)
     await t.sleep(600)
@@ -117,4 +135,27 @@ await suite('freerdp', async t => {
     if (Number.isFinite(settleMs) && settleMs > 0) await t.sleep(Math.min(30000, settleMs))
     t.check('IronRDP uses its own renderer and draws pixels', !!await t.waitFor(`return !!H.overlay(H.nativePane)?.querySelector('iron-remote-desktop') && H.canvas(H.nativePane)?.colors > 2`, 10))
     await t.dump('H.nativePane', 'ironrdp-same-server')
+    // Connecting restores the header. A resize reconnect must retain the requested size so Automatic cannot
+    // bounce forever between a smaller connecting pane and the larger connected pane, with either backend.
+    await t.ev(`H.nativePane.element.nativeElement.style.cssText = ${JSON.stringify(paneStyle)}`)
+    await t.settings({ resize: 'reconnect', headerAutoHide: 'automatic' })
+    for (const client of ['ironrdp', 'freerdp']) {
+        await t.ev(`
+            H.inZone(() => RD.desktop.disconnect(H.nativePane))
+            H.nativePane.profile.options.client = '${client}'
+            H.inZone(() => RD.desktop.showDesktop(H.nativePane))
+        `)
+        t.check(client + ' connects with Automatic header and reconnect resize', await settle())
+        await t.sleep(3000)
+        const settled = await t.ev<{ connected: boolean, hidden: boolean, matches: boolean }>(`
+            H.autoHeaderSession = H.session(H.nativePane)
+            const c = H.canvas(H.nativePane)
+            return { connected: H.autoHeaderSession?.state === 'connected', hidden: document.querySelector('app-root').classList.contains('trd-auto-hide-header'),
+                matches: !!c && Math.abs(c.w-c.paneW) <= 2 && Math.abs(c.h-c.paneH) <= 2 }
+        `)
+        await t.sleep(2500)
+        t.check(client + ' Automatic header settles without a reconnect loop', settled.connected && settled.hidden && settled.matches &&
+            await t.ev(`return H.session(H.nativePane) === H.autoHeaderSession && H.autoHeaderSession.state === 'connected'`), settled)
+    }
+    await t.settings({ headerAutoHide: 'never', resize: 'off' })
 }, { needsHost: false })

@@ -357,6 +357,8 @@ export class DesktopSession {
     diagnostics: DiagnosticLog | null = null
     /** What the remote display was last set to. */
     remoteSize: RemoteSize | null = null
+    /** A resize reconnect retains its requested layout while connecting temporarily restores the header. */
+    initialSize?: RemoteSize
     remote: RemoteTarget | null = null
     /** Plays the remote's sound, when the sound setting was on at connect. */
     audio: AudioPlayer | null = null
@@ -1163,6 +1165,11 @@ export class RemoteDesktopService {
         return (this.config.store.profiles ?? []).find((p: any) => p?.type === RDP_PROFILE_TYPE && p.id && p.id === pane.profile?.id) ?? pane.profile
     }
 
+    private effectiveClient (override: unknown, hyperv = false): RDPClient {
+        const own = ownRDPClient(override), preferred = own ?? this.settings().client
+        return !own && (hyperv || preferred === 'freerdp' && !hasFreeRDP()) ? 'ironrdp' : preferred
+    }
+
     /** The profile's next-connection choice, with the currently running client shown separately. */
     rdpClientChoice (pane: DesktopPane): { value: RDPClient | null, default: RDPClient, active: RDPClient | null } | null {
         const profile = this.clientProfile(pane)
@@ -1170,7 +1177,7 @@ export class RemoteDesktopService {
         const session = this.sessions.get(pane)
         return {
             value: ownRDPClient(this.profiles.getConfigProxyForProfile(profile).options?.client) ?? null,
-            default: this.settings().client,
+            default: this.effectiveClient(undefined, !!session?.spec.hyperv),
             active: session && session.state !== 'ended' ? session.client : null,
         }
     }
@@ -1194,7 +1201,7 @@ export class RemoteDesktopService {
         if (pane.profile?.options) { pane.profile.options.client = selected }
         this.changed$.next()
         const session = this.sessions.get(pane)
-        const next = ownRDPClient(selected) ?? this.settings().client
+        const next = this.effectiveClient(selected, !!session?.spec.hyperv)
         if (!session || session.state === 'ended' || session.client === next) { return }
         const { response } = await this.platform.showMessageBox({
             type: 'warning',
@@ -1943,7 +1950,7 @@ export class RemoteDesktopService {
      * Shows a desktop over the pane: `desktopId` (see desktopsOf), or the one it has open, or the default. A pane
      * holds one desktop at a time; choosing another one replaces it.
      */
-    async showDesktop (pane: DesktopPane, desktopId?: string, options: { background?: boolean, viewOnly?: boolean, target?: RemoteTarget, clipboardCap?: ClipboardMode } = {}): Promise<void> {
+    async showDesktop (pane: DesktopPane, desktopId?: string, options: { background?: boolean, viewOnly?: boolean, target?: RemoteTarget, clipboardCap?: ClipboardMode, initialSize?: RemoteSize } = {}): Promise<void> {
         this.prune()
         // A desktop asked for by id is one of the pane's own host's (the menus list those), not one of wherever ssh
         // typed in its console leads: an id from that list isn't to be looked up among the desktops of a machine the
@@ -2000,6 +2007,7 @@ export class RemoteDesktopService {
                 return this.showDesktop(existing)
             }
             const created = new DesktopSession(pane.element.nativeElement, key, spec, user, who)
+            created.initialSize = options.initialSize && { ...options.initialSize }
             created.onHelp = message => this.help.explain(message)
             this.startDiagnostics(created)
             // The remote it is opened on, from the start: reopening one whose connection ended before it got as far as
@@ -2797,7 +2805,7 @@ export class RemoteDesktopService {
             const target = tab ? undefined : session.remote ?? undefined
             this.zone.run(() => {
                 this.disconnect(pane)
-                this.showDesktop(pane, tab ? undefined : session.spec.id, { viewOnly, target, clipboardCap })
+                this.showDesktop(pane, tab ? undefined : session.spec.id, { viewOnly, target, clipboardCap, initialSize: wanted })
             })
             return
         }
@@ -3486,7 +3494,7 @@ export class RemoteDesktopService {
             // Discovered Hyper-V consoles have no per-desktop editor. Keep those on their supported client
             // when FreeRDP is only the global default; an explicit unsupported override is still refused below.
             const preferred = this.settingsFor(session).client
-            const client = !ownRDPClient(spec.client) && (spec.hyperv || preferred === 'freerdp' && !hasFreeRDP()) ? 'ironrdp' : preferred
+            const client = this.effectiveClient(spec.client, !!spec.hyperv)
             if (client !== preferred) { session.log.push('client: using IronRDP because the global FreeRDP default is unavailable for this desktop on this computer') }
             session.client = client
             if (client === 'freerdp') {
@@ -4211,7 +4219,7 @@ export class RemoteDesktopService {
         session.withoutNla = false
         session.plainSignIn = false
         const settings = this.settingsFor(session)
-        const size = remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
+        const size = session.initialSize ?? remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
         const native = new FreeRDPProcess()
         const ui = new FreeRDPView(native, session.host)
         session.ui = ui
@@ -4364,7 +4372,7 @@ export class RemoteDesktopService {
 
             // Size the remote display to the pane (see the sharpness setting).
             const settings = this.settingsFor(session)
-            const size = remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
+            const size = session.initialSize ?? remoteSizeFor(session.overlay.getBoundingClientRect(), settings)
             const { width, height } = size
 
             // DOMAIN\user or user@domain go to the server as typed; only the former needs splitting.

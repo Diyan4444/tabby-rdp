@@ -6,7 +6,8 @@
 
 - **Tabby 1.0.236 or newer**, on macOS, Windows or Linux. On a fresh Windows, Tabby
   itself needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)
-  for SSH.
+  for SSH. The experimental **FreeRDP client also requires this runtime**, for the client architecture
+  (ARM64 or x64), including for direct RDP connections. It is a prerequisite and is not bundled by the plugin.
 - **Automatic headless GNOME setup:** GNOME Shell and GNOME Remote Desktop 46 or newer (Ubuntu 24.04, for example), a systemd user
   session, and SSH access with a key or agent. `desk` also needs `python3` and GNOME Terminal. No root, no display, no
   login screen.

@@ -37,6 +37,13 @@ export function requireFreeRDP (): void {
 
 export function hasFreeRDP (): boolean { return existsSync(nativeHelperPath()) }
 
+export function helperStopped (code: number | null, signal: string | null, platform = process.platform): Error {
+    if (platform === 'win32' && code !== null && (code >>> 0) === 0xc0000135) {
+        return new Error('FreeRDP could not load a required Windows DLL. Install the Microsoft Visual C++ 2015–2022 Redistributable for this computer’s architecture, then restart Tabby. See the plugin’s compatibility guide.')
+    }
+    return new Error(`The FreeRDP helper stopped (${signal ?? code ?? 'unknown'})`)
+}
+
 export function ipcFrame (type: string, payload: Buffer = Buffer.alloc(0)): Buffer {
     if (type.length !== 1 || payload.length > MAX_FRAME) { throw new Error('Invalid FreeRDP IPC message') }
     const header = Buffer.alloc(5)
@@ -206,14 +213,14 @@ export class FreeRDPProcess {
             const timer = setTimeout(() => this.fail(new Error('FreeRDP connection timed out')), 45000)
             started.then(() => clearTimeout(timer), () => clearTimeout(timer))
             child.once('error', () => this.fail(new Error('Could not start the FreeRDP helper. Rebuild it for this computer.')))
-            child.stdin.on('error', () => this.fail(new Error('The FreeRDP helper stopped reading input')))
+            child.stdin.on('error', () => this.fail(new Error('The FreeRDP helper stopped reading input' + (process.platform === 'win32' ? '. Check that the Microsoft Visual C++ 2015–2022 Redistributable is installed; see the compatibility guide.' : ''))))
             // Do not surface FreeRDP logs: native libraries can log authentication details.
             child.stderr.resume()
             child.stdout.on('data', data => {
                 try { frames.push(data, (type, payload) => this.receive(type, payload, options)) } catch (error) { this.fail(error as Error) }
             })
             child.once('close', (code, signal) => {
-                if (!this.closed) { this.fail(new Error(`The FreeRDP helper stopped (${signal ?? code ?? 'unknown'})`)) }
+                if (!this.closed) { this.fail(helperStopped(code, signal)) }
             })
             // Trust stores can exceed one IPC frame. Flush bounded chunks before the start frame; the helper
             // accumulates these under its own total limit before it opens any network connection.

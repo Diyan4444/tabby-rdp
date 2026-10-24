@@ -49,7 +49,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config patchelf zlib1g-dev perl
       - name: Build pinned OpenSSL and FreeRDP
         id: build
-        run: node scripts/build-freerdp-ci.mjs
+        run: |
+          node -e "require('fs').rmSync('native/bin',{recursive:true,force:true})"
+          node scripts/build-freerdp-ci.mjs
       - name: Native protocol and security checks
         run: |
           npm ci --ignore-scripts

@@ -128,6 +128,42 @@ test('header controls retain keyboard focus; disabling or full screen restores t
     assert.equal(root.classList.contains('trd-auto-hide-header'), false, 'full screen belongs to Tabby')
 })
 
+test('focus changes do not hide a revealed header under a stationary pointer', t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const { visibility, root, settings, doc } = harness(t)
+    settings.headerAutoHide = 'always'; visibility.refresh()
+    visibility.pointer({ clientX: 500, clientY: 1 })
+    visibility.pointer({ clientX: 500, clientY: 45 })
+    doc.activeElement = doc.body
+    visibility.hideLater(); t.mock.timers.tick(1000)
+    assert.equal(root.classList.contains('trd-header-revealed'), true)
+    visibility.pointer({ clientX: 500, clientY: 400 }); t.mock.timers.tick(400)
+    assert.equal(root.classList.contains('trd-header-revealed'), false)
+    visibility.pointer({ clientX: -1, clientY: -1 })
+    assert.equal(root.classList.contains('trd-header-revealed'), false, 'leaving the window is not an edge hover')
+})
+
+test('unrelated DOM churn is idle; Automatic still notices an in-place split change', t => {
+    const { visibility, root, bar, title, settings } = harness(t)
+    root.isConnected = bar.isConnected = title.isConnected = true
+    let scheduled = 0, sole = true
+    visibility.schedule = () => scheduled++
+    visibility.desktop.singleDesktopVisible = () => sole
+    visibility.refresh()
+    for (let n = 0; n < 100; n++) visibility.mutations([])
+    assert.equal(scheduled, 0, 'Never ignores DOM mutations')
+    settings.headerAutoHide = 'automatic'; visibility.refresh()
+    for (let n = 0; n < 100; n++) visibility.mutations([])
+    assert.equal(scheduled, 0, 'ordinary output does not refresh the header')
+    sole = false; visibility.mutations([])
+    assert.equal(scheduled, 1, 'adding a split restores the header')
+    visibility.refresh(); sole = true; visibility.mutations([])
+    assert.equal(scheduled, 2, 'removing the split permits Automatic again')
+    settings.headerAutoHide = 'always'; visibility.refresh(); bar.isConnected = false
+    visibility.mutations([])
+    assert.equal(scheduled, 3, 'a replaced bar is rebound')
+})
+
 test('Automatic requires a sole RDP desktop and every configured minimum dimension, inclusive of the boundary', () => {
     assert.equal(shouldHideHeader('automatic', false, 1920, 1080), false)
     assert.equal(shouldHideHeader('automatic', true, 800, 600), true)

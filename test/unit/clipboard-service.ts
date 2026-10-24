@@ -373,6 +373,7 @@ test('a reconnect at a new size in a remote desktop tab connects with its profil
     await settle()
     assert.equal(connected.length, 2)
     assert.deepEqual([connected[1].address, connected[1].session.clipboard], ['10.0.0.6:3389', 'off'])
+    assert.deepEqual(connected[1].session.initialSize, { width: 1024, height: 768, scale: 100 }, 'resize reconnect keeps the requested layout even if connecting restores a header')
     // Saved to go through an SSH profile: not connected from the tab any more.
     const second = connected[1].session
     saved.options = { host: '127.0.0.1', port: 3389, via: 'ssh:custom:host:1' }

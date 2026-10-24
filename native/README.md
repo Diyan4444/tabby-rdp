@@ -48,6 +48,9 @@ legacy provider, license notices and a
 ad hoc; the helper does not depend on a user's Homebrew directory. Linux builds require a compatible target distro's
 system ABI; Windows requires the applicable Microsoft C runtime. Builds for other platforms are independent.
 
+Windows helpers require the matching Microsoft Visual C++ Redistributable, as described in the
+[requirements](../docs/compatibility.md#requirements). The plugin does not install it automatically.
+
 No native executable is downloaded or compiled when Tabby loads the plugin. An explicit FreeRDP choice without the matching
 helper produces an installation message before asking for credentials. A global default can be shared across computers:
 when only that default requests an unavailable helper, the connection uses IronRDP and records the fallback in its log.

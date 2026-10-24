@@ -1,6 +1,6 @@
 import { FreeRDPProcess, NativeFrame, numbers } from './freerdp'
 
-/** RDP set-1 scan codes. The ninth bit is FreeRDP's KBDEXT flag. */
+/** RDP set-1 scan codes (FreeRDP scancode.h / Chromium dom_code_data.inc). Ninth bit: KBDEXT. */
 const SCANS: Record<string, number> = {
     Escape: 0x01, Minus: 0x0c, Equal: 0x0d, Backspace: 0x0e, Tab: 0x0f,
     BracketLeft: 0x1a, BracketRight: 0x1b, Enter: 0x1c, ControlLeft: 0x1d,
@@ -15,14 +15,22 @@ const SCANS: Record<string, number> = {
     Home: 0x147, ArrowUp: 0x148, PageUp: 0x149, ArrowLeft: 0x14b, ArrowRight: 0x14d,
     End: 0x14f, ArrowDown: 0x150, PageDown: 0x151, Insert: 0x152, Delete: 0x153,
     MetaLeft: 0x15b, MetaRight: 0x15c, ContextMenu: 0x15d,
+    IntlRo: 0x73, IntlYen: 0x7d, KanaMode: 0x70, Convert: 0x79, NonConvert: 0x7b,
+    Lang1: 0x72, Lang2: 0x71, Lang3: 0x78, Lang4: 0x77,
+    NumpadEqual: 0x59, NumpadComma: 0x7e, Pause: 0x146,
 }
 for (const [keys, start] of [['1234567890', 0x02], ['QWERTYUIOP', 0x10], ['ASDFGHJKL', 0x1e], ['ZXCVBNM', 0x2c]] as const) {
     Array.from(keys).forEach((key, i) => { SCANS[/\d/.test(key) ? `Digit${key}` : `Key${key}`] = start + i })
 }
 for (let i = 1; i <= 10; i++) { SCANS[`F${i}`] = 0x3a + i }
+for (let i = 13; i <= 24; i++) { SCANS[`F${i}`] = 0x64 + i - 13 }
 
-export function nativeKey (event: Pick<KeyboardEvent, 'code' | 'key' | 'ctrlKey' | 'altKey' | 'metaKey'>, unicode: boolean): { scan: number, text: string } | null {
-    if (unicode && Array.from(event.key).length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+export function nativeKey (event: Pick<KeyboardEvent, 'code' | 'key' | 'ctrlKey' | 'altKey' | 'metaKey'> & Partial<Pick<KeyboardEvent, 'getModifierState'>>, unicode: boolean, held: Iterable<string> = []): { scan: number, text: string } | null {
+    const pressed = new Set(held)
+    const altGraph = event.getModifierState?.('AltGraph') === true
+    const meta = event.metaKey || pressed.has('MetaLeft') || pressed.has('MetaRight')
+    const shortcut = meta || !altGraph && (event.ctrlKey || event.altKey || ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight'].some(code => pressed.has(code)))
+    if (unicode && Array.from(event.key).length === 1 && !shortcut) {
         return { scan: 0, text: event.key }
     }
     const scan = SCANS[event.code]
@@ -119,7 +127,7 @@ export class FreeRDPView {
 
     sendKeyboardEvent (event: KeyboardEvent): void {
         const release = event.type === 'keyup'
-        const key = release ? this.pressed.get(event.code) ?? nativeKey(event, this.unicode) : nativeKey(event, this.unicode)
+        const key = release ? this.pressed.get(event.code) ?? nativeKey(event, this.unicode, this.pressed.keys()) : nativeKey(event, this.unicode, this.pressed.keys())
         if (!key) { return }
         event.preventDefault()
         if (release) { this.pressed.delete(event.code) } else { this.pressed.set(event.code, key) }

@@ -67,6 +67,9 @@ export class HeaderVisibility {
     private menuItem: any = null
     private controlsHidden = false
     private keyboardFocus = false
+    private pointerOverHeader = false
+    private mode: HeaderAutoHide = 'never'
+    private soleDesktop = false
 
     constructor (
         private desktop: RemoteDesktopService, private config: ConfigService, private zone: NgZone,
@@ -83,13 +86,13 @@ export class HeaderVisibility {
             this.config.changed$.subscribe(() => { this.menuRebind = true; this.schedule() })
             ;(this.config as any).ready$?.subscribe?.(() => this.schedule())
             this.host.windowFocused$.subscribe(() => { this.menuFocused = true; this.menuRebind = true; this.schedule() })
-            new MutationObserver(() => this.schedule()).observe(document.body, { childList: true, subtree: true })
+            new MutationObserver(records => this.mutations(records)).observe(document.body, { childList: true, subtree: true })
             window.addEventListener('resize', () => this.schedule())
             window.addEventListener('mousemove', event => this.pointer(event))
-            window.addEventListener('mouseout', event => { if (!event.relatedTarget) { this.pointer(event) } })
+            window.addEventListener('mouseout', event => { if (!event.relatedTarget) { this.pointerOverHeader = false; this.hideLater() } })
             window.addEventListener('keydown', () => { this.keyboardFocus = true })
             window.addEventListener('pointerdown', () => { this.keyboardFocus = false })
-            window.addEventListener('blur', () => { this.menuFocused = false; this.keyboardFocus = false; this.hideLater() })
+            window.addEventListener('blur', () => { this.menuFocused = false; this.keyboardFocus = false; this.pointerOverHeader = false; this.hideLater() })
             document.addEventListener('focusin', () => {
                 this.schedule()
                 if (this.inHeader(document.activeElement)) { this.show() } else { this.hideLater() }
@@ -98,6 +101,18 @@ export class HeaderVisibility {
             window.addEventListener('beforeunload', () => { if (this.menuItem) { this.menuItem.enabled = false } })
             this.schedule()
         })
+    }
+
+    private mutations (records: MutationRecord[]): void {
+        if (this.mode === 'never') { return }
+        // Terminal output, toasts and menus must not force header layout work. Splits can change in place without
+        // an activeTabChange event, so retain the cheap eligibility check while Automatic is selected.
+        if (this.mode === 'automatic' && this.desktop.singleDesktopVisible() !== this.soleDesktop ||
+            !this.root?.isConnected || this.bar && !this.bar.isConnected || this.title && !this.title.isConnected ||
+            records.some(record => Array.from(record.addedNodes).some(node => node instanceof Element &&
+                (node.matches('app-root, .tab-bar, title-bar') || node.querySelector('.tab-bar, title-bar'))))) {
+            this.schedule()
+        }
     }
 
     private schedule (): void {
@@ -131,6 +146,8 @@ export class HeaderVisibility {
     private refresh (): void {
         if (!this.config.store) { return } // Windows can render the first frame before Tabby's config is ready.
         const settings = this.desktop.settings()
+        this.mode = settings.headerAutoHide
+        this.soleDesktop = this.mode === 'automatic' && this.desktop.singleDesktopVisible()
         this.refreshMenu(settings.headerAutoHide)
         this.root = document.querySelector('app-root')
         const bar = this.root?.querySelector<HTMLElement>('.tab-bar') ?? null
@@ -138,7 +155,7 @@ export class HeaderVisibility {
         if (this.bar !== bar) { this.bar?.classList.remove('trd-auto-tabbar'); this.bar = bar }
         if (this.title !== title) { this.title?.classList.remove('trd-auto-titlebar'); this.title = title }
         this.active = !!this.root && !this.host.isFullscreen && shouldHideHeader(settings.headerAutoHide,
-            this.desktop.singleDesktopVisible(), window.innerWidth, window.innerHeight, settings.headerMinWidth, settings.headerMinHeight)
+            this.soleDesktop, window.innerWidth, window.innerHeight, settings.headerMinWidth, settings.headerMinHeight)
         this.root?.classList.toggle('trd-auto-hide-header', this.active)
         if (!this.active) {
             clearTimeout(this.timer); this.timer = undefined
@@ -146,7 +163,7 @@ export class HeaderVisibility {
             if (this.bar) { this.bar.inert = false }
             if (this.title) { this.title.inert = false }
             this.root?.classList.remove('trd-header-revealed')
-            this.edge?.remove(); this.edge = null; this.revealed = false
+            this.edge?.remove(); this.edge = null; this.revealed = false; this.pointerOverHeader = false
             this.nativeControls(false)
             this.header.headerVisibilityChanged()
             return
@@ -195,10 +212,10 @@ export class HeaderVisibility {
     }
 
     private hideLater (): void {
-        if (!this.active || this.timer) { return }
+        if (!this.active || this.timer || this.pointerOverHeader) { return }
         this.timer = setTimeout(() => {
             this.timer = undefined
-            if (this.keyboardFocus && this.inHeader(document.activeElement) || document.querySelector('.dropdown-menu.show, .modal.show')) { return }
+            if (this.pointerOverHeader || this.keyboardFocus && this.inHeader(document.activeElement) || document.querySelector('.dropdown-menu.show, .modal.show')) { return }
             this.revealed = false; this.root?.classList.remove('trd-header-revealed')
             this.headerInput(true)
             this.nativeControls(true)
@@ -210,12 +227,14 @@ export class HeaderVisibility {
         if (!this.active) { return }
         this.keyboardFocus = false
         const edge = this.root?.dataset.trdHeaderEdge
-        const atEdge = event.clientY <= 3 || edge === 'left' && event.clientX <= 3 ||
-            edge === 'right' && event.clientX >= window.innerWidth - 3 || edge === 'bottom' && event.clientY >= window.innerHeight - 3
+        const inside = event.clientX >= 0 && event.clientY >= 0 && event.clientX < window.innerWidth && event.clientY < window.innerHeight
+        const atEdge = inside && (event.clientY <= 3 || edge === 'left' && event.clientX <= 3 ||
+            edge === 'right' && event.clientX >= window.innerWidth - 3 || edge === 'bottom' && event.clientY >= window.innerHeight - 3)
         const contains = (element: HTMLElement | null) => {
             const r = element?.getBoundingClientRect()
             return !!r && event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom
         }
-        if (atEdge || this.revealed && (contains(this.bar) || contains(this.title))) { this.show() } else { this.hideLater() }
+        this.pointerOverHeader = atEdge || inside && this.revealed && (contains(this.bar) || contains(this.title))
+        if (this.pointerOverHeader) { this.show() } else { this.hideLater() }
     }
 }

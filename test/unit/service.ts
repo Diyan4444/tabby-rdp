@@ -2306,3 +2306,16 @@ test('a stale reconnect dialog cannot interrupt a replacement connection', async
     await svc.setRDPClient(pane, 'freerdp')
     assert.equal(reconnects, 0)
 })
+
+test('Follow default uses the actual local fallback and never offers a redundant reconnect', async t => {
+    const native = require('../../dist/freerdp.js'), fs = require('node:fs'), exists = fs.existsSync
+    t.mock.method(fs, 'existsSync', (path: string) => path !== native.nativeHelperPath() && exists(path))
+    const profile = { id: 'pc-fallback', type: 'rdp', options: { host: 'pc', client: 'ironrdp' } }
+    const { svc } = service({ client: 'freerdp' }, { profiles: [profile] })
+    const pane = { profile: structuredClone(profile), element: { nativeElement: {} } }
+    svc.sessions.set(pane, Object.assign(session(specOf({ host: 'pc' }), 'rdp#pc:3389'), { state: 'connected', client: 'ironrdp' }))
+    svc.platform.showMessageBox = async () => assert.fail('the effective client is already running')
+    svc.reopen = async () => assert.fail('must not drop the existing session')
+    await svc.setRDPClient(pane, null)
+    assert.deepEqual(svc.rdpClientChoice(pane), { value: null, default: 'ironrdp', active: 'ironrdp' })
+})

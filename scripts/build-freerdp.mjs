@@ -109,9 +109,7 @@ if (process.platform === 'darwin') {
     for (let i = 0; i < pending.length; i++) {
         for (const line of output('dumpbin', ['/DEPENDENTS', pending[i]]).split('\n')) {
             const name = /^\s+([^\s]+\.dll)\s*$/i.exec(line)?.[1]
-            const systemRoot = process.env.SystemRoot || process.env.WINDIR
-            if (name && systemRoot && existsSync(join(systemRoot, 'System32', name))) continue
-            if (!name || /^(?:api-ms-|ext-ms-|kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|ws2_32|crypt32|secur32|ncrypt|bcrypt|normaliz|rpcrt4|version|winmm|msvcrt|vcruntime\d+|ucrtbase)/i.test(name)) continue
+            if (!name || /^(?:(?:api-ms-|ext-ms-).*|kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|ws2_32|crypt32|secur32|ncrypt|bcrypt|normaliz|rpcrt4|version|winmm|msvcrt|vcruntime140(?:_1)?|ucrtbase|credui|shlwapi|dbghelp|ntdll)\.dll$/i.test(name)) continue
             if (!allowed(name)) throw new Error(`Unreviewed native dependency: ${name}`)
             const found = [...byName].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1]
             if (!found) throw new Error(`Cannot locate ${name}`)

@@ -98,6 +98,44 @@ test('native keys retain physical shortcuts and extended scan codes; Unicode sup
     assert.equal(nativeKey({ ...key, code: 'Unknown', key: 'Unidentified' }, true), null)
 })
 
+test('Unicode typing preserves synthetic held-modifier shortcuts and local AltGr characters', () => {
+    const key = { code: 'KeyQ', key: '@', ctrlKey: false, altKey: false, metaKey: false }
+    for (const held of ['MetaLeft', 'MetaRight', 'ControlLeft', 'AltLeft', 'AltRight']) {
+        assert.deepEqual(nativeKey(key, true, [held]), { scan: 0x10, text: '' }, held)
+    }
+    const altGr = { ...key, ctrlKey: true, altKey: true, getModifierState: (name: string) => name === 'AltGraph' }
+    assert.deepEqual(nativeKey(altGr, true, ['ControlLeft', 'AltRight']), { scan: 0, text: '@' })
+    assert.deepEqual(nativeKey({ ...altGr, key: '€' }, true), { scan: 0, text: '€' })
+    assert.deepEqual(nativeKey(altGr, true, ['MetaLeft', 'AltRight']), { scan: 0x10, text: '' }, 'Super remains a shortcut even with AltGr')
+    assert.deepEqual(nativeKey({ ...altGr, getModifierState: () => false }, true), { scan: 0x10, text: '' }, 'Ctrl+Alt remains a shortcut')
+})
+
+test('physical input covers JIS, ABNT2, Korean, numpad and extended function keys', () => {
+    const codes = { IntlRo: 0x73, IntlYen: 0x7d, KanaMode: 0x70, Convert: 0x79, NonConvert: 0x7b,
+        Lang1: 0x72, Lang2: 0x71, NumpadEqual: 0x59, NumpadComma: 0x7e, Pause: 0x146 }
+    for (let i = 13; i <= 24; i++) Object.assign(codes, { [`F${i}`]: 0x64 + i - 13 })
+    for (const [code, scan] of Object.entries(codes)) {
+        assert.deepEqual(nativeKey({ code, key: 'Unidentified', ctrlKey: false, altKey: false, metaKey: false }, false), { scan, text: '' }, code)
+    }
+})
+
+test('synthetic Super shortcuts use physical down/up pairs even after the modifier is released', () => {
+    const { FreeRDPView } = require('../../dist/freerdpView.js')
+    const view = Object.create(FreeRDPView.prototype), packets: Buffer[] = []
+    Object.assign(view, { unicode: true, pressed: new Map(), native: { send: (type: string, data: Buffer) => { assert.equal(type, 'K'); packets.push(data) } } })
+    const send = (type: string, code: string, key: string) => view.sendKeyboardEvent({ type, code, key, ctrlKey: false, altKey: false, metaKey: false, preventDefault () {} })
+    send('keydown', 'MetaLeft', 'Meta'); send('keydown', 'KeyR', 'R')
+    send('keyup', 'MetaLeft', 'Meta'); send('keyup', 'KeyR', 'r')
+    assert.deepEqual(packets.map(p => [...Array(3)].map((_, i) => p.readUInt32BE(i * 4))), [[0, 0x15b, 0], [0, 0x13, 0], [0x8000, 0x15b, 0], [0x8000, 0x13, 0]])
+})
+
+test('a missing Windows runtime has actionable startup guidance for signed and unsigned exit codes', () => {
+    const { helperStopped } = require('../../dist/freerdp.js')
+    for (const code of [0xc0000135, -1073741515]) assert.match(helperStopped(code, null, 'win32').message, /Visual C\+\+.*Redistributable/)
+    assert.match(helperStopped(2, null, 'win32').message, /stopped \(2\)/)
+    assert.match(helperStopped(null, 'SIGKILL', 'linux').message, /SIGKILL/)
+})
+
 test('only explicit credential rejection triggers a saved-password retry', () => {
     assert.equal(new FreeRDPError(0x20014).kind(), 2)
     assert.equal(new FreeRDPError(0x20015).kind(), 2)
