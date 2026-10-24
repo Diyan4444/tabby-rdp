@@ -70,6 +70,7 @@ await suite('freerdp', async t => {
         H.nativeProcess.send = (type, data) => { if (type === 'K') H.nativeKeys++; send(type, data) }
     `)
     await t.clickDesktop('H.nativePane')
+    await t.press('Escape') // Clear a transient desktop menu/dialog in this dedicated test account.
     t.check('remote display contains visible content after pointer input', !!await t.waitFor(`return H.canvas(H.nativePane)?.colors > 20`, 5))
     await t.dump('H.nativePane', 'freerdp-input')
     await t.press('a')
@@ -102,7 +103,8 @@ await suite('freerdp', async t => {
         const numbers = (...values) => { const b = Buffer.alloc(values.length * 4); values.forEach((n,i) => b.writeUInt32BE(n,i*4)); return b }
         try {
             for (let i = 0; i < 4096; i++) H.nativeProcess.send('M', numbers(0x0800, i % 500, i % 400))
-            for (let i = 0; i < 1200; i++) { H.nativeProcess.send('K', numbers(0, 0x2a, 0)); H.nativeProcess.send('K', numbers(0x8000, 0x2a, 0)) }
+            // F24 has no default desktop action; repeated Shift would open Windows Sticky Keys.
+            for (let i = 0; i < 1200; i++) { H.nativeProcess.send('K', numbers(0, 0x6f, 0)); H.nativeProcess.send('K', numbers(0x8000, 0x6f, 0)) }
         } finally { H.nativeProcess.child.stdout.resume() }
     `)
     await t.sleep(1500)
